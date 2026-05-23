@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "generatedAt": "2026-05-24T00:00:00Z",
+  "project": {
+    "type": "desktop",
+    "name": "ordorealm-code",
+    "framework": {
+      "frontend": "react",
+      "backend": null
+    }
+  },
+  "frontend": {
+    "framework": "electron",
+    "startCommand": "npm run dev",
+    "buildCommand": "npm run build",
+    "testCommand": "npm run test"
+  },
+  "backend": null,
+  "database": null,
+  "dependencies": {
+    "required": {
+      "git": ">=2.0",
+      "node": ">=18.0"
+    },
+    "optional": {}
+  },
+  "envVars": {
+    "required": [],
+    "optional": []
+  }
+}

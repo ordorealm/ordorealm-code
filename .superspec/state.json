@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "ordorealm-code",
+    "root": "/Users/macos/Documents/ordorealm-code",
+    "createdAt": "2026-05-24T00:00:00Z",
+    "updatedAt": "2026-05-24T00:00:00Z"
+  },
+  "progress": {
+    "currentPhase": 1,
+    "currentTask": null,
+    "phaseStatus": "not_started"
+  },
+  "config": {
+    "review": {
+      "minCount": 3,
+      "maxCount": 5
+    },
+    "docReview": {
+      "minRounds": 3,
+      "maxRounds": 5
+    },
+    "task": {
+      "timeout": 1800
+    },
+    "context": {
+      "operationRefreshInterval": 10
+    },
+    "flow": {
+      "autoContinue": true,
+      "skipNonCriticalFailures": true
+    }
+  },
+  "phases": [],
+  "features": [],
+  "failures": [],
+  "referencedDocs": {
+    "specPath": null,
+    "specHash": null,
+    "planPath": null,
+    "planHash": null
+  },
+  "docReview": {
+    "spec": {
+      "rounds": 0,
+      "minRounds": 3,
+      "maxRounds": 5,
+      "status": "pending",
+      "history": []
+    },
+    "plan": {
+      "rounds": 0,
+      "minRounds": 3,
+      "maxRounds": 5,
+      "status": "pending",
+      "history": []
+    }
+  },
+  "verification": {
+    "step": 0,
+    "steps": [
+      "code_review",
+      "test_completeness",
+      "compile",
+      "functional_test"
+    ],
+    "passed": []
+  },
+  "projectSkills": [
+    "env-check",
+    "env-setup",
+    "build",
+    "test",
+    "frontend-start",
+    "frontend-stop",
+    "frontend-restart"
+  ]
+}

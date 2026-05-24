@@ -1,15 +1,16 @@
 /**
- * Skill library type definitions
+ * Skill library related type definitions
  * @module types/skill-library
  */
 
-import type { AgentType } from './agent.types';
+import type { AgentType } from '@/types/agent.types';
 
 /**
- * Skill library metadata
+ * A skill library entity representing a packaged set of skills and configurations
+ * that can be activated in a project directory
  */
 export interface SkillLibrary {
-  /** Unique ID (UUID) */
+  /** Skill library unique ID (UUID) */
   id: string;
 
   /** Skill library name */
@@ -18,7 +19,7 @@ export interface SkillLibrary {
   /** Skill library description */
   description: string;
 
-  /** Applicable Agent type */
+  /** Applicable agent type */
   agentType: AgentType;
 
   /** Original zip file size in bytes */
@@ -32,23 +33,65 @@ export interface SkillLibrary {
 }
 
 /**
- * Skill library validation result
+ * Parameters for creating a new skill library
  */
-export interface SkillLibraryValidateResult {
-  /** Whether valid */
-  valid: boolean;
+export interface CreateSkillLibraryParams {
+  /** Absolute path to the zip file */
+  zipPath: string;
 
-  /** Error message */
-  error?: string;
+  /** Skill library name */
+  name: string;
+
+  /** Skill library description */
+  description: string;
+
+  /** Applicable agent type */
+  agentType: AgentType;
 }
 
 /**
- * Skill library activation result
+ * Parameters for updating an existing skill library's metadata
  */
-export interface SkillLibraryActivateResult {
-  /** Whether successful */
+export interface UpdateSkillLibraryParams {
+  /** Skill library ID to update */
+  id: string;
+
+  /** New skill library name */
+  name: string;
+
+  /** New skill library description */
+  description: string;
+}
+
+/**
+ * Result of validating a skill library zip file
+ */
+export interface SkillLibraryValidationResult {
+  /** Whether validation passed */
+  valid: boolean;
+
+  /** Validation error messages, if any */
+  errors?: string[];
+}
+
+/**
+ * Parameters for activating a skill library in a project
+ */
+export interface ActivateSkillLibraryParams {
+  /** Skill library ID to activate */
+  id: string;
+
+  /** Absolute path to the target project directory */
+  projectPath: string;
+}
+
+/**
+ * Result of activating a skill library
+ */
+export interface ActivateSkillLibraryResult {
+  /** Whether activation succeeded */
   success: boolean;
 
-  /** Error message */
+  /** Error message if activation failed */
   error?: string;
 }

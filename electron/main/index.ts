@@ -711,6 +711,15 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
     console.log(`[Claude SDK] Stream ended naturally for session: ${session.id}`)
 
+    // 发送 complete 事件给前端，确保 isStreaming 被重置
+    const mainWindow = BrowserWindow.getAllWindows()[0]
+    if (mainWindow) {
+      mainWindow.webContents.send('claude:progress', {
+        type: 'complete',
+        content: session.output,
+      } as ProgressEvent)
+    }
+
   } catch (err: any) {
     console.error(`[Claude SDK] Stream error for session ${session.id}:`, err)
     session.status = 'error'
@@ -1032,11 +1041,31 @@ function registerClaudeHandlers(): void {
       if (!session) return { success: false }
 
       console.log('[Claude SDK] Aborting session:', sessionId)
+
+      // 调用 SDK 的 interrupt 方法中断当前轮次
+      if (session.sdkQuery) {
+        try {
+          await session.sdkQuery.interrupt()
+          console.log('[Claude SDK] SDK interrupt called')
+        } catch (err) {
+          console.warn('[Claude SDK] Error calling interrupt:', err)
+        }
+      }
+
       session.abortController.abort()
 
       // 重建 AbortController 和 inputStream
       session.abortController = new AbortController()
       session.status = 'idle'
+
+      // 发送 error 事件给前端，让它知道已中断
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+      if (mainWindow) {
+        mainWindow.webContents.send('claude:progress', {
+          type: 'error',
+          content: '会话已中断',
+        } as ProgressEvent)
+      }
 
       return { success: true }
     }

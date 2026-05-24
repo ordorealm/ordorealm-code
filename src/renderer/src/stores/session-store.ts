@@ -1010,6 +1010,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // End thinking timer and clear activity
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
+          // ★ 重要：清理进度监听器和心跳定时器
+          cleanupProgressListener();
 
           // ★ 更新 token 使用量
           console.log('[SessionStore] Complete event received, usageData:', usageData);

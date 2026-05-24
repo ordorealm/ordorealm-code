@@ -8,9 +8,10 @@
  * @module components/chat/SkillLibrarySelector
  */
 
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback } from 'react';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
 import { AgentIcon, getAgentConfig } from '@/components/common/AgentIcon';
+import { usePopoverClose } from '@/hooks/usePopoverClose';
 import type { SkillLibrary, AgentType } from '@/types';
 
 /**
@@ -35,37 +36,6 @@ export interface SkillLibrarySelectorProps {
 }
 
 /**
- * Hook for popover close logic (click outside + Esc)
- */
-function usePopoverClose(
-  open: boolean,
-  setOpen: (v: boolean) => void,
-  btnRef: React.RefObject<HTMLElement | null>,
-  panelRef: React.RefObject<HTMLElement | null>
-) {
-  useEffect(() => {
-    if (!open) return;
-    const handleOutside = (e: MouseEvent) => {
-      if (
-        btnRef.current?.contains(e.target as Node) ||
-        panelRef.current?.contains(e.target as Node)
-      )
-        return;
-      setOpen(false);
-    };
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', handleOutside);
-    document.addEventListener('keydown', handleEsc);
-    return () => {
-      document.removeEventListener('mousedown', handleOutside);
-      document.removeEventListener('keydown', handleEsc);
-    };
-  }, [open, setOpen, btnRef, panelRef]);
-}
-
-/**
  * Skill Library Selector Component
  *
  * Provides a dropdown interface for selecting and activating skill libraries.
@@ -79,6 +49,7 @@ export function SkillLibrarySelector({
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [pendingLibrary, setPendingLibrary] = useState<SkillLibrary | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const btnRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -131,35 +102,42 @@ export function SkillLibrarySelector({
   const handleConfirmSwitch = useCallback(async () => {
     if (!pendingLibrary) return;
 
+    setError(null);
     const success = await activateLibrary(pendingLibrary.id, projectPath);
 
     if (success) {
       console.log(`[SkillLibrarySelector] Activated library: ${pendingLibrary.name}`);
       // Call the callback for session restart
       await onLibraryActivated?.();
+      setShowConfirmDialog(false);
+      setPendingLibrary(null);
+    } else {
+      // Show error in dialog
+      setError(`激活技能库「${pendingLibrary.name}」失败，请查看控制台日志`);
     }
-
-    setShowConfirmDialog(false);
-    setPendingLibrary(null);
   }, [pendingLibrary, projectPath, activateLibrary, onLibraryActivated]);
 
   // Handle deactivate (select "None")
   const handleDeactivate = useCallback(async () => {
+    setError(null);
     const success = await activateLibrary(null, projectPath);
 
     if (success) {
       console.log('[SkillLibrarySelector] Deactivated library');
       await onLibraryActivated?.();
+      setShowConfirmDialog(false);
+      setPendingLibrary(null);
+    } else {
+      // Show error in dialog
+      setError('停用技能库失败，请查看控制台日志');
     }
-
-    setShowConfirmDialog(false);
-    setPendingLibrary(null);
   }, [projectPath, activateLibrary, onLibraryActivated]);
 
   // Handle cancel
   const handleCancel = useCallback(() => {
     setShowConfirmDialog(false);
     setPendingLibrary(null);
+    setError(null);
   }, []);
 
   // Get button display text
@@ -331,6 +309,16 @@ export function SkillLibrarySelector({
                 此操作不可撤销，是否继续？
               </p>
             </div>
+
+            {/* Error message */}
+            {error && (
+              <div className="mb-4 p-2.5 bg-accent-red/10 border border-accent-red/30 rounded-md">
+                <p className="text-xs text-accent-red flex items-start gap-1.5">
+                  <span>❌</span>
+                  <span>{error}</span>
+                </p>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex justify-end gap-2">

@@ -8,9 +8,9 @@
   },
   "progress": {
     "currentPhase": 5,
-    "currentTask": "5-1",
-    "phaseStatus": "in_progress",
-    "updatedAt": "2026-05-24T07:20:00Z"
+    "currentTask": null,
+    "phaseStatus": "completed",
+    "updatedAt": "2026-05-24T07:30:00Z"
   },
   "config": {
     "review": {
@@ -236,10 +236,10 @@
     {
       "id": 5,
       "name": "技能库激活界面（F02）",
-      "status": "in_review",
+      "status": "completed",
       "review": {
-        "count": 0,
-        "status": "pending"
+        "count": 3,
+        "status": "passed"
       },
       "depends_on": [
         4
@@ -279,12 +279,12 @@
     {
       "id": "F01",
       "name": "技能库管理",
-      "status": "not_started"
+      "status": "completed"
     },
     {
       "id": "F02",
       "name": "技能库激活",
-      "status": "not_started"
+      "status": "completed"
     }
   ],
   "failures": [],

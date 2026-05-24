@@ -137,19 +137,6 @@ function findRootDirectory(entries: AdmZip.IZipEntry[]): string | null {
 }
 
 /**
- * Find any .md file in a directory (for renaming to main config file)
- */
-async function findMdFile(dirPath: string): Promise<string | null> {
-  const entries = await fs.readdir(dirPath, { withFileTypes: true })
-  for (const entry of entries) {
-    if (entry.isFile() && entry.name.endsWith('.md')) {
-      return entry.name
-    }
-  }
-  return null
-}
-
-/**
  * Recursively find .md file in directory tree
  */
 async function findMdFileRecursive(dirPath: string): Promise<string | null> {
@@ -461,13 +448,17 @@ async function activateLibrary(
 
     // Rename main configuration file if needed
     const targetMainFile = AGENT_MAIN_FILE_MAP[library.agentType]
-    const existingMdFile = await findMdFile(targetPath)
+    const existingMdPath = await findMdFileRecursive(targetPath)
 
-    if (existingMdFile && existingMdFile !== targetMainFile) {
-      const oldPath = path.join(targetPath, existingMdFile)
-      const newPath = path.join(targetPath, targetMainFile)
-      await fs.rename(oldPath, newPath)
-      console.log(`[SkillLibrary] Renamed ${existingMdFile} to ${targetMainFile}`)
+    if (existingMdPath) {
+      const existingMdFile = path.basename(existingMdPath)
+
+      if (existingMdFile !== targetMainFile) {
+        // Move and rename to the agent config directory (usually root of targetPath)
+        const newPath = path.join(targetPath, targetMainFile)
+        await fs.rename(existingMdPath, newPath)
+        console.log(`[SkillLibrary] Renamed ${existingMdFile} to ${targetMainFile}`)
+      }
     }
 
     console.log(`[SkillLibrary] Activated library: ${library.name} in ${projectPath}`)

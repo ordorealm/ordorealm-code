@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, ipcMain, dialog, clipboard } from 'electron'
 import { join } from 'path'
 import * as fs from 'fs/promises'
+import * as fsSync from 'fs'
 import * as pathModule from 'path'
 import { execSync } from 'child_process'
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -172,6 +173,18 @@ const activeSessions = new Map<string, ClaudeSession>()
 const sessionCreationLocks = new Map<string, Promise<ClaudeSession>>()
 
 /**
+ * 写入调试日志到文件
+ */
+function debugLog(message: string): void {
+  console.log(message)
+  try {
+    const logPath = join(app.getPath('userData'), 'debug.log')
+    const timestamp = new Date().toISOString()
+    fsSync.appendFileSync(logPath, `[${timestamp}] ${message}\n`, 'utf-8')
+  } catch {}
+}
+
+/**
  * 解析 Claude Code 原生二进制路径
  * 在打包模式下，SDK 内部的 require.resolve 可能无法正确找到 ASAR unpacked 中的原生二进制
  * 因此需要手动构建路径并传给 SDK
@@ -193,7 +206,7 @@ function resolveClaudeBinaryPath(): string | null {
 
     const platformSuffix = platformArchMap[`${platform}_${arch}`]
     if (!platformSuffix) {
-      console.warn(`[Claude SDK] Unsupported platform: ${platform}-${arch}`)
+      debugLog(`[Claude SDK] Unsupported platform: ${platform}-${arch}`)
       return null
     }
 
@@ -204,10 +217,10 @@ function resolveClaudeBinaryPath(): string | null {
     if (isDev) {
       try {
         const binaryPath = require.resolve(`${binaryPackage}/${binaryName}`)
-        console.log(`[Claude SDK] Dev mode - resolved binary: ${binaryPath}`)
+        debugLog(`[Claude SDK] Dev mode - resolved binary: ${binaryPath}`)
         return binaryPath
       } catch (err) {
-        console.warn('[Claude SDK] Dev mode - require.resolve failed:', err)
+        debugLog('[Claude SDK] Dev mode - require.resolve failed: ' + err)
       }
     }
 
@@ -217,14 +230,13 @@ function resolveClaudeBinaryPath(): string | null {
     const unpackedPath = join(resourcesPath, 'app.asar.unpacked')
     const binaryPath = join(unpackedPath, 'node_modules', binaryPackage, binaryName)
 
-    console.log('[Claude SDK] Packaged mode:')
-    console.log('  resourcesPath:', resourcesPath)
-    console.log('  unpackedPath:', unpackedPath)
-    console.log('  binaryPath:', binaryPath)
+    debugLog('[Claude SDK] Packaged mode:')
+    debugLog('  resourcesPath: ' + resourcesPath)
+    debugLog('  unpackedPath: ' + unpackedPath)
+    debugLog('  binaryPath: ' + binaryPath)
 
-    const fsSync = require('fs')
     if (fsSync.existsSync(binaryPath)) {
-      console.log(`[Claude SDK] Found binary at: ${binaryPath}`)
+      debugLog(`[Claude SDK] Found binary at: ${binaryPath}`)
       return binaryPath
     }
 
@@ -233,19 +245,19 @@ function resolveClaudeBinaryPath(): string | null {
     const altUnpackedPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked')
     const altBinaryPath = join(altUnpackedPath, 'node_modules', binaryPackage, binaryName)
 
-    console.log('[Claude SDK] Fallback:')
-    console.log('  appPath:', appPath)
-    console.log('  altBinaryPath:', altBinaryPath)
+    debugLog('[Claude SDK] Fallback:')
+    debugLog('  appPath: ' + appPath)
+    debugLog('  altBinaryPath: ' + altBinaryPath)
 
     if (fsSync.existsSync(altBinaryPath)) {
-      console.log(`[Claude SDK] Found binary at fallback: ${altBinaryPath}`)
+      debugLog(`[Claude SDK] Found binary at fallback: ${altBinaryPath}`)
       return altBinaryPath
     }
 
-    console.warn(`[Claude SDK] Binary not found at any location`)
+    debugLog(`[Claude SDK] Binary not found at any location`)
     return null
   } catch (err) {
-    console.error('[Claude SDK] Failed to resolve binary path:', err)
+    debugLog('[Claude SDK] Failed to resolve binary path: ' + err)
     return null
   }
 }

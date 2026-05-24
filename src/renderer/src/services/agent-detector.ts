@@ -18,9 +18,19 @@ export interface AgentInstallStatus {
 
 /**
  * 检测 Claude Code CLI 安装状态
+ * Claude Code SDK 是内置的，所以检查 SDK 是否可用
  */
 async function checkClaudeCode(): Promise<{ installed: boolean; version: string | null }> {
   try {
+    // 首先检查内置 SDK 是否可用
+    const sdkResult = await window.api.claude.checkAvailable();
+    if (sdkResult.available) {
+      // SDK 可用，获取版本
+      const versionResult = await window.api.claude.getVersion();
+      return { installed: true, version: versionResult.version };
+    }
+
+    // SDK 不可用，检查系统 CLI
     const result = await window.api.claude.checkAgentInstalled('claude-code');
     return result;
   } catch {

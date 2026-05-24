@@ -632,9 +632,9 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     };
   }, [session?.tokenUsage]);
 
-  // Auto-compact when > 80%
+  // Auto-compact when > 70%
   useEffect(() => {
-    if (percentage > 80 && session?.tokenUsage) {
+    if (percentage > 70 && session?.tokenUsage) {
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
       triggerCompact(sessionId);
     }

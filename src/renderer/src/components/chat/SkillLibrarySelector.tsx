@@ -160,7 +160,7 @@ export function SkillLibrarySelector({
           onClick={() => setPopoverOpen(o => !o)}
           disabled={isLoading}
           className={`
-            inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs
+            inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs
             bg-bg-tertiary border text-text-secondary
             hover:text-text-primary hover:bg-bg-hover
             transition-colors cursor-pointer select-none

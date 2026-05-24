@@ -387,6 +387,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
         >
           <span>⚡</span>
           <span>{skillList.length} 个 Skill</span>
+          <span className="text-text-muted text-[10px]">▼</span>
         </button>
 
         {/* Skill Popover */}
@@ -489,6 +490,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
         >
           <span>🔌</span>
           <span>{mcpList.length} 个 MCP</span>
+          <span className="text-text-muted text-[10px]">▼</span>
         </button>
 
         {/* MCP Popover */}

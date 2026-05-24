@@ -86,6 +86,7 @@ export interface Api {
   ping: () => void
   dialog: {
     openDirectory: () => Promise<string | null>
+    openFile: (options?: { filters?: { name: string; extensions: string[] }[] }) => Promise<{ canceled: boolean; filePaths: string[] }>
   }
   clipboard: {
     /** Write text to clipboard */
@@ -191,7 +192,7 @@ export interface Api {
       name: string
       description: string
       agentType: AgentType
-    }) => Promise<{ success: boolean; skill?: SkillLibrary; error?: string }>
+    }) => Promise<{ success: boolean; library?: SkillLibrary; error?: string }>
     /** Update skill metadata */
     update: (params: {
       id: string

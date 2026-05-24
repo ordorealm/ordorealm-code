@@ -105,14 +105,14 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
         agentType,
       });
 
-      if (result.success && result.skill) {
+      if (result.success && result.library) {
         const { libraries } = get();
         set({
-          libraries: [...libraries, result.skill],
+          libraries: [...libraries, result.library],
           isLoading: false,
         });
-        console.log(`[SkillLibraryStore] Added library: ${result.skill.name}`);
-        return result.skill;
+        console.log(`[SkillLibraryStore] Added library: ${result.library.name}`);
+        return result.library;
       } else {
         set({
           isLoading: false,

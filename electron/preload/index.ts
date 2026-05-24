@@ -71,6 +71,8 @@ const api = {
   // Dialog APIs
   dialog: {
     openDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
+    openFile: (options?: { filters?: { name: string; extensions: string[] }[] }): Promise<{ canceled: boolean; filePaths: string[] }> =>
+      ipcRenderer.invoke('dialog:openFile', options),
   },
 
   // Clipboard APIs

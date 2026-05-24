@@ -757,6 +757,14 @@ function registerDialogHandlers(): void {
     })
     return result.filePaths[0] || null
   })
+
+  ipcMain.handle('dialog:openFile', async (_, options: { filters?: { name: string; extensions: string[] }[] }): Promise<{ canceled: boolean; filePaths: string[] }> => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: options.filters,
+    })
+    return { canceled: result.canceled, filePaths: result.filePaths }
+  })
 }
 
 /**

@@ -70,8 +70,8 @@ export interface SkillLibraryValidationResult {
   /** Whether validation passed */
   valid: boolean;
 
-  /** Validation error messages, if any */
-  errors?: string[];
+  /** Error message if validation failed */
+  error?: string;
 }
 
 /**

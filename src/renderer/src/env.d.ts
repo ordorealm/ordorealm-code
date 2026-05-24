@@ -198,13 +198,13 @@ export interface Api {
       id: string
       name: string
       description: string
-    }) => Promise<{ success: boolean; error?: string }>
+    }) => Promise<{ success: boolean; library?: SkillLibrary; error?: string }>
     /** Delete a skill from the library */
     delete: (params: { id: string }) => Promise<{ success: boolean; error?: string }>
     /** Download a skill as a zip file */
     download: (params: { id: string }) => Promise<{ success: boolean; path?: string; error?: string }>
     /** Validate a skill zip file */
-    validate: (params: { zipPath: string }) => Promise<{ success: boolean; valid?: boolean; errors?: string[]; error?: string }>
+    validate: (params: { zipPath: string }) => Promise<{ success: boolean; valid?: boolean; error?: string }>
     /** Activate a skill in a project */
     activate: (params: {
       id: string

@@ -475,14 +475,18 @@ async function activateLibrary(
  */
 export function registerSkillLibraryHandlers(): void {
   // List all libraries
-  ipcMain.handle('skill-library:list', async (): Promise<SkillLibrary[]> => {
-    try {
-      return await listLibraries()
-    } catch (err) {
-      console.error('[SkillLibrary] List failed:', err)
-      return []
+  ipcMain.handle(
+    'skill-library:list',
+    async (): Promise<{ success: boolean; skills: SkillLibrary[]; error?: string }> => {
+      try {
+        const skills = await listLibraries()
+        return { success: true, skills }
+      } catch (err) {
+        console.error('[SkillLibrary] List failed:', err)
+        return { success: false, skills: [], error: err instanceof Error ? err.message : String(err) }
+      }
     }
-  })
+  )
 
   // Add a library
   ipcMain.handle(

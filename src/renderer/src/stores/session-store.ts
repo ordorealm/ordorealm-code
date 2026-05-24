@@ -44,6 +44,12 @@ type SetFunction = (
 
 let progressListenerCleanup: (() => void) | null = null;
 let currentProgressSessionId: string | null = null;
+/** ★ 上次收到进度事件的时间，用于检测连接是否断开 */
+let lastProgressEventTime: number = 0;
+/** ★ 心跳检测定时器 */
+let heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
+/** ★ 心跳超时时间（毫秒）- 如果超过这个时间没有收到任何事件，认为连接断开 */
+const HEARTBEAT_TIMEOUT = 120000; // 2分钟
 
 /**
  * 设置进度事件监听器
@@ -86,10 +92,19 @@ function setupProgressListener(
     progressListenerCleanup = null;
   }
 
+  // 清理旧的心跳检测
+  if (heartbeatCheckTimer) {
+    clearInterval(heartbeatCheckTimer);
+    heartbeatCheckTimer = null;
+  }
+
   currentProgressSessionId = sessionId;
+  lastProgressEventTime = Date.now();
 
   // 设置新的监听器
   progressListenerCleanup = window.api.claude.onProgress((event) => {
+    // 更新最后收到事件的时间
+    lastProgressEventTime = Date.now();
     // 只处理当前会话的事件
     if (currentProgressSessionId !== sessionId) return;
     onProgress(event);
@@ -107,6 +122,71 @@ function cleanupProgressListener(): void {
     progressListenerCleanup = null;
     currentProgressSessionId = null;
   }
+  // 清理心跳检测
+  if (heartbeatCheckTimer) {
+    clearInterval(heartbeatCheckTimer);
+    heartbeatCheckTimer = null;
+  }
+}
+
+/**
+ * ★ 检查心跳超时，如果长时间没有收到事件，认为连接断开
+ * @param sessionId 会话 ID
+ * @param assistantMessageId 助手消息 ID
+ * @param set Zustand set 函数
+ */
+function startHeartbeatCheck(
+  sessionId: string,
+  assistantMessageId: string,
+  set: SetFunction
+): void {
+  // 清理旧的定时器
+  if (heartbeatCheckTimer) {
+    clearInterval(heartbeatCheckTimer);
+  }
+
+  heartbeatCheckTimer = setInterval(() => {
+    const now = Date.now();
+    const timeSinceLastEvent = now - lastProgressEventTime;
+
+    if (timeSinceLastEvent > HEARTBEAT_TIMEOUT) {
+      console.warn(`[SessionStore] Heartbeat timeout detected for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago`);
+
+      // 清理心跳检测
+      if (heartbeatCheckTimer) {
+        clearInterval(heartbeatCheckTimer);
+        heartbeatCheckTimer = null;
+      }
+
+      // 设置错误状态
+      immediateFlushBuffer(set, sessionId);
+      set(state => {
+        const existingSession = state.sessions[sessionId];
+        if (!existingSession) return state;
+
+        const updatedMessages = existingSession.messages.map(m =>
+          m.id === assistantMessageId
+            ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 连接超时，请检查后端服务是否正常' }
+            : m
+        );
+
+        return {
+          sessions: {
+            ...state.sessions,
+            [sessionId]: {
+              ...existingSession,
+              messages: updatedMessages,
+            },
+          },
+        };
+      });
+
+      // 结束思考计时器和活动状态
+      useActivityStore.getState().endThinking(sessionId);
+      useActivityStore.getState().endActivity(sessionId);
+      cleanupProgressListener();
+    }
+  }, 30000); // 每 30 秒检查一次
 }
 
 /**
@@ -979,6 +1059,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       console.log('[SessionStore] Message sent, waiting for response...');
 
+      // ★ 启动心跳检测
+      startHeartbeatCheck(sessionId, assistantMessageId, set);
+
       // ★ Step 4: 等待完成（通过进度事件监听器处理）
       // 使用轮询检查 isStreaming 状态
       await new Promise<void>((resolve) => {
@@ -991,9 +1074,40 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           }
         }, 100);
 
-        // 超时保护（5分钟）
+        // ★ 超时保护（5分钟）- 必须重置 isStreaming 状态
         setTimeout(() => {
           clearInterval(checkInterval);
+          // ★ 检查是否仍在 streaming，如果是则强制重置
+          const currentSession = get().sessions[sessionId];
+          const msg = currentSession?.messages.find(m => m.id === assistantMessageId);
+          if (msg?.isStreaming) {
+            console.warn(`[SessionStore] Timeout detected, forcing isStreaming to false for session: ${sessionId}`);
+            // 重置状态
+            immediateFlushBuffer(set, sessionId);
+            set(state => {
+              const existingSession = state.sessions[sessionId];
+              if (!existingSession) return state;
+
+              const updatedMessages = existingSession.messages.map(m =>
+                m.id === assistantMessageId
+                  ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 操作超时（5分钟），已自动重置' }
+                  : m
+              );
+
+              return {
+                sessions: {
+                  ...state.sessions,
+                  [sessionId]: {
+                    ...existingSession,
+                    messages: updatedMessages,
+                  },
+                },
+              };
+            });
+            useActivityStore.getState().endThinking(sessionId);
+            useActivityStore.getState().endActivity(sessionId);
+            cleanupProgressListener();
+          }
           resolve();
         }, 300000);
       });

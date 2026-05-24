@@ -110,11 +110,13 @@ function findRootDirectory(entries: AdmZip.IZipEntry[]): string | null {
     }
   }
 
-  // Find common directory prefix
+  // Find common directory prefix (ignoring macOS metadata directories)
   const dirEntries = new Set<string>()
   for (const entry of entries) {
     const parts = entry.entryName.split('/')
     if (parts.length > 1) {
+      // Ignore macOS metadata directories
+      if (parts[0] === '__MACOSX') continue
       dirEntries.add(parts[0] + '/')
     }
   }
@@ -425,6 +427,10 @@ async function activateLibrary(
       if (entry.isDirectory) continue
 
       let entryName = entry.entryName
+
+      // Skip macOS metadata directories
+      if (entryName.startsWith('__MACOSX/')) continue
+
       if (rootDir) {
         entryName = entryName.slice(rootDir.length)
       }

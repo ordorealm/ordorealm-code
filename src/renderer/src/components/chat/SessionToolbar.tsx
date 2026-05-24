@@ -546,7 +546,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
 
       {/* Error Toast - Session restart failure */}
       {restartError && (
-        <div className="fixed bottom-4 right-4 z-[100] max-w-sm animate-fade-in">
+        <div className="fixed bottom-4 right-4 z-[100] max-w-sm animate-in fade-in duration-200">
           <div className="bg-bg-primary border border-accent-red/50 rounded-lg shadow-lg p-3 flex items-start gap-2">
             <span className="text-accent-red flex-shrink-0">❌</span>
             <div className="flex-1 min-w-0">

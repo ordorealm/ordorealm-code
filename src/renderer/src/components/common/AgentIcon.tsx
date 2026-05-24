@@ -51,7 +51,7 @@ const AGENT_CONFIG: Record<
  * Size classes for the icon container
  */
 const SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
-  sm: 'w-5 h-5 text-xs',
+  sm: 'w-4 h-4 text-[10px]',
   md: 'w-6 h-6 text-sm',
   lg: 'w-8 h-8 text-base',
 };

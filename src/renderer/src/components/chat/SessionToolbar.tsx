@@ -106,72 +106,6 @@ interface SessionToolbarProps {
 }
 
 /**
- * Hook for popover close logic (click outside + Esc)
- */
-function usePopoverClose(
-  open: boolean,
-  setOpen: (v: boolean) => void,
-  btnRef: React.RefObject<HTMLElement | null>,
-  panelRef: React.RefObject<HTMLElement | null>
-) {
-  useEffect(() => {
-    if (!open) return;
-    const handleOutside = (e: MouseEvent) => {
-      if (
-        btnRef.current?.contains(e.target as Node) ||
-        panelRef.current?.contains(e.target as Node)
-      )
-        return;
-      setOpen(false);
-    };
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', handleOutside);
-    document.addEventListener('keydown', handleEsc);
-    return () => {
-      document.removeEventListener('mousedown', handleOutside);
-      document.removeEventListener('keydown', handleEsc);
-    };
-  }, [open, setOpen, btnRef, panelRef]);
-}
-
-/**
- * Categorize a skill/command as built-in or project-level
- */
-function categorizeSkill(
-  slashCommand: string,
-  cwd?: string,
-  plugins?: PluginInfo[]
-): 'builtin' | 'project' {
-  // Known built-in slash commands
-  if (KNOWN_BUILTIN_SLASH_COMMANDS.includes(slashCommand)) {
-    return 'builtin';
-  }
-
-  // Known built-in skills
-  if (KNOWN_BUILTIN_SKILLS.includes(slashCommand)) {
-    return 'builtin';
-  }
-
-  // Check if the skill comes from a project-level plugin
-  if (cwd && plugins && plugins.length > 0) {
-    const matchingPlugin = plugins.find(p =>
-      p.name === slashCommand ||
-      p.name.includes(slashCommand) ||
-      slashCommand.includes(p.name)
-    );
-    if (matchingPlugin && matchingPlugin.path.startsWith(cwd)) {
-      return 'project';
-    }
-  }
-
-  // If we have plugins info and this skill doesn't match any plugin, it's likely built-in
-  // If we don't have plugins info, default to built-in
-  return 'builtin';
-}
-
-/**
  * Categorize an MCP server as built-in or project-level
  */
 function categorizeMcpServer(
@@ -208,6 +142,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
   const [mcpPopoverOpen, setMcpPopoverOpen] = useState(false);
   const [skillFilter, setSkillFilter] = useState('');
   const [expandedMcp, setExpandedMcp] = useState<string | null>(null);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   const skillBtnRef = useRef<HTMLButtonElement>(null);
   const skillPopoverRef = useRef<HTMLDivElement>(null);
@@ -229,13 +164,21 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
   // Handle skill library activation → restart session to reload skills
   const handleLibraryActivated = useCallback(async () => {
     console.log('[SessionToolbar] Skill library activated, restarting session:', sessionId);
+    setRestartError(null);
     try {
       await restartSession(sessionId);
       console.log('[SessionToolbar] Session restarted successfully after library activation');
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
       console.error('[SessionToolbar] Failed to restart session after library activation:', err);
+      setRestartError(`会话重启失败：${errorMsg}`);
     }
   }, [sessionId, restartSession]);
+
+  // Clear restart error
+  const clearRestartError = useCallback(() => {
+    setRestartError(null);
+  }, []);
 
   // Popover close hooks
   usePopoverClose(skillPopoverOpen, setSkillPopoverOpen, skillBtnRef, skillPopoverRef);
@@ -600,6 +543,25 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
 
       {/* Context usage display */}
       <ContextUsage sessionId={sessionId} />
+
+      {/* Error Toast - Session restart failure */}
+      {restartError && (
+        <div className="fixed bottom-4 right-4 z-[100] max-w-sm animate-fade-in">
+          <div className="bg-bg-primary border border-accent-red/50 rounded-lg shadow-lg p-3 flex items-start gap-2">
+            <span className="text-accent-red flex-shrink-0">❌</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-text-primary break-words">{restartError}</p>
+            </div>
+            <button
+              onClick={clearRestartError}
+              className="text-text-muted hover:text-text-primary transition-colors flex-shrink-0"
+              aria-label="关闭"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSessionStore } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
+import { useFileTreeStore } from '@/stores/filetree-store';
 import { SkillLibrarySelector } from './SkillLibrarySelector';
 import { usePopoverClose } from '@/hooks/usePopoverClose';
 import type { SessionInitData, McpServerInfo, PluginInfo, TokenUsage } from '@/types';
@@ -154,6 +155,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
   const session = useSessionStore(state => state.sessions[sessionId]);
   const initData = session?.initData as SessionInitData | undefined;
   const restartSession = useSessionStore(state => state.restartSession);
+  const refreshFileTree = useFileTreeStore(state => state.refresh);
 
   // Get project for path lookup (same pattern as ContextUsage)
   const project = useProjectStore(state => {
@@ -161,11 +163,16 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
     return p;
   });
 
-  // Handle skill library activation → restart session to reload skills
+  // Handle skill library activation → restart session to reload skills + refresh file tree
   const handleLibraryActivated = useCallback(async () => {
     console.log('[SessionToolbar] Skill library activated, restarting session:', sessionId);
     setRestartError(null);
     try {
+      // Refresh file tree to show new .claude directory contents
+      await refreshFileTree();
+      console.log('[SessionToolbar] File tree refreshed');
+
+      // Restart session to reload skills
       await restartSession(sessionId);
       console.log('[SessionToolbar] Session restarted successfully after library activation');
     } catch (err) {
@@ -173,7 +180,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
       console.error('[SessionToolbar] Failed to restart session after library activation:', err);
       setRestartError(`会话重启失败：${errorMsg}`);
     }
-  }, [sessionId, restartSession]);
+  }, [sessionId, restartSession, refreshFileTree]);
 
   // Clear restart error
   const clearRestartError = useCallback(() => {

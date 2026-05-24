@@ -164,6 +164,16 @@ interface ClaudeSession {
   lastActivity: number
   /** 保存原始环境变量，用于会话关闭时恢复 */
   originalEnv?: Record<string, string | undefined>
+  /** ★ 软中断标记：表示这是用户主动中断而非错误，会话可继续使用 */
+  isSoftAbort?: boolean
+  /** ★ Provider 配置，用于中断后自动恢复 */
+  providerConfig?: {
+    apiKey: string
+    baseUrl?: string
+    model?: string
+    apiType?: 'anthropic' | 'openai'
+    envOverrides?: Record<string, string>
+  }
 }
 
 // 活跃会话映射
@@ -699,6 +709,12 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           console.log('[Claude SDK] Extracted usageData:', usageData)
 
           if (isSuccess) {
+            // ★ 检查是否是软中断后的正常结束
+            if (session.isSoftAbort) {
+              console.log(`[Claude SDK] Soft abort detected after result for ${session.id}`)
+              handleSoftAbortCleanup(session)
+              return
+            }
             mainWindow.webContents.send('claude:progress', {
               type: 'complete',
               content: session.output,
@@ -717,6 +733,13 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
     console.log(`[Claude SDK] Stream ended naturally for session: ${session.id}`)
 
+    // ★ 检查是否是软中断后的正常退出
+    if (session.isSoftAbort) {
+      console.log(`[Claude SDK] Soft abort detected after loop exit for ${session.id}`)
+      handleSoftAbortCleanup(session)
+      return
+    }
+
     // 发送 complete 事件给前端，确保 isStreaming 被重置
     const mainWindow = BrowserWindow.getAllWindows()[0]
     if (mainWindow) {
@@ -728,16 +751,77 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
   } catch (err: any) {
     console.error(`[Claude SDK] Stream error for session ${session.id}:`, err)
-    session.status = 'error'
+
+    // ★ 参考 SpectrAI：扩大 abort 错误检测范围
+    // SDK 可能抛出 APIUserAbortError 或 DOMException
+    const isAbortError = err.name === 'AbortError' ||
+      /abort/i.test(err.name || '') ||
+      err.constructor?.name?.includes?.('UserAbort') ||
+      err.constructor?.name?.includes?.('Abort') ||
+      /\baborted\b/i.test(err.message || '')
 
     const mainWindow = BrowserWindow.getAllWindows()[0]
+
+    if (isAbortError) {
+      const isSoft = session.isSoftAbort
+      session.isSoftAbort = false
+
+      if (isSoft) {
+        console.log(`[Claude SDK] Soft abort via exception for ${session.id}`)
+        handleSoftAbortCleanup(session)
+      } else {
+        // 硬中断（非用户主动），当作正常中断处理
+        session.status = 'idle'
+        if (mainWindow) {
+          mainWindow.webContents.send('claude:progress', {
+            type: 'error',
+            content: '会话已中断',
+          } as ProgressEvent)
+        }
+      }
+      return
+    }
+
+    // 非 abort 错误：真正的错误
+    session.status = 'error'
     if (mainWindow) {
-      const isAbort = err.name === 'AbortError' || /\baborted\b/i.test(err.message || '')
+      // 参考 SpectrAI：针对进程退出错误生成友好提示
+      const isProcessExit = /process exited with code/i.test(err.message)
+      let errorText = err.message || String(err)
+
+      if (isProcessExit) {
+        errorText = `Claude Code 进程异常退出: ${err.message}`
+      } else if (/ENOENT/i.test(err.message)) {
+        errorText = '启动失败：找不到 Claude Code 可执行文件。请确保已安装 @anthropic-ai/claude-code'
+      }
+
       mainWindow.webContents.send('claude:progress', {
         type: 'error',
-        content: isAbort ? '会话已中断' : (err.message || String(err)),
+        content: errorText,
       } as ProgressEvent)
     }
+  }
+}
+
+/**
+ * ★ 软中断清理处理（参考 SpectrAI）
+ * 发送友好提示，重置状态，保持会话可用
+ */
+function handleSoftAbortCleanup(session: ClaudeSession): void {
+  session.isSoftAbort = false
+  console.log(`[Claude SDK] Soft abort cleanup for ${session.id}`)
+
+  // 重建 AbortController（为下一轮准备）
+  session.abortController = new AbortController()
+  session.status = 'idle'
+
+  const mainWindow = BrowserWindow.getAllWindows()[0]
+  if (mainWindow) {
+    // 发送 complete 事件让前端切换回可输入状态
+    mainWindow.webContents.send('claude:progress', {
+      type: 'complete',
+      content: session.output,
+    } as ProgressEvent)
   }
 }
 
@@ -1039,32 +1123,32 @@ function registerClaudeHandlers(): void {
     }
   )
 
-  // ★ 中止当前轮次（参考 SpectrAI 的 abortCurrentTurn）
+  // ★ 软中断当前轮次（参考 SpectrAI 的 abortCurrentTurn）
+  // 软中断：中止当前思考，会话保持活跃，可继续发送消息
   ipcMain.handle(
     'claude:abort',
     async (_event, sessionId: string): Promise<{ success: boolean }> => {
       const session = activeSessions.get(sessionId)
       if (!session) return { success: false }
 
-      console.log('[Claude SDK] Aborting session:', sessionId)
+      console.log('[Claude SDK] Soft abort for session:', sessionId)
 
-      // 先设置 abort 标志，让 consumeSessionStream 可以检测到
-      session.abortController.abort()
-
-      // 发送 error 事件给前端，让它知道正在中断
-      const mainWindow = BrowserWindow.getAllWindows()[0]
-      if (mainWindow) {
-        mainWindow.webContents.send('claude:progress', {
-          type: 'error',
-          content: '正在中断会话...',
-        } as ProgressEvent)
+      // 检查会话状态
+      if (session.status !== 'running') {
+        console.log(`[Claude SDK] Session ${sessionId} not running (status=${session.status}), skip abort`)
+        return { success: true }
       }
 
-      // 调用 SDK 的 interrupt 方法中断当前轮次
+      // ★ 标记为软中断（会话可继续使用）
+      session.isSoftAbort = true
+
+      // 设置 abort 标志，让 consumeSessionStream 可以检测到
+      session.abortController.abort()
+
+      // 调用 SDK 的 interrupt 方法
       if (session.sdkQuery) {
         try {
           // 使用 Promise.race 添加超时保护
-          // 子 agent 可能需要更长时间才能响应中断，但我们不能无限等待
           await Promise.race([
             session.sdkQuery.interrupt(),
             new Promise<void>((_, reject) =>
@@ -1075,31 +1159,15 @@ function registerClaudeHandlers(): void {
         } catch (err) {
           console.warn('[Claude SDK] Error calling interrupt:', err)
           // interrupt 失败时，强制关闭 SDK query
-          // 这是最后的手段，会终止整个会话
           try {
             session.sdkQuery.close()
             console.log('[Claude SDK] SDK query force closed')
           } catch (closeErr) {
             console.warn('[Claude SDK] Error force closing SDK query:', closeErr)
           }
-          // 标记会话需要重建
+          // 清空 sdkQuery 引用，下次发送消息时会重新创建
           session.sdkQuery = null
-          session.status = 'error'
         }
-      }
-
-      // 重建 AbortController（为下一轮准备）
-      if (session.sdkQuery) {
-        session.abortController = new AbortController()
-        session.status = 'idle'
-      }
-
-      // 发送最终的 error 事件给前端
-      if (mainWindow) {
-        mainWindow.webContents.send('claude:progress', {
-          type: 'error',
-          content: session.sdkQuery ? '会话已中断' : '会话已终止，请重新开始',
-        } as ProgressEvent)
       }
 
       return { success: true }

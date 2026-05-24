@@ -17,6 +17,7 @@ import type {
   GitStatusSummary,
 } from '@/types'
 import type { AgentType } from '@/types/agent.types'
+import type { SkillLibrary } from '@/types/skill-library.types'
 
 /** Progress callback type for Claude Code execution (legacy) */
 export type ProgressCallback = (data: {
@@ -183,14 +184,14 @@ export interface Api {
   }
   skillLibrary: {
     /** List all skills in the library */
-    list: () => Promise<{ success: boolean; skills?: unknown[]; error?: string }>
+    list: () => Promise<{ success: boolean; skills?: SkillLibrary[]; error?: string }>
     /** Add a new skill to the library from a zip file */
     add: (params: {
       zipPath: string
       name: string
       description: string
       agentType: AgentType
-    }) => Promise<{ success: boolean; skill?: unknown; error?: string }>
+    }) => Promise<{ success: boolean; skill?: SkillLibrary; error?: string }>
     /** Update skill metadata */
     update: (params: {
       id: string

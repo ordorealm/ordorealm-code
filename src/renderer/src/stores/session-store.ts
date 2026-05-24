@@ -49,7 +49,9 @@ let lastProgressEventTime: number = 0;
 /** ★ 心跳检测定时器 */
 let heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
 /** ★ 心跳超时时间（毫秒）- 如果超过这个时间没有收到任何事件，认为连接断开 */
-const HEARTBEAT_TIMEOUT = 120000; // 2分钟
+const HEARTBEAT_TIMEOUT = 300000; // 5分钟（给长时间操作足够时间）
+/** ★ 全局超时时间（毫秒）- 操作最大允许时间 */
+const GLOBAL_TIMEOUT = 600000; // 10分钟
 
 /**
  * 设置进度事件监听器
@@ -166,7 +168,7 @@ function startHeartbeatCheck(
 
         const updatedMessages = existingSession.messages.map(m =>
           m.id === assistantMessageId
-            ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 连接超时，请检查后端服务是否正常' }
+            ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 连接超时（5分钟无响应），请检查后端服务是否正常。如需继续，可尝试重新发送消息。' }
             : m
         );
 
@@ -185,8 +187,11 @@ function startHeartbeatCheck(
       useActivityStore.getState().endThinking(sessionId);
       useActivityStore.getState().endActivity(sessionId);
       cleanupProgressListener();
+    } else {
+      // ★ 每次检查时输出日志，方便调试
+      console.log(`[SessionStore] Heartbeat check for session: ${sessionId}, time since last event: ${Math.round(timeSinceLastEvent / 1000)}s`);
     }
-  }, 30000); // 每 30 秒检查一次
+  }, 60000); // 每 60 秒检查一次（减少检查频率）
 }
 
 /**
@@ -1109,7 +1114,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             cleanupProgressListener();
           }
           resolve();
-        }, 300000);
+        }, GLOBAL_TIMEOUT);
       });
 
       console.log(`[SessionStore] Message sent and response received for session: ${sessionId}`);

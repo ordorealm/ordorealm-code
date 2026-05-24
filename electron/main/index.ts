@@ -498,6 +498,12 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
   try {
     for await (const msg of session.sdkQuery) {
+      // ★ 检查是否已被中断
+      if (session.abortController.signal.aborted) {
+        console.log(`[Claude SDK] Stream aborted for session: ${session.id}`)
+        break
+      }
+
       console.log(`[Claude SDK] Message type: ${msg.type}, subtype: ${msg.subtype}`)
 
       // 获取主窗口发送进度事件
@@ -1042,28 +1048,57 @@ function registerClaudeHandlers(): void {
 
       console.log('[Claude SDK] Aborting session:', sessionId)
 
-      // 调用 SDK 的 interrupt 方法中断当前轮次
-      if (session.sdkQuery) {
-        try {
-          await session.sdkQuery.interrupt()
-          console.log('[Claude SDK] SDK interrupt called')
-        } catch (err) {
-          console.warn('[Claude SDK] Error calling interrupt:', err)
-        }
-      }
-
+      // 先设置 abort 标志，让 consumeSessionStream 可以检测到
       session.abortController.abort()
 
-      // 重建 AbortController 和 inputStream
-      session.abortController = new AbortController()
-      session.status = 'idle'
-
-      // 发送 error 事件给前端，让它知道已中断
+      // 发送 error 事件给前端，让它知道正在中断
       const mainWindow = BrowserWindow.getAllWindows()[0]
       if (mainWindow) {
         mainWindow.webContents.send('claude:progress', {
           type: 'error',
-          content: '会话已中断',
+          content: '正在中断会话...',
+        } as ProgressEvent)
+      }
+
+      // 调用 SDK 的 interrupt 方法中断当前轮次
+      if (session.sdkQuery) {
+        try {
+          // 使用 Promise.race 添加超时保护
+          // 子 agent 可能需要更长时间才能响应中断，但我们不能无限等待
+          await Promise.race([
+            session.sdkQuery.interrupt(),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error('interrupt timeout')), 5000)
+            ),
+          ])
+          console.log('[Claude SDK] SDK interrupt called successfully')
+        } catch (err) {
+          console.warn('[Claude SDK] Error calling interrupt:', err)
+          // interrupt 失败时，强制关闭 SDK query
+          // 这是最后的手段，会终止整个会话
+          try {
+            session.sdkQuery.close()
+            console.log('[Claude SDK] SDK query force closed')
+          } catch (closeErr) {
+            console.warn('[Claude SDK] Error force closing SDK query:', closeErr)
+          }
+          // 标记会话需要重建
+          session.sdkQuery = null
+          session.status = 'error'
+        }
+      }
+
+      // 重建 AbortController（为下一轮准备）
+      if (session.sdkQuery) {
+        session.abortController = new AbortController()
+        session.status = 'idle'
+      }
+
+      // 发送最终的 error 事件给前端
+      if (mainWindow) {
+        mainWindow.webContents.send('claude:progress', {
+          type: 'error',
+          content: session.sdkQuery ? '会话已中断' : '会话已终止，请重新开始',
         } as ProgressEvent)
       }
 

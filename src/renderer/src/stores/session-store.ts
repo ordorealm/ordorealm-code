@@ -910,6 +910,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             content: `Error: ${eventContent}`,
             isStreaming: false,
           });
+          // ★ 重要：结束思考计时器和活动状态
+          useActivityStore.getState().endThinking(sessionId);
+          useActivityStore.getState().endActivity(sessionId);
+          // 清理进度监听器
+          cleanupProgressListener();
         } else if (type === 'complete') {
           // Flush any remaining buffered text before marking complete
           immediateFlushBuffer(set, sessionId);

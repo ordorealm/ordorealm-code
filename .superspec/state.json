@@ -7,10 +7,10 @@
     "updatedAt": "2026-05-24T00:00:00Z"
   },
   "progress": {
-    "currentPhase": 1,
-    "currentTask": null,
-    "phaseStatus": "in_review",
-    "updatedAt": "2026-05-24T06:50:44Z"
+    "currentPhase": 5,
+    "currentTask": "5-1",
+    "phaseStatus": "in_progress",
+    "updatedAt": "2026-05-24T07:20:00Z"
   },
   "config": {
     "review": {
@@ -36,7 +36,7 @@
     {
       "id": 1,
       "name": "类型定义与接口设计",
-      "status": "in_test",
+      "status": "completed",
       "review": {
         "count": 3,
         "status": "passed"
@@ -66,12 +66,12 @@
       ]
     },
     {
-      "id": 2,
+  "id": 2,
       "name": "主进程 IPC 实现",
-      "status": "not_started",
+      "status": "completed",
       "review": {
-        "count": 0,
-        "status": "pending"
+        "count": 3,
+        "status": "passed"
       },
       "depends_on": [
         1
@@ -80,7 +80,8 @@
         {
           "id": "2-1",
           "name": "创建 skill-library-handlers.ts",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "1-1"
           ]
@@ -88,7 +89,8 @@
         {
           "id": "2-2",
           "name": "实现技能库列表管理",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "2-1"
           ]
@@ -96,7 +98,8 @@
         {
           "id": "2-3",
           "name": "实现技能库验证",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "2-1"
           ]
@@ -104,7 +107,8 @@
         {
           "id": "2-4",
           "name": "实现技能库激活",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "2-1"
           ]
@@ -112,7 +116,8 @@
         {
           "id": "2-5",
           "name": "注册 IPC handlers",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "2-2",
             "2-3",
@@ -124,10 +129,10 @@
     {
       "id": 3,
       "name": "渲染进程基础设施",
-      "status": "not_started",
+      "status": "completed",
       "review": {
-        "count": 0,
-        "status": "pending"
+        "count": 3,
+        "status": "passed"
       },
       "depends_on": [
         1
@@ -136,7 +141,8 @@
         {
           "id": "3-1",
           "name": "创建 skill-library-store",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "1-1"
           ]
@@ -144,17 +150,20 @@
         {
           "id": "3-2",
           "name": "创建文件大小格式化工具",
-          "status": "pending"
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z"
         },
         {
           "id": "3-3",
           "name": "创建 Agent 图标组件",
-          "status": "pending"
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z"
         },
         {
           "id": "3-4",
           "name": "扩展 window.api 类型",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "1-2"
           ]
@@ -164,10 +173,10 @@
     {
       "id": 4,
       "name": "技能库管理界面（F01）",
-      "status": "not_started",
+      "status": "completed",
       "review": {
-        "count": 0,
-        "status": "pending"
+        "count": 3,
+        "status": "passed"
       },
       "depends_on": [
         2,
@@ -177,7 +186,8 @@
         {
           "id": "4-1",
           "name": "创建 SkillLibrarySettings 组件",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "2-5",
             "3-1"
@@ -186,7 +196,8 @@
         {
           "id": "4-2",
           "name": "创建 SkillLibraryCard 组件",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "4-1"
           ]
@@ -194,7 +205,8 @@
         {
           "id": "4-3",
           "name": "创建 AddSkillLibraryDialog 组件",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "4-1"
           ]
@@ -202,7 +214,8 @@
         {
           "id": "4-4",
           "name": "集成到 SettingsDialog",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:10:00Z",
           "depends_on": [
             "4-1",
             "4-2",
@@ -212,7 +225,8 @@
         {
           "id": "4-5",
           "name": "添加国际化支持",
-          "status": "pending",
+          "status": "skipped",
+          "skipReason": "项目无 i18n 基础设施，UI 已使用中文硬编码",
           "depends_on": [
             "4-4"
           ]
@@ -222,7 +236,7 @@
     {
       "id": 5,
       "name": "技能库激活界面（F02）",
-      "status": "not_started",
+      "status": "in_review",
       "review": {
         "count": 0,
         "status": "pending"
@@ -234,7 +248,8 @@
         {
           "id": "5-1",
           "name": "创建 SkillLibrarySelector 组件",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:25:00Z",
           "depends_on": [
             "4-4"
           ]
@@ -242,7 +257,8 @@
         {
           "id": "5-2",
           "name": "集成到 SessionToolbar",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:28:00Z",
           "depends_on": [
             "5-1"
           ]
@@ -250,7 +266,8 @@
         {
           "id": "5-3",
           "name": "实现会话重启联动",
-          "status": "pending",
+          "status": "completed",
+          "completedAt": "2026-05-24T07:28:00Z",
           "depends_on": [
             "5-2"
           ]

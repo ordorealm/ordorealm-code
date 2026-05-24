@@ -7,12 +7,48 @@
 import { create } from 'zustand';
 import type { SkillLibrary, AgentType } from '@/types';
 
+/** LocalStorage key for active library per project */
+const ACTIVE_LIBRARY_STORAGE_KEY = 'skill-library-active';
+
+/** Get active library ID from localStorage for a project */
+function getStoredActiveLibraryId(projectPath: string): string | null {
+  try {
+    const stored = localStorage.getItem(ACTIVE_LIBRARY_STORAGE_KEY);
+    if (stored) {
+      const map = JSON.parse(stored) as Record<string, string>;
+      return map[projectPath] || null;
+    }
+  } catch (e) {
+    console.warn('[SkillLibraryStore] Failed to read stored active library:', e);
+  }
+  return null;
+}
+
+/** Set active library ID in localStorage for a project */
+function setStoredActiveLibraryId(projectPath: string, libraryId: string | null): void {
+  try {
+    const stored = localStorage.getItem(ACTIVE_LIBRARY_STORAGE_KEY);
+    const map: Record<string, string> = stored ? JSON.parse(stored) : {};
+    if (libraryId) {
+      map[projectPath] = libraryId;
+    } else {
+      delete map[projectPath];
+    }
+    localStorage.setItem(ACTIVE_LIBRARY_STORAGE_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.warn('[SkillLibraryStore] Failed to store active library:', e);
+  }
+}
+
 interface SkillLibraryState {
   /** All skill libraries */
   libraries: SkillLibrary[];
 
-  /** Currently active library ID (per project, stored in project config) */
+  /** Currently active library ID (per project, persisted to localStorage) */
   activeLibraryId: string | null;
+
+  /** Current project path (for persistence) */
+  currentProjectPath: string | null;
 
   /** Loading state */
   isLoading: boolean;
@@ -23,6 +59,9 @@ interface SkillLibraryState {
   // Actions
   /** Load all libraries from storage */
   loadLibraries: () => Promise<void>;
+
+  /** Set current project and restore its active library */
+  setProject: (projectPath: string | null) => void;
 
   /** Add a new library from zip file */
   addLibrary: (zipPath: string, name: string, description: string, agentType: AgentType) => Promise<SkillLibrary | null>;
@@ -50,6 +89,7 @@ let initPromise: Promise<void> | null = null;
 export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
   libraries: [],
   activeLibraryId: null,
+  currentProjectPath: null,
   isLoading: false,
   error: null,
 
@@ -83,6 +123,25 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  },
+
+  /**
+   * Set current project and restore its active library from localStorage
+   */
+  setProject: (projectPath: string | null) => {
+    const { currentProjectPath } = get();
+    if (projectPath === currentProjectPath) return;
+
+    // Save current active library before switching
+    if (currentProjectPath) {
+      const { activeLibraryId } = get();
+      setStoredActiveLibraryId(currentProjectPath, activeLibraryId);
+    }
+
+    // Restore active library for new project
+    const storedActiveId = projectPath ? getStoredActiveLibraryId(projectPath) : null;
+    set({ currentProjectPath: projectPath, activeLibraryId: storedActiveId });
+    console.log(`[SkillLibraryStore] Set project: ${projectPath}, active library: ${storedActiveId}`);
   },
 
   /**
@@ -222,7 +281,8 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
     try {
       if (libraryId === null) {
         // Deactivate current library
-        set({ activeLibraryId: null, isLoading: false });
+        setStoredActiveLibraryId(projectPath, null);
+        set({ activeLibraryId: null, currentProjectPath: projectPath, isLoading: false });
         return true;
       }
 
@@ -232,10 +292,12 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
       });
 
       if (result.success) {
-        set({ activeLibraryId: libraryId, isLoading: false });
+        // Persist to localStorage
+        setStoredActiveLibraryId(projectPath, libraryId);
+        set({ activeLibraryId: libraryId, currentProjectPath: projectPath, isLoading: false });
         const { libraries } = get();
         const library = libraries.find(lib => lib.id === libraryId);
-        console.log(`[SkillLibraryStore] Activated library: ${library?.name || libraryId}`);
+        console.log(`[SkillLibraryStore] Activated library: ${library?.name || libraryId} for project: ${projectPath}`);
         return true;
       } else {
         set({

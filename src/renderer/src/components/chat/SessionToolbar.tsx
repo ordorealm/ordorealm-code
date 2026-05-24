@@ -12,6 +12,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSessionStore } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useFileTreeStore } from '@/stores/filetree-store';
+import { useSkillLibraryStore } from '@/stores/skill-library-store';
 import { SkillLibrarySelector } from './SkillLibrarySelector';
 import { usePopoverClose } from '@/hooks/usePopoverClose';
 import type { SessionInitData, McpServerInfo, PluginInfo, TokenUsage } from '@/types';
@@ -156,12 +157,20 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
   const initData = session?.initData as SessionInitData | undefined;
   const restartSession = useSessionStore(state => state.restartSession);
   const refreshFileTree = useFileTreeStore(state => state.refresh);
+  const setSkillLibraryProject = useSkillLibraryStore(state => state.setProject);
 
   // Get project for path lookup (same pattern as ContextUsage)
   const project = useProjectStore(state => {
     const p = state.projects.find(p => p.id === session?.projectId);
     return p;
   });
+
+  // Set current project in skill library store to restore active library
+  useEffect(() => {
+    if (project?.path) {
+      setSkillLibraryProject(project.path);
+    }
+  }, [project?.path, setSkillLibraryProject]);
 
   // Handle skill library activation → restart session to reload skills + refresh file tree
   const handleLibraryActivated = useCallback(async () => {

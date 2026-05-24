@@ -1,0 +1,100 @@
+# Electron Builder Configuration
+# DevFlow IDE
+
+appId: com.devflow.ide
+productName: DevFlow IDE
+copyright: Copyright © 2024 DevFlow
+
+# Directories
+directories:
+  output: release
+  buildResources: build
+
+# Files to include
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.{ts,tsx,map}"
+  - "!src/**"
+  - "!tests/**"
+  - "!*.md"
+
+# Extra resources
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - "**/*"
+  # Bundled runtimes for offline installation
+  - from: electron/runtime
+    to: runtime
+    filter:
+      - "**/*"
+      - "!**/.gitkeep"
+      - "!**/README.md"
+      - "!**/.gitignore"
+
+# macOS configuration
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+# Windows configuration
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+# Linux configuration
+linux:
+  icon: build/icons
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  maintainer: DevFlow Team
+
+# NSIS installer configuration (Windows)
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: true
+
+# DMG configuration (macOS)
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# Auto-update configuration
+publish:
+  provider: github
+  owner: devflow-ide
+  repo: devflow-ide
+  releaseType: release
+
+# Before build hooks
+beforeBuild: null
+
+# After build hooks
+afterSign: null

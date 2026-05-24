@@ -172,6 +172,68 @@ const activeSessions = new Map<string, ClaudeSession>()
 const sessionCreationLocks = new Map<string, Promise<ClaudeSession>>()
 
 /**
+ * 解析 Claude Code 原生二进制路径
+ * 在打包模式下，SDK 内部的 require.resolve 可能无法正确找到 ASAR unpacked 中的原生二进制
+ * 因此需要手动构建路径并传给 SDK
+ */
+function resolveClaudeBinaryPath(): string | null {
+  try {
+    const platform = process.platform
+    const arch = process.arch
+
+    // 平台-架构映射
+    const platformArchMap: Record<string, string> = {
+      darwin_x64: 'darwin-x64',
+      darwin_arm64: 'darwin-arm64',
+      win32_x64: 'win32-x64',
+      win32_arm64: 'win32-arm64',
+      linux_x64: 'linux-x64',
+      linux_arm64: 'linux-arm64',
+    }
+
+    const platformSuffix = platformArchMap[`${platform}_${arch}`]
+    if (!platformSuffix) {
+      console.warn(`[Claude SDK] Unsupported platform: ${platform}-${arch}`)
+      return null
+    }
+
+    // 尝试通过 require.resolve 解析（开发模式通常能成功）
+    try {
+      const binaryPackage = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`
+      const binaryPath = require.resolve(`${binaryPackage}/claude`)
+      console.log(`[Claude SDK] Resolved binary via require.resolve: ${binaryPath}`)
+      return binaryPath
+    } catch {
+      // require.resolve 失败，尝试手动构建路径（打包模式）
+      console.log('[Claude SDK] require.resolve failed, trying manual path resolution...')
+    }
+
+    // 手动构建路径：在打包应用中，原生模块位于 app.asar.unpacked
+    if (!isDev) {
+      // app.getAppPath() 在打包模式下返回 app.asar 的路径
+      const appPath = app.getAppPath()
+      // 将 app.asar 替换为 app.asar.unpacked
+      const unpackedPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked')
+      const binaryPackage = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`
+      const binaryPath = join(unpackedPath, 'node_modules', binaryPackage, 'claude')
+
+      const fsSync = require('fs')
+      if (fsSync.existsSync(binaryPath)) {
+        console.log(`[Claude SDK] Resolved binary via manual path: ${binaryPath}`)
+        return binaryPath
+      }
+
+      console.warn(`[Claude SDK] Binary not found at: ${binaryPath}`)
+    }
+
+    return null
+  } catch (err) {
+    console.error('[Claude SDK] Failed to resolve binary path:', err)
+    return null
+  }
+}
+
+/**
  * 延迟加载 SDK 模块
  */
 async function loadSdk(): Promise<any> {
@@ -302,6 +364,14 @@ async function getOrCreateSession(
         skills: 'all',
         // 直接配置 MCP 服务器（从全局配置读取）
         mcpServers: globalMcpServers,
+      }
+
+      // ★ 在打包模式下显式指定原生二进制路径
+      // SDK 内部的 require.resolve 可能在 ASAR 环境下无法正确解析
+      const binaryPath = resolveClaudeBinaryPath()
+      if (binaryPath) {
+        sdkOptions.pathToClaudeCodeExecutable = binaryPath
+        console.log('[Claude SDK] Using explicit binary path:', binaryPath)
       }
 
       // Windows: 设置 Git Bash 路径

@@ -1,0 +1,347 @@
+@import "tailwindcss";
+
+/* Custom Theme - Semantic color tokens (参考 SpectrAI) */
+@theme {
+  /* Background colors */
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-input: var(--bg-input);
+
+  /* Text colors */
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  /* Accent colors */
+  --color-accent-blue: var(--accent-blue);
+  --color-accent-green: var(--accent-green);
+  --color-accent-yellow: var(--accent-yellow);
+  --color-accent-red: var(--accent-red);
+  --color-accent-purple: var(--accent-purple);
+  --color-accent-indigo: var(--accent-indigo);
+
+  /* Border color */
+  --color-border: var(--color-border-value);
+
+  /* Brand colors */
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+
+  /* Font Families */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --font-mono: 'SF Mono', 'Menlo', monospace;
+}
+
+/* ===== Light Theme (Default) ===== */
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --bg-tertiary: #f1f1f1;
+  --bg-hover: #e9ecef;
+  --bg-input: #ffffff;
+
+  --text-primary: #1a1a2e;
+  --text-secondary: #666666;
+  --text-muted: #999999;
+
+  --accent-blue: #3b82f6;
+  --accent-green: #22c55e;
+  --accent-yellow: #eab308;
+  --accent-red: #ef4444;
+  --accent-purple: #a855f7;
+  --accent-indigo: #6366f1;
+
+  --color-border-value: #e9ecef;
+}
+
+/* ===== Dark Theme (GitHub Dark) ===== */
+.dark {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-hover: #30363d;
+  --bg-input: #161b22;
+
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #484f58;
+
+  --accent-blue: #58a6ff;
+  --accent-green: #3fb950;
+  --accent-yellow: #d29922;
+  --accent-red: #f85149;
+  --accent-purple: #bc8cff;
+  --accent-indigo: #818cf8;
+
+  --color-border-value: #30363d;
+}
+
+/* Base Layer Styles */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  #root {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Scrollbar styles */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+    border-radius: 5px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 5px;
+    border: 2px solid var(--bg-secondary);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
+
+  /* Smooth theme transitions */
+  html, body, div, button, input, textarea, select, span, p, h1, h2, h3, h4, h5, h6 {
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  }
+}
+
+/* Custom Utility Classes */
+@layer components {
+  .btn-primary {
+    @apply px-6 py-3 text-base font-semibold border-none rounded-lg cursor-pointer transition-colors duration-200;
+    background-color: var(--color-primary);
+    color: white;
+  }
+
+  .btn-primary:hover {
+    background-color: var(--color-primary-hover);
+  }
+
+  .card {
+    @apply p-8 rounded-xl;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--color-border-value);
+  }
+
+  /* Drag region for macOS hiddenInset title bar */
+  .drag-region {
+    -webkit-app-region: drag;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* No-drag region for interactive elements in drag areas */
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+/* ===== Git Diff Highlight Styles ===== */
+
+/* Added lines - green background */
+.diff-added-line {
+  background-color: rgba(34, 197, 94, 0.15) !important;
+}
+
+.dark .diff-added-line {
+  background-color: rgba(63, 185, 80, 0.15) !important;
+}
+
+/* Deleted lines - red background */
+.diff-deleted-line {
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+.dark .diff-deleted-line {
+  background-color: rgba(248, 81, 73, 0.15) !important;
+}
+
+/* Modified lines - yellow background */
+.diff-modified-line {
+  background-color: rgba(234, 179, 8, 0.15) !important;
+}
+
+.dark .diff-modified-line {
+  background-color: rgba(210, 153, 34, 0.15) !important;
+}
+
+/* Glyph margin indicators (left side of line numbers) */
+.diff-added-glyph {
+  background-color: #22c55e !important;
+  width: 6px !important;
+  margin-left: 2px !important;
+  border-radius: 0 2px 2px 0 !important;
+}
+
+.dark .diff-added-glyph {
+  background-color: #3fb950 !important;
+}
+
+.diff-deleted-glyph {
+  background-color: #ef4444 !important;
+  width: 6px !important;
+  margin-left: 2px !important;
+  border-radius: 0 2px 2px 0 !important;
+}
+
+.dark .diff-deleted-glyph {
+  background-color: #f85149 !important;
+}
+
+.diff-modified-glyph {
+  background-color: #eab308 !important;
+  width: 6px !important;
+  margin-left: 2px !important;
+  border-radius: 0 2px 2px 0 !important;
+}
+
+.dark .diff-modified-glyph {
+  background-color: #d29922 !important;
+}
+
+/* Deleted lines summary - shown at top of file when lines were deleted */
+.diff-deleted-summary {
+  /* No background, just the glyph margin indicator */
+}
+
+/* Replaced lines - yellow/orange marker for delete+add */
+.diff-replaced-glyph {
+  background: linear-gradient(to bottom, #ef4444 50%, #22c55e 50%) !important;
+  width: 6px !important;
+  margin-left: 2px !important;
+  border-radius: 0 2px 2px 0 !important;
+}
+
+.dark .diff-replaced-glyph {
+  background: linear-gradient(to bottom, #f85149 50%, #3fb950 50%) !important;
+}
+
+/* Clickable glyph indicator - shows cursor pointer on hover */
+.diff-glyph-clickable {
+  cursor: pointer !important;
+}
+
+.diff-glyph-clickable:hover {
+  opacity: 0.8 !important;
+  box-shadow: 0 0 4px currentColor !important;
+}
+
+/* Hover tooltip styling for diff decorations */
+.monaco-hover .hover-row.markdown-hover {
+  background-color: var(--bg-secondary);
+}
+
+/* Monaco hover content styling */
+.monaco-hover {
+  border-radius: 8px !important;
+  border: 1px solid var(--color-border-value) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+  max-height: 300px !important;
+  max-width: 500px !important;
+}
+
+.monaco-hover .hover-contents {
+  max-height: 280px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+.monaco-hover .hover-contents::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+.monaco-hover .hover-contents::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.monaco-hover .hover-contents::-webkit-scrollbar-thumb {
+  background: var(--bg-hover) !important;
+  border-radius: 3px !important;
+}
+
+.monaco-hover .hover-contents::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted) !important;
+}
+
+.monaco-hover .markdown-hover {
+  padding: 12px 16px !important;
+}
+
+.monaco-hover h3 {
+  margin: 0 0 10px 0 !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+}
+
+.monaco-hover p {
+  margin: 6px 0 !important;
+}
+
+.monaco-hover ul {
+  margin: 6px 0 !important;
+  padding-left: 20px !important;
+  list-style-type: disc !important;
+}
+
+.monaco-hover li {
+  margin: 4px 0 !important;
+  line-height: 1.5 !important;
+}
+
+.monaco-hover code {
+  background-color: var(--bg-tertiary) !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  font-size: 12px !important;
+  font-family: var(--font-mono) !important;
+  color: var(--accent-red) !important;
+}
+
+.monaco-hover pre {
+  background-color: var(--bg-tertiary) !important;
+  padding: 10px 14px !important;
+  border-radius: 6px !important;
+  margin: 10px 0 !important;
+  overflow-x: auto !important;
+  border: 1px solid var(--color-border-value) !important;
+}
+
+.monaco-hover pre code {
+  background-color: transparent !important;
+  padding: 0 !important;
+  color: var(--text-primary) !important;
+}
+
+.monaco-hover em {
+  color: var(--text-muted) !important;
+  font-style: italic !important;
+}

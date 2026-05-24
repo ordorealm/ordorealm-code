@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowSyntheticDefaultImports": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/renderer/src/*"],
+      "@renderer/*": ["src/renderer/src/*"],
+      "@components/*": ["src/renderer/src/components/*"],
+      "@stores/*": ["src/renderer/src/stores/*"],
+      "@services/*": ["src/renderer/src/services/*"],
+      "@utils/*": ["src/renderer/src/utils/*"],
+      "@types/*": ["src/renderer/src/types/*"],
+      "@hooks/*": ["src/renderer/src/hooks/*"],
+      "@constants/*": ["src/renderer/src/constants/*"],
+      "@shared/*": ["src/shared/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ]
+}

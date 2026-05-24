@@ -1,0 +1,11 @@
+# Ignore downloaded runtime binaries
+node/win-x64/*
+node/darwin-x64/*
+node/darwin-arm64/*
+git/win-x64/*
+
+# But keep .gitkeep files
+!node/win-x64/.gitkeep
+!node/darwin-x64/.gitkeep
+!node/darwin-arm64/.gitkeep
+!git/win-x64/.gitkeep

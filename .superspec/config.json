@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "generatedAt": "2026-05-24T00:00:00Z",
+  "generatedAt": "2026-05-24T05:41:37Z",
   "project": {
     "type": "desktop",
     "name": "ordorealm-code",
@@ -11,7 +11,7 @@
   },
   "frontend": {
     "framework": "electron",
-    "startCommand": "npm run dev",
+    "startCommand": "npm start",
     "buildCommand": "npm run build",
     "testCommand": "npm run test"
   },

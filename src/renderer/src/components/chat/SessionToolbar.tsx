@@ -41,10 +41,10 @@ interface SourceGroup {
   order: number;
 }
 
-/** Skill source group definitions */
+/** Skill source group definitions - project skills first */
 const SKILL_SOURCE_GROUPS: SourceGroup[] = [
-  { key: 'builtin', label: '内置技能', dotColor: 'bg-text-muted', order: 1 },
-  { key: 'project', label: '项目技能', dotColor: 'bg-accent-purple', order: 2 },
+  { key: 'project', label: '项目技能', dotColor: 'bg-accent-purple', order: 1 },
+  { key: 'builtin', label: '内置技能', dotColor: 'bg-text-muted', order: 2 },
 ];
 
 /** MCP source group definitions */

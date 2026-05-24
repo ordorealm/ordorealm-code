@@ -102,11 +102,18 @@ async function ensureSkillLibrariesDir(): Promise<void> {
  * Returns the entry path prefix if files are nested in a subdirectory
  */
 function findRootDirectory(entries: AdmZip.IZipEntry[]): string | null {
-  // Check if any valid main file exists at root level
+  // Check if any valid main file exists at root level (no directory prefix)
   for (const entry of entries) {
-    const name = path.basename(entry.entryName)
-    if (VALID_MAIN_FILES.includes(name) && !entry.isDirectory) {
-      return null // Files are at root level
+    // Skip directories and macOS metadata
+    if (entry.isDirectory) continue
+    if (entry.entryName.startsWith('__MACOSX/')) continue
+
+    // Check if file is at root level (no '/' in path)
+    if (!entry.entryName.includes('/')) {
+      const name = entry.entryName
+      if (VALID_MAIN_FILES.includes(name)) {
+        return null // Files are at root level
+      }
     }
   }
 

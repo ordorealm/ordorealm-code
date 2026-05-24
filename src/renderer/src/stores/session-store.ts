@@ -882,6 +882,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             // ★ All other tools (including Write, Edit, Bash) - create tool_use message
             // Note: We use bypassPermissions in SDK, so no permission popup needed
             // The tool will execute automatically, just show it in the tool list
+
+            // ★ 重置心跳时间：工具执行可能耗时，需要更多等待时间
+            lastProgressEventTime = Date.now();
+            console.log('[SessionStore] Tool use detected, resetting heartbeat timer for:', toolName);
+
             const activityDetail = getActivityDetail(toolName, toolInput);
             useActivityStore.getState().startActivity(sessionId, {
               type: 'tool_use',
@@ -937,6 +942,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // ★ SpectrAI Architecture: Create independent ToolResultMessage
           const toolUseId = progressEvent.toolUseId;
           const isError = progressEvent.isError || false;
+
+          // ★ 重置心跳时间：工具执行完成，继续等待后续响应
+          lastProgressEventTime = Date.now();
+          console.log('[SessionStore] Tool result received, resetting heartbeat timer:', { toolUseId, isError });
 
           console.log('[SessionStore] Tool result received:', { toolUseId, isError, content: eventContent?.substring(0, 50) });
 

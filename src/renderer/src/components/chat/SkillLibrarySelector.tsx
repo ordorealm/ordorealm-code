@@ -8,7 +8,7 @@
  * @module components/chat/SkillLibrarySelector
  */
 
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
 import { AgentIcon, getAgentConfig } from '@/components/common/AgentIcon';
 import { usePopoverClose } from '@/hooks/usePopoverClose';
@@ -58,7 +58,15 @@ export function SkillLibrarySelector({
   const libraries = useSkillLibraryStore(state => state.libraries);
   const activeLibraryId = useSkillLibraryStore(state => state.activeLibraryId);
   const activateLibrary = useSkillLibraryStore(state => state.activateLibrary);
+  const loadLibraries = useSkillLibraryStore(state => state.loadLibraries);
   const isLoading = useSkillLibraryStore(state => state.isLoading);
+
+  // Load libraries on mount if not already loaded
+  useEffect(() => {
+    if (libraries.length === 0) {
+      loadLibraries();
+    }
+  }, [libraries.length, loadLibraries]);
 
   // Popover close hook
   usePopoverClose(popoverOpen, setPopoverOpen, btnRef, popoverRef);

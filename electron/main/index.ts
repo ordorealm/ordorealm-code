@@ -197,35 +197,52 @@ function resolveClaudeBinaryPath(): string | null {
       return null
     }
 
+    const binaryPackage = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`
+    const binaryName = platform === 'win32' ? 'claude.exe' : 'claude'
+
     // 尝试通过 require.resolve 解析（开发模式通常能成功）
-    try {
-      const binaryPackage = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`
-      const binaryPath = require.resolve(`${binaryPackage}/claude`)
-      console.log(`[Claude SDK] Resolved binary via require.resolve: ${binaryPath}`)
-      return binaryPath
-    } catch {
-      // require.resolve 失败，尝试手动构建路径（打包模式）
-      console.log('[Claude SDK] require.resolve failed, trying manual path resolution...')
-    }
-
-    // 手动构建路径：在打包应用中，原生模块位于 app.asar.unpacked
-    if (!isDev) {
-      // app.getAppPath() 在打包模式下返回 app.asar 的路径
-      const appPath = app.getAppPath()
-      // 将 app.asar 替换为 app.asar.unpacked
-      const unpackedPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked')
-      const binaryPackage = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`
-      const binaryPath = join(unpackedPath, 'node_modules', binaryPackage, 'claude')
-
-      const fsSync = require('fs')
-      if (fsSync.existsSync(binaryPath)) {
-        console.log(`[Claude SDK] Resolved binary via manual path: ${binaryPath}`)
+    if (isDev) {
+      try {
+        const binaryPath = require.resolve(`${binaryPackage}/${binaryName}`)
+        console.log(`[Claude SDK] Dev mode - resolved binary: ${binaryPath}`)
         return binaryPath
+      } catch (err) {
+        console.warn('[Claude SDK] Dev mode - require.resolve failed:', err)
       }
-
-      console.warn(`[Claude SDK] Binary not found at: ${binaryPath}`)
     }
 
+    // 打包模式：直接使用 process.resourcesPath 构建 unpacked 路径
+    // 这比 app.getAppPath() 更可靠
+    const resourcesPath = process.resourcesPath
+    const unpackedPath = join(resourcesPath, 'app.asar.unpacked')
+    const binaryPath = join(unpackedPath, 'node_modules', binaryPackage, binaryName)
+
+    console.log('[Claude SDK] Packaged mode:')
+    console.log('  resourcesPath:', resourcesPath)
+    console.log('  unpackedPath:', unpackedPath)
+    console.log('  binaryPath:', binaryPath)
+
+    const fsSync = require('fs')
+    if (fsSync.existsSync(binaryPath)) {
+      console.log(`[Claude SDK] Found binary at: ${binaryPath}`)
+      return binaryPath
+    }
+
+    // 备选方案：尝试使用 app.getAppPath()
+    const appPath = app.getAppPath()
+    const altUnpackedPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked')
+    const altBinaryPath = join(altUnpackedPath, 'node_modules', binaryPackage, binaryName)
+
+    console.log('[Claude SDK] Fallback:')
+    console.log('  appPath:', appPath)
+    console.log('  altBinaryPath:', altBinaryPath)
+
+    if (fsSync.existsSync(altBinaryPath)) {
+      console.log(`[Claude SDK] Found binary at fallback: ${altBinaryPath}`)
+      return altBinaryPath
+    }
+
+    console.warn(`[Claude SDK] Binary not found at any location`)
     return null
   } catch (err) {
     console.error('[Claude SDK] Failed to resolve binary path:', err)

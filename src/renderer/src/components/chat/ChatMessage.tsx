@@ -154,13 +154,21 @@ function renderMarkdown(content: string): string {
   });
 
   // Unordered lists (- item) - only at line start, not inside code
-  html = html.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+  // Wrap consecutive list items in <ul> tags
+  html = html.replace(/^- (.+)$/gm, '<li class="ml-4" style="list-style-type: disc">$1</li>');
 
   // Ordered lists (1. item) - only at line start
-  html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal">$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4" style="list-style-type: decimal">$1</li>');
 
-  // Line breaks
-  html = html.replace(/\n/g, '<br />');
+  // Wrap consecutive <li> elements in <ul> tags
+  // This handles both ordered and unordered lists
+  html = html.replace(/(<li[^>]*>.*?<\/li>\n?)+/g, (match) => {
+    return `<ul class="list-outside">${match}</ul>`;
+  });
+
+  // Note: Don't convert \n to <br /> here because:
+  // 1. whitespace-pre-wrap CSS class will preserve line breaks
+  // 2. This prevents double line breaks from occurring
 
   // Step 4: Restore code blocks (in reverse order of specificity)
   inlineCodePlaceholders.forEach(({ placeholder, html: codeHtml }) => {
@@ -387,8 +395,10 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
         </div>
 
         {/* Content */}
+        {/* whitespace-pre-wrap preserves line breaks, prose class may override so we use !important equivalent via inline style if needed */}
         <div
-          className="text-sm text-text-primary leading-relaxed prose prose-sm max-w-none"
+          className="text-sm text-text-primary leading-relaxed max-w-none"
+          style={{ whiteSpace: 'pre-wrap' }}
           dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
         />
 

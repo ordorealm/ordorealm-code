@@ -12,6 +12,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSessionStore } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
 import { SkillLibrarySelector } from './SkillLibrarySelector';
+import { usePopoverClose } from '@/hooks/usePopoverClose';
 import type { SessionInitData, McpServerInfo, PluginInfo, TokenUsage } from '@/types';
 
 /**

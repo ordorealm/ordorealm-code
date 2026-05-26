@@ -130,3 +130,26 @@ export {
   REMOTE_CONTROL_IPC_CHANNELS,
   REMOTE_CONTROL_CONSTRAINTS
 } from './types/remote-control'
+
+// IPC Channel definitions for Remote Control
+export {
+  IPC_CHANNELS as REMOTE_CONTROL_IPC_CHANNEL_NAMES,
+  type IpcChannelName,
+  type GetStatusRequest,
+  type GetStatusResponse,
+  type ConnectRequest,
+  type ConnectResponse,
+  type DisconnectRequest,
+  type DisconnectResponse,
+  type ListChannelsRequest,
+  type ListChannelsResponse,
+  type UpdateSettingsRequest,
+  type UpdateSettingsResponse,
+  type IpcHandler,
+  type GetStatusHandler,
+  type ConnectHandler,
+  type DisconnectHandler,
+  type ListChannelsHandler,
+  type UpdateSettingsHandler,
+  type IpcChannelMap,
+} from './ipc/remote-control-channels'

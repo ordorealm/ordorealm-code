@@ -116,7 +116,7 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
   const [isConnecting, setIsConnecting] = useState(false);
   const [isGeneratingQR, setIsGeneratingQR] = useState(false);
 
-  const { connectChannel, setScanCountdown } = useRemoteControlStore();
+  const { connectChannel } = useRemoteControlStore();
 
   // Handle QR code generation
   const handleConnect = useCallback(async () => {
@@ -174,15 +174,11 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
     if (!isOpen || !qrCode || countdown <= 0) return;
 
     const timer = setInterval(() => {
-      setCountdown((prev) => {
-        const next = prev - 1;
-        setScanCountdown(next);
-        return next;
-      });
+      setCountdown((prev) => prev - 1);
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isOpen, qrCode, countdown, setScanCountdown]);
+  }, [isOpen, qrCode, countdown]);
 
   // Start connection when dialog opens
   useEffect(() => {
@@ -258,12 +254,22 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
               </div>
             </div>
           ) : error ? (
-            <div className="w-48 h-48 flex flex-col items-center justify-center bg-bg-secondary rounded-lg border border-border">
-              <span className="text-red-500 mb-2">❌</span>
-              <p className="text-sm text-text-secondary text-center px-4">{error}</p>
+            <div className="w-48 h-48 flex flex-col items-center justify-center bg-bg-secondary rounded-lg border border-border p-4">
+              <span className="text-2xl mb-2">⚠️</span>
+              <p className="text-xs text-text-secondary text-center mb-3">{error}</p>
+              {error.includes('WeClaw') && (
+                <a
+                  href="https://github.com/fastclaw-ai/weclaw"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-accent-indigo hover:underline"
+                >
+                  查看 WeClaw 安装指南 →
+                </a>
+              )}
               <button
                 onClick={handleConnect}
-                className="mt-3 text-xs text-accent-indigo hover:text-accent-indigo/80"
+                className="mt-3 text-xs text-text-secondary hover:text-text-primary"
               >
                 重试
               </button>

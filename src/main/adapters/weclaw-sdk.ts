@@ -27,6 +27,8 @@ export interface WeClawConfig {
   endpoint?: string
   /** Enable debug logging */
   debug?: boolean
+  /** WeClaw HTTP API address (default: 127.0.0.1:18011) */
+  apiAddr?: string
 }
 
 /**
@@ -129,6 +131,23 @@ const DEFAULT_TIMEOUTS = {
 } as const
 
 /**
+ * WeClaw HTTP API default address
+ */
+const WECLAW_API_DEFAULT_ADDR = '127.0.0.1:18011'
+
+/**
+ * WeClaw service status response
+ */
+interface WeClawServiceStatus {
+  /** Whether the service is running */
+  running: boolean
+  /** Whether logged in to WeChat */
+  loggedIn: boolean
+  /** User ID if logged in */
+  userId?: string
+}
+
+/**
  * SDK version
  */
 const SDK_VERSION = '1.0.0-local'
@@ -226,28 +245,82 @@ export class WeClawSDKImpl implements WeClawSDK {
   }
 
   /**
+   * Check WeClaw service status via HTTP API
+   * @returns Service status information
+   */
+  async checkServiceStatus(): Promise<WeClawServiceStatus> {
+    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
+    try {
+      const response = await fetch(`http://${apiAddr}/api/status`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000), // 5 second timeout
+      })
+      if (response.ok) {
+        const data = await response.json()
+        return {
+          running: true,
+          loggedIn: data.logged_in ?? false,
+          userId: data.user_id,
+        }
+      }
+    } catch (error) {
+      this.logger.debugLog('WeClaw service not running:', error)
+    }
+    return { running: false, loggedIn: false }
+  }
+
+  /**
    * Generate a QR code for WeChat scanning
    *
-   * The QR code contains a session ID that uniquely identifies this
-   * connection attempt. The user scans this QR code with their WeChat
-   * app to establish the connection.
+   * This method checks if the WeClaw service is running and logged in.
+   * WeClaw runs as an independent service and displays its own QR code
+   * for WeChat login. Our IDE interacts with WeClaw via HTTP API.
    *
-   * @returns Promise resolving to QR code data (session ID)
-   * @throws WeClawError if SDK not initialized
+   * @returns Promise resolving to session ID if connected
+   * @throws WeClawError if service not running or not logged in
    */
   async getQRCode(): Promise<string> {
-    this.logger.info('Generating QR code...')
+    this.logger.info('Checking WeClaw service status...')
 
-    // Generate unique session ID
+    const status = await this.checkServiceStatus()
+
+    if (!status.running) {
+      throw createError(
+        'not_connected',
+        'WeClaw 服务未运行。请先安装并启动 WeClaw：\n' +
+          '1. 运行: curl -sSL https://raw.githubusercontent.com/fastclaw-ai/weclaw/main/install.sh | sh\n' +
+          '2. 运行: weclaw start\n' +
+          '3. 使用微信扫描 WeClaw 显示的二维码登录'
+      )
+    }
+
+    if (!status.loggedIn) {
+      throw createError(
+        'not_connected',
+        'WeClaw 服务已运行但未登录微信。请在 WeClaw 终端中使用微信扫描二维码登录。'
+      )
+    }
+
+    // Service is running and logged in, create session
     this.sessionId = generateSessionId()
     this.status.sessionId = this.sessionId
 
-    // In a real implementation, this would call the WeClaw API
-    // to generate a proper QR code image. For now, we return
-    // the session ID which can be used to construct a QR code.
+    // Set connected status with user info
+    this.status = {
+      connected: true,
+      connectedAt: Date.now(),
+      user: {
+        userId: status.userId || `user_${Date.now().toString(36)}`,
+        nickname: 'WeChat User',
+        token: `token_${Math.random().toString(36).substring(2, 15)}`,
+        connectedAt: Date.now(),
+      },
+      sessionId: this.sessionId,
+    }
 
-    this.logger.info(`QR code generated: ${this.sessionId}`)
+    this.logger.info(`WeClaw service connected, session: ${this.sessionId}`)
     this.eventEmitter.emit('qrcode', this.sessionId)
+    this.eventEmitter.emit('connected', this.status.user)
 
     return this.sessionId
   }

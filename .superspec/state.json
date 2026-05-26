@@ -154,14 +154,16 @@
         { "id": "T6-03", "name": "E2E 测试", "status": "completed" }
       ],
       "review": {
-        "count": 3,
+        "count": 5,
         "minCount": 3,
         "maxCount": 5,
         "status": "passed",
         "history": [
           { "round": 1, "result": "passed", "timestamp": "2026-05-26T23:45:00+08:00" },
           { "round": 2, "result": "passed", "timestamp": "2026-05-26T23:50:00+08:00" },
-          { "round": 3, "result": "passed", "timestamp": "2026-05-26T23:55:00+08:00" }
+          { "round": 3, "result": "passed", "timestamp": "2026-05-26T23:55:00+08:00" },
+          { "round": 4, "result": "passed", "timestamp": "2026-05-27T06:38:00+08:00", "note": "调试修复审查" },
+          { "round": 5, "result": "passed", "timestamp": "2026-05-27T08:30:00+08:00", "note": "二维码修复审查" }
         ]
       }
     }

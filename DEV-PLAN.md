@@ -1,21 +1,14 @@
-# Development Plan — devflow-ide 专家技能库管理功能
-
-> 开发计划
-> 项目：devflow-ide 专家技能库管理功能
-> 创建日期：2026-05-24
-> 版本：1.0.0
-
----
+# Development Plan — devflow-ide 远程控制功能
 
 ## 项目信息
 
 | 属性 | 值 |
 |------|-----|
-| 项目名称 | devflow-ide 专家技能库管理功能 |
-| 技术栈 | Electron + React + TypeScript + Zustand |
-| 总 Phase 数 | 5 |
-| 总 Task 数 | 20 |
-| 预计工时 | ~30 小时 |
+| 项目名称 | devflow-ide 远程控制（F03） |
+| 技术栈 | Electron + React 18 + TypeScript + Zustand |
+| 总 Phase 数 | 6 |
+| 总 Task 数 | 24 |
+| 创建日期 | 2026-05-26 |
 
 ---
 
@@ -23,39 +16,12 @@
 
 | Phase | 名称 | Task 数量 | 依赖 | 状态 |
 |-------|------|-----------|------|------|
-| Phase 1 | 类型定义与接口设计 | 3 | 无 | ⬜ |
-| Phase 2 | 主进程 IPC 实现 | 5 | Phase 1 | ⬜ |
-| Phase 3 | 渲染进程基础设施 | 4 | Phase 1 | ⬜ |
-| Phase 4 | 技能库管理界面（F01） | 5 | Phase 2, Phase 3 | ⬜ |
-| Phase 5 | 技能库激活界面（F02） | 3 | Phase 4 | ⬜ |
-
----
-
-## 功能依赖图
-
-```
-Phase 1: 类型定义与接口设计
-    ├── SkillLibrary 类型
-    ├── IPC 频道定义
-    └── Preload API 扩展
-         ↓
-    ┌────┴────┐
-    ↓         ↓
-Phase 2:    Phase 3:
-主进程 IPC   渲染进程基础
-    │         │
-    │    ┌────┴────┐
-    │    │         │
-    │    ↓         │
-    │  Store 实现   │
-    │    │         │
-    └────┼─────────┘
-         ↓
-    Phase 4: 技能库管理界面（F01）
-         │
-         ↓
-    Phase 5: 技能库激活界面（F02）
-```
+| 1 | 基础设施 | 4 | 无 | ⬜ |
+| 2 | 通道适配器 | 4 | P1 | ⬜ |
+| 3 | 主控 Agent | 5 | P1 | ⬜ |
+| 4 | IPC 通信 | 4 | P2, P3 | ⬜ |
+| 5 | UI 界面 | 4 | P4 | ⬜ |
+| 6 | 测试验证 | 3 | P5 | ⬜ |
 
 ---
 
@@ -63,157 +29,189 @@ Phase 2:    Phase 3:
 
 ### 并行策略
 
-Phase 2 和 Phase 3 可并行执行（都只依赖 Phase 1）：
 ```
-Phase 1 → [Phase 2, Phase 3] → Phase 4 → Phase 5
+Phase 2（通道适配器）和 Phase 3（主控 Agent）可并行执行
+两者都只依赖 Phase 1，无相互依赖
 ```
 
 ### 恢复策略
 
-- **Phase 级恢复**：中断后从当前 Phase 的第一个 pending Task 继续
-- **Task 级恢复**：失败后使用 `/superspec-fix {task-id}` 重试
+- Task 级恢复：中断后从当前 Task 继续
+- 状态保存在 `.superspec/state.json`
 
 ---
 
 ## Phase 详情
 
-### Phase 1: 类型定义与接口设计
+### Phase 1: 基础设施
 
-**目标**：定义共享类型和 IPC 接口
+**目标**：建立远程控制功能的基础数据模型和工具函数
 
-**Task 列表**：
-
-| Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
-|---------|------|---------|------|--------|
-| 1-1 | 定义 SkillLibrary 类型 | 0.5h | 无 | `src/renderer/src/types/skill-library.types.ts` |
-| 1-2 | 扩展 Preload API | 1h | 1-1 | `electron/preload/index.ts` |
-| 1-3 | 安装 adm-zip 依赖 | 0.5h | 无 | `package.json` |
-
-**验收标准**：
-- [ ] SkillLibrary 类型定义完整
-- [ ] Preload 暴露 skillLibrary API
-- [ ] TypeScript 编译通过
-
----
-
-### Phase 2: 主进程 IPC 实现
-
-**目标**：实现所有 IPC handlers 和文件操作
-
-**Task 列表**：
+**Tasks**：
 
 | Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
-|---------|------|---------|------|--------|
-| 2-1 | 创建 skill-library-handlers.ts | 1h | 1-1 | `electron/main/skill-library-handlers.ts` |
-| 2-2 | 实现技能库列表管理 | 1h | 2-1 | list/add/update/delete handlers |
-| 2-3 | 实现技能库验证 | 1h | 2-1 | validate handler |
-| 2-4 | 实现技能库激活 | 2h | 2-1 | activate handler |
-| 2-5 | 注册 IPC handlers | 0.5h | 2-2, 2-3, 2-4 | `electron/main/index.ts` |
+|---------|------|----------|------|--------|
+| T1-01 | 定义数据模型 | 1h | 无 | `src/shared/types/remote-control.ts` |
+| T1-02 | 实现加密工具 | 1h | 无 | `src/main/utils/encryption.ts` |
+| T1-03 | 实现配置存储 | 1.5h | T1-02 | `src/main/services/remote-control-storage.ts` |
+| T1-04 | 创建 Zustand Store | 1h | T1-01 | `src/renderer/stores/remote-control-store.ts` |
 
 **验收标准**：
-- [ ] 所有 IPC handlers 实现完成
-- [ ] 文件操作正确（存储在 userData 目录）
-- [ ] zip 解压和验证逻辑正确
-- [ ] 主进程编译通过
+- ✅ Channel、RemoteControlSettings 类型定义完整
+- ✅ 加密/解密功能正确，密钥基于机器唯一标识
+- ✅ 配置文件存储在 `{userData}/remote-control/` 目录
+- ✅ Store 支持状态持久化
 
 ---
 
-### Phase 3: 渲染进程基础设施
+### Phase 2: 通道适配器
 
-**目标**：实现 Store 和工具函数
+**目标**：集成 WeClaw SDK，实现微信通道适配器
 
-**Task 列表**：
+**Tasks**：
 
 | Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
-|---------|------|---------|------|--------|
-| 3-1 | 创建 skill-library-store | 2h | 1-1 | `src/renderer/src/stores/skill-library-store.ts` |
-| 3-2 | 创建文件大小格式化工具 | 0.5h | 无 | `src/renderer/src/utils/format.ts` |
-| 3-3 | 创建 Agent 图标组件 | 0.5h | 无 | `src/renderer/src/components/common/AgentIcon.tsx` |
-| 3-4 | 扩展 window.api 类型 | 0.5h | 1-2 | `src/renderer/src/env.d.ts` |
+|---------|------|----------|------|--------|
+| T2-01 | 定义适配器接口 | 0.5h | T1-01 | `src/main/adapters/channel-adapter.ts` |
+| T2-02 | 安装 WeClaw SDK | 0.5h | 无 | `package.json` |
+| T2-03 | 实现微信适配器 | 2h | T2-01, T2-02 | `src/main/adapters/wechat-adapter.ts` |
+| T2-04 | 实现适配器管理器 | 1h | T2-03 | `src/main/services/channel-manager.ts` |
 
 **验收标准**：
-- [ ] Store 实现所有 actions
-- [ ] 工具函数正确
-- [ ] TypeScript 编译通过
+- ✅ ChannelAdapter 接口定义完整（connect、disconnect、sendMessage、onMessage、requestConfirm）
+- ✅ WeClaw SDK 正确安装并配置
+- ✅ 微信适配器支持扫码连接、消息收发
+- ✅ 适配器管理器支持多通道管理（≤3个）
 
 ---
 
-### Phase 4: 技能库管理界面（F01）
+### Phase 3: 主控 Agent
 
-**目标**：实现设置界面的技能库管理功能
+**目标**：实现主控 Agent，处理远程指令和权限控制
 
-**Task 列表**：
+**Tasks**：
 
 | Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
-|---------|------|---------|------|--------|
-| 4-1 | 创建 SkillLibrarySettings 组件 | 2h | 2-5, 3-1 | `src/renderer/src/components/settings/SkillLibrarySettings.tsx` |
-| 4-2 | 创建 SkillLibraryCard 组件 | 1h | 4-1 | `src/renderer/src/components/settings/SkillLibraryCard.tsx` |
-| 4-3 | 创建 AddSkillLibraryDialog 组件 | 2h | 4-1 | `src/renderer/src/components/settings/AddSkillLibraryDialog.tsx` |
-| 4-4 | 集成到 SettingsDialog | 0.5h | 4-1, 4-2, 4-3 | `src/renderer/src/components/settings/SettingsDialog.tsx` |
-| 4-5 | 添加国际化支持 | 1h | 4-4 | i18n 文件 |
+|---------|------|----------|------|--------|
+| T3-01 | 定义 Agent 接口 | 0.5h | T1-01 | `src/main/agents/master-agent.ts` |
+| T3-02 | 实现指令解析器 | 1.5h | T3-01 | `src/main/agents/command-parser.ts` |
+| T3-03 | 实现权限控制器 | 1h | T3-01 | `src/main/agents/permission-controller.ts` |
+| T3-04 | 实现操作执行器 | 2h | T3-01, T1-03 | `src/main/agents/operation-executor.ts` |
+| T3-05 | 集成主控 Agent | 1h | T3-02, T3-03, T3-04 | `src/main/agents/master-agent.ts` |
 
 **验收标准**：
-- [ ] 技能库列表显示正确
-- [ ] 添加/编辑/删除功能正常
-- [ ] 上传验证正常
-- [ ] UI 符合设计规范
+- ✅ 支持 9 个指令：/status、/switch、/restart、/mcp status|start|stop、/skillgroup list|switch、/help
+- ✅ 权限控制正确：禁止删除项目、禁止重置会话
+- ✅ 自然语言理解正确：能解析"切换到 xxx 项目"
+- ✅ 重要操作需确认：/switch、/restart、/mcp start|stop、/skillgroup switch
 
 ---
 
-### Phase 5: 技能库激活界面（F02）
+### Phase 4: IPC 通信
 
-**目标**：实现会话界面的技能库激活功能
+**目标**：实现 Electron IPC 频道，连接渲染进程和主进程
 
-**Task 列表**：
+**Tasks**：
 
 | Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
-|---------|------|---------|------|--------|
-| 5-1 | 创建 SkillLibrarySelector 组件 | 2h | 4-4 | `src/renderer/src/components/chat/SkillLibrarySelector.tsx` |
-| 5-2 | 集成到 SessionToolbar | 1h | 5-1 | `src/renderer/src/components/chat/SessionToolbar.tsx` |
-| 5-3 | 实现会话重启联动 | 1h | 5-2 | 修改 session-store.ts |
+|---------|------|----------|------|--------|
+| T4-01 | 定义 IPC 频道 | 0.5h | T1-01 | `src/shared/ipc/remote-control-channels.ts` |
+| T4-02 | 实现主进程 IPC Handler | 2h | T4-01, T2-04, T3-05 | `src/main/ipc/remote-control-handler.ts` |
+| T4-03 | 实现渲染进程 IPC Client | 1h | T4-01 | `src/renderer/services/remote-control-client.ts` |
+| T4-04 | 集成 IPC 通信 | 1h | T4-02, T4-03 | `src/main/index.ts`, `src/renderer/index.ts` |
 
 **验收标准**：
-- [ ] 技能库选择器显示正确
-- [ ] 切换确认弹窗正常
-- [ ] 激活后会话重启
-- [ ] 状态显示正确
+- ✅ 5 个 IPC 频道定义完整
+- ✅ 主进程 Handler 正确响应渲染进程请求
+- ✅ 渲染进程 Client 封装完整
+- ✅ IPC 通信类型安全
 
 ---
 
-## 验收标准
+### Phase 5: UI 界面
 
-### 功能验收
+**目标**：实现远程控制设置界面和扫码弹窗
 
-| 功能 | 验收标准 |
-|------|---------|
-| F01-1 查看技能库列表 | 显示所有技能库，信息正确 |
-| F01-2 添加技能库 | 上传、验证、保存成功 |
-| F01-3 编辑技能库 | 名称和说明可修改 |
-| F01-4 删除技能库 | 确认后删除成功 |
-| F01-5 导出技能库 | 可下载 zip 文件 |
-| F02-1 技能库选择器 | 下拉列表显示正确 |
-| F02-2 切换确认 | 弹窗文案正确 |
-| F02-3 执行切换 | 解压成功，会话重启 |
-| F02-4 状态显示 | 当前激活状态正确 |
+**Tasks**：
 
-### 技术验收
+| Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
+|---------|------|----------|------|--------|
+| T5-01 | 创建 RemoteControlSettings 组件 | 2h | T4-03, T1-04 | `src/renderer/components/settings/RemoteControlSettings.tsx` |
+| T5-02 | 创建 ChannelCard 组件 | 1h | T5-01 | `src/renderer/components/settings/ChannelCard.tsx` |
+| T5-03 | 创建 AddChannelDialog 组件 | 1.5h | T5-01 | `src/renderer/components/settings/AddChannelDialog.tsx` |
+| T5-04 | 集成到 SettingsDialog | 0.5h | T5-01, T5-02, T5-03 | `src/renderer/components/settings/SettingsDialog.tsx` |
 
-| 项目 | 标准 |
-|------|------|
-| TypeScript 编译 | 无错误 |
-| 主进程 | 无运行时错误 |
-| 渲染进程 | 无控制台错误 |
-| 文件操作 | 正确读写 userData 目录 |
+**验收标准**：
+- ✅ 设置界面显示已连接通道列表
+- ✅ 支持启用/禁用远程控制开关
+- ✅ 扫码弹窗显示二维码和倒计时
+- ✅ 安全设置：重要操作需确认选项
 
 ---
 
-## 风险与缓解
+### Phase 6: 测试验证
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| adm-zip 兼容性 | 解压失败 | 测试多种 zip 格式 |
-| 大文件上传 | UI 卡顿 | 添加进度提示 |
-| 会话重启失败 | 功能不可用 | 添加错误处理和重试 |
+**目标**：编写测试用例，验证功能正确性
+
+**Tasks**：
+
+| Task ID | 名称 | 预计时间 | 依赖 | 交付物 |
+|---------|------|----------|------|--------|
+| T6-01 | 单元测试 | 2h | P1-P5 | `tests/unit/remote-control/` |
+| T6-02 | 集成测试 | 2h | T6-01 | `tests/integration/remote-control/` |
+| T6-03 | E2E 测试 | 2h | T6-02 | `tests/e2e/remote-control.spec.ts` |
+
+**验收标准**：
+- ✅ 加密/解密测试通过
+- ✅ 指令解析测试通过
+- ✅ 权限控制测试通过
+- ✅ IPC 通信测试通过
+- ✅ E2E 测试覆盖主要流程
+
+---
+
+## 依赖图
+
+```
+                    ┌─────────────┐
+                    │   P1 基础   │
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+              ▼            ▼            │
+      ┌───────────┐ ┌───────────┐       │
+      │ P2 通道   │ │ P3 Agent  │       │
+      └─────┬─────┘ └─────┬─────┘       │
+            │             │             │
+            └──────┬──────┘             │
+                   │                    │
+                   ▼                    │
+            ┌───────────┐               │
+            │  P4 IPC   │◄──────────────┘
+            └─────┬─────┘
+                  │
+                  ▼
+            ┌───────────┐
+            │  P5 UI    │
+            └─────┬─────┘
+                  │
+                  ▼
+            ┌───────────┐
+            │  P6 测试  │
+            └───────────┘
+```
+
+---
+
+## 技术约束
+
+| 约束项 | 限制 |
+|--------|------|
+| 同时连接通道数 | ≤ 3 个 |
+| 消息响应延迟 | < 3 秒 |
+| 扫码超时时间 | 60 秒 |
+| 文件存储位置 | `{userData}/remote-control/` |
 
 ---
 
@@ -221,4 +219,4 @@ Phase 1 → [Phase 2, Phase 3] → Phase 4 → Phase 5
 
 | 版本 | 日期 | 变更内容 |
 |------|------|---------|
-| 1.0.0 | 2026-05-24 | 初始版本 |
+| 1.0.0 | 2026-05-26 | 初始版本，规划 F03 远程控制功能开发计划 |

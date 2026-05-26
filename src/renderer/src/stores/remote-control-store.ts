@@ -353,6 +353,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
               settings: {
                 ...state.settings,
                 enabled: status.enabled,
+                requireConfirm: status.requireConfirm,
                 channels: status.channels.map(c => ({
                   id: c.id,
                   type: c.type,

@@ -132,7 +132,7 @@ export class RemoteControlStorage {
       // 文件不存在，返回默认配置
       if (!fs.existsSync(this.settingsPath)) {
         console.log('[RemoteControlStorage] Settings file not found, returning default settings');
-        return { ...DEFAULT_SETTINGS };
+        return { ...DEFAULT_SETTINGS, channels: [] };
       }
 
       // 读取并解密配置
@@ -150,7 +150,7 @@ export class RemoteControlStorage {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('[RemoteControlStorage] Failed to load settings:', errorMessage);
       console.log('[RemoteControlStorage] Returning default settings due to error');
-      return { ...DEFAULT_SETTINGS };
+      return { ...DEFAULT_SETTINGS, channels: [] };
     }
   }
 

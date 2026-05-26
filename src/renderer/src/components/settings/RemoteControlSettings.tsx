@@ -20,6 +20,7 @@ import {
 import { getRemoteControlClient } from '@/services/remote-control-client';
 import type { Channel, ChannelType } from '../../../../shared/types/remote-control';
 import { REMOTE_CONTROL_CONSTRAINTS } from '../../../../shared/types/remote-control';
+import QRCode from 'qrcode';
 
 /**
  * RemoteControlSettings component props
@@ -108,10 +109,12 @@ interface AddChannelDialogProps {
  */
 function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps): JSX.Element | null {
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [qrCodeSvg, setQrCodeSvg] = useState<string | null>(null);
   const [channelId, setChannelId] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000);
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isGeneratingQR, setIsGeneratingQR] = useState(false);
 
   const { connectChannel, setScanCountdown } = useRemoteControlStore();
 
@@ -119,6 +122,7 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
   const handleConnect = useCallback(async () => {
     setIsConnecting(true);
     setError(null);
+    setQrCodeSvg(null);
 
     try {
       const result = await connectChannel('wechat');
@@ -131,6 +135,39 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
       setIsConnecting(false);
     }
   }, [connectChannel]);
+
+  // Generate QR code SVG when qrCode data changes
+  useEffect(() => {
+    if (!qrCode) {
+      setQrCodeSvg(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsGeneratingQR(true);
+
+    generateQRCodeSVG(qrCode)
+      .then((svg) => {
+        if (!cancelled) {
+          setQrCodeSvg(svg);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Failed to generate QR code SVG:', err);
+          setError('二维码生成失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsGeneratingQR(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [qrCode]);
 
   // Countdown timer
   useEffect(() => {
@@ -154,6 +191,7 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
     } else {
       // Reset state when dialog closes
       setQrCode(null);
+      setQrCodeSvg(null);
       setChannelId(null);
       setError(null);
       setCountdown(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000);
@@ -193,7 +231,7 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
 
         {/* QR Code Area */}
         <div className="flex flex-col items-center mb-4">
-          {isConnecting ? (
+          {isConnecting || isGeneratingQR ? (
             <div className="w-48 h-48 flex items-center justify-center bg-bg-secondary rounded-lg border border-border">
               <div className="flex items-center gap-2 text-text-muted">
                 <svg
@@ -230,18 +268,15 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
                 重试
               </button>
             </div>
-          ) : qrCode ? (
+          ) : qrCodeSvg ? (
             <>
               {/* QR Code Display */}
               <div className="w-48 h-48 flex items-center justify-center bg-white rounded-lg border border-border p-2">
-                {/* QR Code placeholder - in real implementation, use a QR code library */}
-                <div className="w-full h-full bg-bg-secondary flex items-center justify-center">
-                  <img
-                    src={`data:image/svg+xml,${encodeURIComponent(generateQRCodeSVG(qrCode))}`}
-                    alt="QR Code"
-                    className="w-full h-full"
-                  />
-                </div>
+                <img
+                  src={`data:image/svg+xml,${encodeURIComponent(qrCodeSvg)}`}
+                  alt="QR Code"
+                  className="w-full h-full"
+                />
               </div>
 
               {/* Countdown */}
@@ -283,26 +318,33 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
 }
 
 /**
- * Generate a simple QR code SVG (placeholder)
- * In production, use a proper QR code library like 'qrcode'
+ * Generate a QR code SVG string from data
+ * Uses the qrcode library to generate a proper scannable QR code
  */
-function generateQRCodeSVG(data: string): string {
-  // Simple placeholder SVG - in real implementation, use qrcode library
-  return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-      <rect width="100" height="100" fill="white"/>
-      <rect x="10" y="10" width="30" height="30" fill="black"/>
-      <rect x="60" y="10" width="30" height="30" fill="black"/>
-      <rect x="10" y="60" width="30" height="30" fill="black"/>
-      <rect x="15" y="15" width="20" height="20" fill="white"/>
-      <rect x="65" y="15" width="20" height="20" fill="white"/>
-      <rect x="15" y="65" width="20" height="20" fill="white"/>
-      <rect x="20" y="20" width="10" height="10" fill="black"/>
-      <rect x="70" y="20" width="10" height="10" fill="black"/>
-      <rect x="20" y="70" width="10" height="10" fill="black"/>
-      <text x="50" y="55" text-anchor="middle" font-size="8" fill="black">${data.slice(0, 8)}</text>
-    </svg>
-  `;
+async function generateQRCodeSVG(data: string): Promise<string> {
+  try {
+    // Generate QR code as SVG string with optimal settings for scanning
+    const svgString = await QRCode.toString(data, {
+      type: 'svg',
+      width: 200,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#ffffff',
+      },
+      errorCorrectionLevel: 'M', // Medium error correction for better scanning
+    });
+    return svgString;
+  } catch (error) {
+    console.error('Failed to generate QR code:', error);
+    // Return a fallback error indicator SVG
+    return `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+        <rect width="200" height="200" fill="white"/>
+        <text x="100" y="100" text-anchor="middle" font-size="12" fill="red">QR生成失败</text>
+      </svg>
+    `;
+  }
 }
 
 /**

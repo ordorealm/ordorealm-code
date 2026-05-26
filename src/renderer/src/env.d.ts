@@ -18,6 +18,11 @@ import type {
 } from '@/types'
 import type { AgentType } from '@/types/agent.types'
 import type { SkillLibrary } from '@/types/skill-library.types'
+import type {
+  RemoteControlStatus,
+  Channel,
+  ChannelType,
+} from '@shared/types/remote-control'
 
 /** Progress callback type for Claude Code execution (legacy) */
 export type ProgressCallback = (data: {
@@ -322,6 +327,38 @@ export interface Api {
     onDownloadProgress: (callback: (event: { id: string; progress: number; file: string }) => void) => () => void
     /** Listen for status change events */
     onStatusChange: (callback: (event: { id: string; status: string }) => void) => () => void
+  }
+  remoteControl: {
+    /** Get remote control status */
+    getStatus: () => Promise<{
+      success: boolean
+      data?: { status: RemoteControlStatus }
+      error?: { code: string; message: string }
+    }>
+    /** Connect a new channel and get QR code */
+    connect: (channelType: ChannelType) => Promise<{
+      success: boolean
+      data?: { qrCode: string; channelId: string }
+      error?: { code: string; message: string }
+    }>
+    /** Disconnect a channel */
+    disconnect: (channelId: string) => Promise<{
+      success: boolean
+      data?: { success: boolean }
+      error?: { code: string; message: string }
+    }>
+    /** List all connected channels */
+    listChannels: () => Promise<{
+      success: boolean
+      data?: { channels: Channel[] }
+      error?: { code: string; message: string }
+    }>
+    /** Update remote control settings */
+    updateSettings: (requireConfirm: boolean) => Promise<{
+      success: boolean
+      data?: { success: boolean }
+      error?: { code: string; message: string }
+    }>
   }
 }
 

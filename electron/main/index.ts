@@ -12,12 +12,19 @@ import { RuntimeManager } from './runtime-manager'
 import { registerSkillLibraryHandlers } from './skill-library-handlers'
 import { initializeMCPIPC } from './mcp-ipc'
 import { getMCPConnector } from './mcp/connector'
+import { ChannelManager } from '../../src/main/services/channel-manager'
+import { RemoteControlStorage } from '../../src/main/services/remote-control-storage'
+import { createRemoteControlHandler } from '../../src/main/ipc/remote-control-handler'
 
 // Check if running in development mode
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 // Runtime manager instance (initialized on app ready)
 let runtimeManager: RuntimeManager | null = null
+
+// Remote control instances
+let channelManager: ChannelManager | null = null
+let remoteControlStorage: RemoteControlStorage | null = null
 
 /**
  * 检测 Agent CLI 安装状态
@@ -2153,6 +2160,44 @@ function registerGitHandlers(): void {
   console.log('[Git] Git handlers registered')
 }
 
+/**
+ * Initialize Remote Control IPC handlers
+ *
+ * Creates and initializes ChannelManager, RemoteControlStorage, and
+ * registers the RemoteControlHandler for IPC communication.
+ */
+async function initializeRemoteControl(): Promise<void> {
+  console.log('[RemoteControl] Initializing...')
+
+  try {
+    // Initialize storage
+    remoteControlStorage = new RemoteControlStorage()
+    await remoteControlStorage.initialize()
+    console.log('[RemoteControl] Storage initialized')
+
+    // Initialize channel manager
+    channelManager = new ChannelManager({
+      enableLogging: true,
+    })
+    await channelManager.initialize()
+    console.log('[RemoteControl] Channel manager initialized')
+
+    // Create and register IPC handler
+    const handler = createRemoteControlHandler()
+    handler.setChannelManager(channelManager)
+    handler.setStorage(remoteControlStorage)
+    handler.register()
+    console.log('[RemoteControl] IPC handlers registered')
+
+    console.log('[RemoteControl] Initialization complete')
+  } catch (err) {
+    console.error('[RemoteControl] Failed to initialize:', err)
+    // Reset instances on failure
+    channelManager = null
+    remoteControlStorage = null
+  }
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1200,
@@ -2242,6 +2287,9 @@ app.whenReady().then(async () => {
     console.error('[Main] Failed to initialize MCP Manager:', err)
     // Continue without MCP - not critical for basic functionality
   }
+
+  // Initialize Remote Control IPC handlers
+  await initializeRemoteControl()
 
   createWindow()
   app.on('activate', () => {

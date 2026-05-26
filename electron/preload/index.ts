@@ -402,6 +402,27 @@ const api = {
       return () => ipcRenderer.removeListener('mcp:status-change', listener)
     },
   },
+
+  // Remote Control APIs
+  remoteControl: {
+    /** Get remote control status */
+    getStatus: () => ipcRenderer.invoke('remote-control:get-status'),
+
+    /** Connect a new channel and get QR code */
+    connect: (channelType: 'wechat' | 'wecom' | 'feishu') =>
+      ipcRenderer.invoke('remote-control:connect', { channelType }),
+
+    /** Disconnect a channel */
+    disconnect: (channelId: string) =>
+      ipcRenderer.invoke('remote-control:disconnect', { channelId }),
+
+    /** List all connected channels */
+    listChannels: () => ipcRenderer.invoke('remote-control:list-channels'),
+
+    /** Update remote control settings */
+    updateSettings: (requireConfirm: boolean) =>
+      ipcRenderer.invoke('remote-control:update-settings', { requireConfirm }),
+  },
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to renderer

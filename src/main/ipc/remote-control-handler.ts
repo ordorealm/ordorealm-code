@@ -612,7 +612,7 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
    * @param error - Error to check
    * @returns Whether error is an adapter creation error
    */
-  private isAdapterCreationError(error: unknown): boolean {
+  private isAdapterCreationError(error: unknown): error is Error {
     return (
       error instanceof Error &&
       (error.message.includes('Failed to create adapter') ||

@@ -115,8 +115,7 @@ export type {
   ConnectChannelResponse,
   DisconnectChannelRequest,
   DisconnectChannelResponse,
-  UpdateSettingsRequest,
-  UpdateSettingsResponse,
+  // Note: UpdateSettingsRequest and UpdateSettingsResponse are exported from ipc/remote-control-channels
   RemoteControlIpcChannelType,
   IncomingRemoteMessage,
   OutgoingRemoteMessage,

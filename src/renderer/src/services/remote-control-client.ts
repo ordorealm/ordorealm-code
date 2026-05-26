@@ -11,13 +11,13 @@
  * - listChannels: Get connected channels list
  * - updateSettings: Update security settings
  *
+ * Uses preload-exposed API via window.api.remoteControl.
+ *
  * @module renderer/services/remote-control-client
  * @see Product-Spec.md Section 6.1
  */
 
-import { ipcRenderer } from 'electron'
 import {
-  IPC_CHANNELS,
   GetStatusResponse,
   ConnectResponse,
   Channel,
@@ -65,9 +65,11 @@ export class IpcClientError extends Error {
 /**
  * IPC result type from main process
  */
-type IpcResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: { code: string; message: string; details?: unknown } }
+interface IpcResult<T> {
+  success: boolean
+  data?: T
+  error?: { code: string; message: string; details?: unknown }
+}
 
 // ============ Client Interface ============
 
@@ -97,7 +99,7 @@ export interface RemoteControlClient {
  * Remote Control IPC Client Implementation
  *
  * Provides type-safe IPC communication for remote control feature.
- * Uses Electron's ipcRenderer.invoke() for async communication.
+ * Uses preload-exposed API via window.api.remoteControl.
  *
  * @example
  * ```typescript
@@ -142,11 +144,8 @@ class RemoteControlClientImpl implements RemoteControlClient {
    * @throws IpcClientError if IPC call fails
    */
   async getStatus(): Promise<GetStatusResponse> {
-    const result = await this.invoke<GetStatusResponse>(
-      IPC_CHANNELS.GET_STATUS,
-      {}
-    )
-    return result
+    const result = await window.api.remoteControl.getStatus() as IpcResult<GetStatusResponse>
+    return this.unwrapResult(result)
   }
 
   /**
@@ -160,11 +159,8 @@ class RemoteControlClientImpl implements RemoteControlClient {
    * @throws IpcClientError if IPC call fails or channel limit exceeded
    */
   async connect(channelType: ChannelType): Promise<ConnectResponse> {
-    const result = await this.invoke<ConnectResponse>(
-      IPC_CHANNELS.CONNECT,
-      { channelType }
-    )
-    return result
+    const result = await window.api.remoteControl.connect(channelType) as IpcResult<ConnectResponse>
+    return this.unwrapResult(result)
   }
 
   /**
@@ -177,10 +173,8 @@ class RemoteControlClientImpl implements RemoteControlClient {
    * @throws IpcClientError if IPC call fails or channel not found
    */
   async disconnect(channelId: string): Promise<boolean> {
-    await this.invoke<{ success: boolean }>(
-      IPC_CHANNELS.DISCONNECT,
-      { channelId }
-    )
+    const result = await window.api.remoteControl.disconnect(channelId) as IpcResult<{ success: boolean }>
+    await this.unwrapResult(result)
     return true
   }
 
@@ -193,11 +187,9 @@ class RemoteControlClientImpl implements RemoteControlClient {
    * @throws IpcClientError if IPC call fails
    */
   async listChannels(): Promise<Channel[]> {
-    const result = await this.invoke<{ channels: Channel[] }>(
-      IPC_CHANNELS.LIST_CHANNELS,
-      {}
-    )
-    return result.channels
+    const result = await window.api.remoteControl.listChannels() as IpcResult<{ channels: Channel[] }>
+    const data = await this.unwrapResult(result)
+    return data.channels
   }
 
   /**
@@ -210,46 +202,35 @@ class RemoteControlClientImpl implements RemoteControlClient {
    * @throws IpcClientError if IPC call fails
    */
   async updateSettings(requireConfirm: boolean): Promise<boolean> {
-    await this.invoke<{ success: boolean }>(
-      IPC_CHANNELS.UPDATE_SETTINGS,
-      { requireConfirm }
-    )
+    const result = await window.api.remoteControl.updateSettings(requireConfirm) as IpcResult<{ success: boolean }>
+    await this.unwrapResult(result)
     return true
   }
 
   // ============ Private Helper Methods ============
 
   /**
-   * Invoke IPC channel with type safety
+   * Unwrap IPC result, throwing on error
    *
-   * @param channel - IPC channel name
-   * @param request - Request payload
-   * @returns Promise resolving to response data
-   * @throws IpcClientError if IPC call fails
+   * @param result - IPC result from main process
+   * @returns The data if successful
+   * @throws IpcClientError if result indicates failure
    */
-  private async invoke<T>(channel: string, request: unknown): Promise<T> {
-    try {
-      const result: IpcResult<T> = await ipcRenderer.invoke(channel, request)
-
-      if (result.success) {
-        return result.data
-      }
-
-      // Handle error response
-      throw this.createErrorFromResponse(result.error)
-    } catch (error) {
-      // Re-throw IpcClientError
-      if (error instanceof IpcClientError) {
-        throw error
-      }
-
-      // Handle unexpected errors
-      throw new IpcClientError(
-        IpcClientErrorCode.IPC_FAILED,
-        error instanceof Error ? error.message : 'IPC call failed',
-        error
-      )
+  private unwrapResult<T>(result: IpcResult<T>): T {
+    if (result.success && result.data !== undefined) {
+      return result.data
     }
+
+    // Handle error response
+    if (result.error) {
+      throw this.createErrorFromResponse(result.error)
+    }
+
+    // No data and no error - unexpected state
+    throw new IpcClientError(
+      IpcClientErrorCode.IPC_FAILED,
+      'IPC call returned no data'
+    )
   }
 
   /**

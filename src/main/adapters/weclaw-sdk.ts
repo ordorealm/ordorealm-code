@@ -11,6 +11,7 @@
  */
 
 import { EventEmitter } from 'events'
+import { Logger } from '../utils/logger'
 
 // ============ Type Definitions ============
 
@@ -170,48 +171,6 @@ function createError(type: WeClawErrorType, message: string, cause?: Error): WeC
   return error
 }
 
-// ============ Logger ============
-
-/**
- * Simple logger for SDK operations
- */
-class Logger {
-  private prefix: string
-  private debug: boolean
-
-  constructor(prefix: string, debug: boolean = false) {
-    this.prefix = prefix
-    this.debug = debug
-  }
-
-  private formatMessage(level: string, message: string): string {
-    const timestamp = new Date().toISOString()
-    return `[${timestamp}] [${this.prefix}] [${level}] ${message}`
-  }
-
-  info(message: string, ...args: unknown[]): void {
-    console.log(this.formatMessage('INFO', message), ...args)
-  }
-
-  warn(message: string, ...args: unknown[]): void {
-    console.warn(this.formatMessage('WARN', message), ...args)
-  }
-
-  error(message: string, ...args: unknown[]): void {
-    console.error(this.formatMessage('ERROR', message), ...args)
-  }
-
-  debugLog(message: string, ...args: unknown[]): void {
-    if (this.debug) {
-      console.log(this.formatMessage('DEBUG', message), ...args)
-    }
-  }
-
-  setDebug(debug: boolean): void {
-    this.debug = debug
-  }
-}
-
 // ============ Main SDK Class ============
 
 /**
@@ -247,13 +206,12 @@ export class WeClawSDKImpl implements WeClawSDK {
   private logger: Logger
   private sessionId: string | null = null
   private connectionTimeout: NodeJS.Timeout | null = null
-  private pendingMessages: Map<string, { resolve: Function; reject: Function; timeout: NodeJS.Timeout }> = new Map()
 
   /**
    * Create a new WeClaw SDK instance
    */
   constructor() {
-    this.logger = new Logger('WeClawSDK', false)
+    this.logger = new Logger('WeClawSDK', { enabled: true, debug: false })
   }
 
   /**
@@ -262,7 +220,7 @@ export class WeClawSDKImpl implements WeClawSDK {
    */
   init(config: WeClawConfig): void {
     this.config = { ...DEFAULT_CONFIG, ...config }
-    this.logger = new Logger('WeClawSDK', this.config.debug ?? false)
+    this.logger = new Logger('WeClawSDK', { enabled: true, debug: this.config.debug ?? false })
     this.logger.info(`SDK initialized (v${SDK_VERSION})`)
     this.logger.debugLog('Config:', { ...config, apiKey: config.apiKey ? '[REDACTED]' : undefined, apiSecret: config.apiSecret ? '[REDACTED]' : undefined })
   }
@@ -410,14 +368,12 @@ export class WeClawSDKImpl implements WeClawSDK {
     // Simulate async send operation
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        this.pendingMessages.delete(message)
         reject(createError('send_failed', 'Message send timeout'))
       }, DEFAULT_TIMEOUTS.SEND)
 
       // Simulate successful send after a short delay
       setTimeout(() => {
         clearTimeout(timeoutId)
-        this.pendingMessages.delete(message)
         this.logger.debugLog('Message sent successfully')
         resolve()
       }, 100)
@@ -476,13 +432,6 @@ export class WeClawSDKImpl implements WeClawSDK {
       clearTimeout(this.connectionTimeout)
       this.connectionTimeout = null
     }
-
-    // Clear pending messages
-    this.pendingMessages.forEach(({ reject, timeout }) => {
-      clearTimeout(timeout)
-      reject(createError('not_connected', 'Disconnected'))
-    })
-    this.pendingMessages.clear()
 
     // Update status
     const previousUser = this.status.user

@@ -21,9 +21,10 @@ import {
   ChannelMessage,
   AdapterConnectionState,
 } from '../adapters/channel-adapter'
-import { WeChatAdapter, createWeChatAdapter } from '../adapters/wechat-adapter'
+import { WeChatAdapter, WeChatAdapterConfig, createWeChatAdapter } from '../adapters/wechat-adapter'
 import { RemoteControlStorage } from './remote-control-storage'
 import { generateId } from '../utils/encryption'
+import { Logger } from '../utils/logger'
 
 // ============ Type Definitions ============
 
@@ -117,50 +118,6 @@ export class AdapterCreationError extends ChannelManagerError {
   }
 }
 
-// ============ Logger ============
-
-/**
- * Simple logger for channel manager operations
- */
-class Logger {
-  private enabled: boolean
-  private prefix: string
-
-  constructor(prefix: string, enabled: boolean = true) {
-    this.prefix = prefix
-    this.enabled = enabled
-  }
-
-  private format(level: string, message: string): string {
-    const timestamp = new Date().toISOString()
-    return `[${timestamp}] [${this.prefix}] [${level}] ${message}`
-  }
-
-  debug(message: string, ...args: unknown[]): void {
-    if (this.enabled) {
-      console.log(this.format('DEBUG', message), ...args)
-    }
-  }
-
-  info(message: string, ...args: unknown[]): void {
-    if (this.enabled) {
-      console.log(this.format('INFO', message), ...args)
-    }
-  }
-
-  warn(message: string, ...args: unknown[]): void {
-    if (this.enabled) {
-      console.warn(this.format('WARN', message), ...args)
-    }
-  }
-
-  error(message: string, ...args: unknown[]): void {
-    if (this.enabled) {
-      console.error(this.format('ERROR', message), ...args)
-    }
-  }
-}
-
 // ============ Main Class ============
 
 /**
@@ -220,7 +177,7 @@ export class ChannelManager {
       enableLogging: config?.enableLogging ?? true,
     }
 
-    this.logger = new Logger('ChannelManager', this.config.enableLogging)
+    this.logger = new Logger('ChannelManager', { enabled: this.config.enableLogging })
 
     // Initialize storage
     this.storage = new RemoteControlStorage(config?.customStoragePath)
@@ -702,18 +659,22 @@ export class ChannelManager {
    * @throws AdapterCreationError if type is not supported
    */
   private createAdapter(type: ChannelType, instanceId: string): ChannelAdapterWithEvents {
-    const config: ChannelAdapterConfig = {
-      type,
+    const baseConfig = {
       instanceId,
       logging: {
         enabled: this.config.enableLogging,
-        level: 'info',
+        level: 'info' as const,
       },
     }
 
     switch (type) {
-      case 'wechat':
-        return createWeChatAdapter(config as any) // WeChatAdapterConfig extends ChannelAdapterConfig
+      case 'wechat': {
+        const wechatConfig: WeChatAdapterConfig = {
+          type: 'wechat',
+          ...baseConfig,
+        }
+        return createWeChatAdapter(wechatConfig)
+      }
 
       case 'wecom':
         // TODO: Implement WeCom adapter

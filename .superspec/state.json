@@ -9,9 +9,9 @@
     "updatedAt": "2026-05-26T17:35:00+08:00"
   },
   "progress": {
-    "currentPhase": 1,
-    "currentTask": "T1-04",
-    "phaseStatus": "in_test"
+    "currentPhase": 2,
+    "currentTask": "T2-04",
+    "phaseStatus": "in_review"
   },
   "config": {
     "review": {
@@ -37,7 +37,7 @@
     {
       "id": 1,
       "name": "基础设施",
-      "status": "in_test",
+      "status": "completed",
       "tasks": [
         { "id": "T1-01", "name": "定义数据模型", "status": "completed" },
         { "id": "T1-02", "name": "实现加密工具", "status": "completed" },
@@ -53,6 +53,23 @@
           { "round": 2, "result": "failed", "timestamp": "2026-05-26T19:00:00+08:00" },
           { "round": 3, "result": "passed", "timestamp": "2026-05-26T19:30:00+08:00" }
         ]
+      }
+    },
+    {
+      "id": 2,
+      "name": "通道适配器",
+      "status": "in_review",
+      "tasks": [
+        { "id": "T2-01", "name": "定义适配器接口", "status": "completed" },
+        { "id": "T2-02", "name": "安装 WeClaw SDK", "status": "completed" },
+        { "id": "T2-03", "name": "实现微信适配器", "status": "completed" },
+        { "id": "T2-04", "name": "实现适配器管理器", "status": "completed" }
+      ],
+      "review": {
+        "count": 0,
+        "minCount": 3,
+        "maxCount": 5,
+        "history": []
       }
     }
   ],

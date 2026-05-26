@@ -27,12 +27,14 @@ import {
   ChannelMessage,
   ChannelConnectionOptions,
   ChannelAdapterConfig,
+  MessageMetadata,
   createMessageId,
   createConfirmId,
   getCurrentTimestamp,
   DEFAULT_CONNECTION_OPTIONS,
 } from './channel-adapter'
 import { REMOTE_CONTROL_CONSTRAINTS } from '../../shared/types/remote-control'
+import { Logger } from '../utils/logger'
 
 // ============ Type Definitions ============
 
@@ -75,60 +77,16 @@ interface PendingConfirmation {
 const ADAPTER_VERSION = '1.0.0'
 
 /**
+ * Maximum message content length for validation
+ */
+const MAX_MESSAGE_LENGTH = 1000
+
+/**
  * Default WeChat adapter configuration
  */
 const DEFAULT_WECHAT_CONFIG: Required<NonNullable<WeChatAdapterConfig['wechat']>> = {
   enableAck: true,
   retryCount: 3,
-}
-
-// ============ Logger ============
-
-/**
- * Simple logger for adapter operations
- */
-class Logger {
-  private prefix: string
-  private level: 'debug' | 'info' | 'warn' | 'error'
-
-  constructor(prefix: string, level: 'debug' | 'info' | 'warn' | 'error' = 'info') {
-    this.prefix = prefix
-    this.level = level
-  }
-
-  private shouldLog(level: 'debug' | 'info' | 'warn' | 'error'): boolean {
-    const levels = ['debug', 'info', 'warn', 'error']
-    return levels.indexOf(level) >= levels.indexOf(this.level)
-  }
-
-  private format(level: string, message: string): string {
-    const timestamp = new Date().toISOString()
-    return `[${timestamp}] [${this.prefix}] [${level}] ${message}`
-  }
-
-  debug(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('debug')) {
-      console.log(this.format('DEBUG', message), ...args)
-    }
-  }
-
-  info(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('info')) {
-      console.log(this.format('INFO', message), ...args)
-    }
-  }
-
-  warn(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('warn')) {
-      console.warn(this.format('WARN', message), ...args)
-    }
-  }
-
-  error(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('error')) {
-      console.error(this.format('ERROR', message), ...args)
-    }
-  }
 }
 
 // ============ Main Adapter Class ============
@@ -224,7 +182,10 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
     // Initialize logger
     this.logger = new Logger(
       `WeChatAdapter[${this.instanceId}]`,
-      this.config.logging.enabled ? this.config.logging.level : 'error'
+      {
+        enabled: this.config.logging.enabled,
+        level: this.config.logging.level,
+      }
     )
 
     // Initialize WeClaw SDK
@@ -365,7 +326,7 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
    */
   async sendMessage(
     message: string,
-    metadata?: Partial<import('./channel-adapter').MessageMetadata>
+    metadata?: Partial<MessageMetadata>
   ): Promise<void> {
     if (!this.connectionState.isConnected || !this.userId) {
       throw new Error('Not connected. Call connect() first.')
@@ -599,6 +560,12 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
   private parseConfirmResponse(
     content: string
   ): { confirmId: string; confirmed: boolean } | null {
+    // Validate input length to prevent processing excessively long messages
+    if (content.length > MAX_MESSAGE_LENGTH) {
+      this.logger.warn(`Message too long for confirmation parsing: ${content.length} chars`)
+      return null
+    }
+
     // Support both Chinese and English responses
     const confirmPattern = /^(?:确认|confirm|yes|ok)\s+([a-zA-Z0-9_-]+)$/i
     const cancelPattern = /^(?:取消|cancel|no)\s+([a-zA-Z0-9_-]+)$/i

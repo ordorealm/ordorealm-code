@@ -57,10 +57,11 @@ export class RemoteControlStorage {
   /**
    * 创建 RemoteControlStorage 实例
    *
-   * 自动设置存储路径，使用 Electron 的 userData 目录。
+   * @param customDataPath - 可选的自定义数据路径（用于测试）
+   * 如果不提供，则使用 Electron 的 userData 目录。
    */
-  constructor() {
-    const userDataPath = app.getPath('userData');
+  constructor(customDataPath?: string) {
+    const userDataPath = customDataPath || app.getPath('userData');
     this.storageDir = path.join(userDataPath, 'remote-control');
     this.tokensDir = path.join(this.storageDir, 'tokens');
     this.settingsPath = path.join(this.storageDir, 'settings.json');

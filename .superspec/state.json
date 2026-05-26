@@ -10,8 +10,8 @@
   },
   "progress": {
     "currentPhase": 6,
-    "currentTask": "T6-01",
-    "phaseStatus": "not_started"
+    "currentTask": "T6-03",
+    "phaseStatus": "completed"
   },
   "config": {
     "review": {
@@ -147,17 +147,22 @@
     {
       "id": 6,
       "name": "测试验证",
-      "status": "not_started",
+      "status": "completed",
       "tasks": [
-        { "id": "T6-01", "name": "单元测试", "status": "pending" },
-        { "id": "T6-02", "name": "集成测试", "status": "pending" },
-        { "id": "T6-03", "name": "E2E 测试", "status": "pending" }
+        { "id": "T6-01", "name": "单元测试", "status": "completed" },
+        { "id": "T6-02", "name": "集成测试", "status": "completed" },
+        { "id": "T6-03", "name": "E2E 测试", "status": "completed" }
       ],
       "review": {
-        "count": 0,
+        "count": 3,
         "minCount": 3,
         "maxCount": 5,
-        "history": []
+        "status": "passed",
+        "history": [
+          { "round": 1, "result": "passed", "timestamp": "2026-05-26T23:45:00+08:00" },
+          { "round": 2, "result": "passed", "timestamp": "2026-05-26T23:50:00+08:00" },
+          { "round": 3, "result": "passed", "timestamp": "2026-05-26T23:55:00+08:00" }
+        ]
       }
     }
   ],
@@ -165,7 +170,7 @@
     {
       "id": "F03",
       "name": "远程控制",
-      "status": "pending",
+      "status": "completed",
       "specPath": ".superspec/features/remote-control.md"
     }
   ],

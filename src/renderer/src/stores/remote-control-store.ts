@@ -130,7 +130,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
       set({
         settings: {
           enabled: status.enabled,
-          requireConfirm: DEFAULT_SETTINGS.requireConfirm, // 使用默认设置
+          requireConfirm: status.requireConfirm,
           channels: status.channels.map(c => ({
             id: c.id,
             type: c.type,

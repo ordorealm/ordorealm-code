@@ -51,6 +51,8 @@ export interface RemoteControlSettings {
 export interface RemoteControlStatus {
   /** Whether remote control is enabled */
   enabled: boolean
+  /** Whether important operations require confirmation */
+  requireConfirm: boolean
   /** Number of connected channels */
   connectedChannels: number
   /**

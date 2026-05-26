@@ -95,3 +95,38 @@ export {
   IPC_CHANNELS,
   type IpcChannelType
 } from './types'
+
+// Remote Control types
+export type {
+  ChannelType,
+  ChannelStatus,
+  Channel,
+  RemoteControlSettings,
+  RemoteControlStatus,
+  ChannelAdapter,
+  AgentContext,
+  OperationResult,
+  MasterAgent,
+  PermissionConfig,
+  CommandType,
+  ParsedCommand,
+  CommandHandler,
+  ConnectChannelRequest,
+  ConnectChannelResponse,
+  DisconnectChannelRequest,
+  DisconnectChannelResponse,
+  UpdateSettingsRequest,
+  UpdateSettingsResponse,
+  RemoteControlIpcChannelType,
+  IncomingRemoteMessage,
+  OutgoingRemoteMessage,
+  ConfirmationRequest,
+  ConfirmationResponse
+} from './types/remote-control'
+
+// Remote Control constants
+export {
+  PERMISSIONS,
+  REMOTE_CONTROL_IPC_CHANNELS,
+  REMOTE_CONTROL_CONSTRAINTS
+} from './types/remote-control'

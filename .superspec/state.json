@@ -11,7 +11,7 @@
   "progress": {
     "currentPhase": 1,
     "currentTask": "T1-04",
-    "phaseStatus": "in_review"
+    "phaseStatus": "in_test"
   },
   "config": {
     "review": {
@@ -33,7 +33,29 @@
       "skipNonCriticalFailures": true
     }
   },
-  "phases": [],
+  "phases": [
+    {
+      "id": 1,
+      "name": "基础设施",
+      "status": "in_test",
+      "tasks": [
+        { "id": "T1-01", "name": "定义数据模型", "status": "completed" },
+        { "id": "T1-02", "name": "实现加密工具", "status": "completed" },
+        { "id": "T1-03", "name": "实现配置存储", "status": "completed" },
+        { "id": "T1-04", "name": "创建 Zustand Store", "status": "completed" }
+      ],
+      "review": {
+        "count": 3,
+        "minCount": 3,
+        "maxCount": 5,
+        "history": [
+          { "round": 1, "result": "failed", "timestamp": "2026-05-26T18:30:00+08:00" },
+          { "round": 2, "result": "failed", "timestamp": "2026-05-26T19:00:00+08:00" },
+          { "round": 3, "result": "passed", "timestamp": "2026-05-26T19:30:00+08:00" }
+        ]
+      }
+    }
+  ],
   "features": [
     {
       "id": "F03",

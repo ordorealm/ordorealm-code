@@ -17,3 +17,37 @@ export {
   initializeSkillLibraryStore,
   isSkillLibraryStoreInitialized,
 } from './skill-library-store';
+export {
+  useMCPStore,
+  formatSize,
+  getCategoryName,
+  getStatusName,
+  getDownloadStatusName,
+  getMCPDefinition,
+  getMCPInstance,
+  isMCPRunning,
+  isMCPDownloaded,
+} from './mcp-store';
+export type {
+  MCPCategory,
+  DownloadStatus,
+  MCPStatus,
+  MCPDefinition,
+  MCPInstance,
+  MCPStats,
+  MCPMirror,
+  RuntimeDependency,
+  PermissionInstructions,
+} from './mcp-store';
+export {
+  useRemoteControlStore,
+  getChannelStatusName,
+  getChannelTypeName,
+  getConnectedChannelCount,
+  canAddMoreChannels,
+  getRemoteControlSettings,
+  isRemoteControlEnabled,
+  getChannel,
+  isChannelConnected,
+  getConnectedChannels,
+} from './remote-control-store';

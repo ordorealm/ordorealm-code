@@ -1,17 +1,38 @@
 /**
- * Master Agent interface definitions for DevFlow IDE Remote Control
+ * Master Agent for DevFlow IDE Remote Control
  *
- * This module defines the core agent interfaces for handling remote control commands.
- * The Master Agent is responsible for:
- * - Processing user messages from remote channels
- * - Enforcing permission controls
- * - Executing operations on the IDE
+ * This module implements the Master Agent that integrates:
+ * - CommandParser: Parses user messages into structured commands
+ * - PermissionController: Checks operation permissions
+ * - OperationExecutor: Executes operations on the IDE
+ *
+ * The Master Agent handles all incoming messages from remote channels,
+ * interprets user intent, enforces permissions, and executes operations.
  *
  * @module main/agents/master-agent
  */
 
 // Import shared permission configuration
 import { PERMISSIONS, type PermissionConfig } from '../../shared/types/remote-control'
+import { CommandParser, createCommandParser, type ParsedCommand, type ExtendedCommandType } from './command-parser'
+import {
+  permissionController,
+  createPermissionController,
+  type PermissionController,
+  type PermissionResult,
+} from './permission-controller'
+import {
+  operationExecutor,
+  createOperationExecutor,
+  type OperationExecutor,
+  type ConfirmHandler,
+} from './operation-executor'
+import { generateId } from '../utils/encryption'
+import {
+  OPERATIONS_REQUIRING_CONFIRMATION,
+  requiresConfirmation,
+  type OperationRequiringConfirmation,
+} from './remote-control-constants'
 
 // ============ Supporting Types ============
 
@@ -215,31 +236,9 @@ export interface MasterAgent {
   processConfirmation(confirmId: string, confirmed: boolean): Promise<OperationResult>
 }
 
-// ============ Operations Requiring Confirmation ============
-
-/**
- * List of operations that require user confirmation before execution
- * These are sensitive operations that could have significant impact
- */
-export const OPERATIONS_REQUIRING_CONFIRMATION = [
-  'switch_project',
-  'restart_session',
-  'mcp_start',
-  'mcp_stop',
-  'skillgroup_switch',
-] as const
-
-export type OperationRequiringConfirmation = typeof OPERATIONS_REQUIRING_CONFIRMATION[number]
-
-/**
- * Check if an operation requires confirmation
- *
- * @param operation - Operation identifier
- * @returns true if operation requires confirmation
- */
-export function requiresConfirmation(operation: string): boolean {
-  return OPERATIONS_REQUIRING_CONFIRMATION.includes(operation as OperationRequiringConfirmation)
-}
+// Re-export constants for convenience
+export { OPERATIONS_REQUIRING_CONFIRMATION, requiresConfirmation }
+export type { OperationRequiringConfirmation }
 
 // ============ Permission Checking ============
 
@@ -271,6 +270,333 @@ export function isOperationAllowed(
   }
   // Only explicitly allowed operations are permitted
   return config.allow.includes(operation)
+}
+
+// ============ Master Agent Implementation ============
+
+/**
+ * Master Agent implementation that integrates all components
+ *
+ * Message processing flow:
+ * 1. User message → CommandParser.parse()
+ * 2. Parsed command → PermissionController.check()
+ * 3. Allowed operation → OperationExecutor.execute()
+ *
+ * Confirmation flow:
+ * 1. Sensitive operation → Generate confirmation request
+ * 2. Wait for user confirmation
+ * 3. Execute or cancel based on user response
+ */
+class MasterAgentImpl implements MasterAgent {
+  private parser: CommandParser
+  private permissionCtrl: PermissionController
+  private executor: OperationExecutor
+  private pendingConfirmations: Map<string, PendingConfirmation> = new Map()
+  private confirmHandler: ConfirmHandler | null = null
+
+  /**
+   * Create a new MasterAgent instance
+   *
+   * @param options - Optional configuration for components
+   */
+  constructor(options?: {
+    parser?: CommandParser
+    permissionController?: PermissionController
+    executor?: OperationExecutor
+  }) {
+    this.parser = options?.parser ?? createCommandParser()
+    this.permissionCtrl = options?.permissionController ?? permissionController
+    this.executor = options?.executor ?? operationExecutor
+
+    // Set up confirmation handler in executor
+    this.executor.setConfirmHandler(this.handleConfirmationRequest.bind(this))
+  }
+
+  /**
+   * Process an incoming message from a remote channel
+   *
+   * Flow:
+   * 1. Parse the message into a structured command
+   * 2. Check if the command type is allowed
+   * 3. Execute the command or return appropriate error
+   *
+   * @param message - User message content
+   * @param context - Agent execution context
+   * @returns Response message for the user
+   */
+  async handleMessage(message: string, context: AgentContext): Promise<string> {
+    try {
+      // Step 1: Parse the message
+      const parsedCommand = this.parser.parse(message)
+
+      // Step 2: Handle unknown commands
+      if (parsedCommand.type === 'unknown') {
+        return this.getHelpResponse(message)
+      }
+
+      // Step 3: Execute via operation executor (includes permission check)
+      const result = await this.executor.execute(parsedCommand, context)
+
+      // Step 4: Return the result message
+      return result.message
+    } catch (error) {
+      // Handle unexpected errors
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      console.error('[MasterAgent] Error handling message:', errorMessage)
+      return `❌ 处理消息时发生错误: ${errorMessage}`
+    }
+  }
+
+  /**
+   * Check if an operation is permitted for remote execution
+   *
+   * @param operation - Operation identifier
+   * @returns true if operation is allowed
+   */
+  checkPermission(operation: string): boolean {
+    return this.permissionCtrl.isAllowed(operation)
+  }
+
+  /**
+   * Execute an operation with given parameters
+   *
+   * Creates a synthetic ParsedCommand and executes it through the executor.
+   *
+   * @param operation - Operation identifier
+   * @param params - Operation parameters
+   * @returns Promise resolving to operation result
+   */
+  async executeOperation(
+    operation: string,
+    params: Record<string, unknown>
+  ): Promise<OperationResult> {
+    // Map operation to command type
+    const commandType = this.operationToCommandType(operation)
+
+    // Create synthetic parsed command
+    const command: ParsedCommand = {
+      type: commandType,
+      raw: operation,
+      params: params as Record<string, string>,
+      requiresConfirm: requiresConfirmation(operation),
+    }
+
+    // Create minimal context for execution
+    const context: AgentContext = {
+      currentProject: undefined,
+      projects: [],
+      mcpStatus: [],
+      skillgroups: [],
+      userId: 'system',
+      channelId: 'internal',
+      sessionId: generateId(),
+    }
+
+    // Check permission first
+    const permissionResult = this.permissionCtrl.checkPermission(operation)
+    if (!permissionResult.allowed) {
+      return {
+        success: false,
+        message: permissionResult.reason || `操作 "${operation}" 被拒绝`,
+      }
+    }
+
+    // Execute the operation
+    return this.executor.execute(command, context)
+  }
+
+  /**
+   * Get pending confirmation requests
+   *
+   * Combines confirmations from executor and local storage.
+   *
+   * @returns Array of pending confirmation requests
+   */
+  getPendingConfirmations(): PendingConfirmation[] {
+    const executorConfirmations = this.executor.getPendingConfirmations()
+    const localConfirmations = Array.from(this.pendingConfirmations.values())
+
+    // Merge and deduplicate
+    const allConfirmations = new Map<string, PendingConfirmation>()
+
+    for (const conf of executorConfirmations) {
+      allConfirmations.set(conf.confirmId, conf)
+    }
+    for (const conf of localConfirmations) {
+      if (!allConfirmations.has(conf.confirmId)) {
+        allConfirmations.set(conf.confirmId, conf)
+      }
+    }
+
+    return Array.from(allConfirmations.values())
+  }
+
+  /**
+   * Process a confirmation response
+   *
+   * Called when a user confirms or denies a pending operation.
+   *
+   * @param confirmId - Confirmation request ID
+   * @param confirmed - Whether the user confirmed
+   * @returns Promise resolving to operation result
+   */
+  async processConfirmation(confirmId: string, confirmed: boolean): Promise<OperationResult> {
+    // Try executor first
+    const executorConfirmations = this.executor.getPendingConfirmations()
+    const inExecutor = executorConfirmations.some((c) => c.confirmId === confirmId)
+
+    if (inExecutor) {
+      return this.executor.processConfirmation(confirmId, confirmed)
+    }
+
+    // Check local pending confirmations
+    const pending = this.pendingConfirmations.get(confirmId)
+    if (!pending) {
+      return {
+        success: false,
+        message: '确认请求不存在或已过期',
+      }
+    }
+
+    // Remove from pending list
+    this.pendingConfirmations.delete(confirmId)
+
+    if (!confirmed) {
+      return {
+        success: false,
+        message: '用户拒绝了操作',
+      }
+    }
+
+    // Execute the confirmed operation
+    return this.executeOperation(pending.operation, pending.params)
+  }
+
+  /**
+   * Set a custom confirmation handler
+   *
+   * @param handler - Function to handle confirmation requests
+   */
+  setConfirmHandler(handler: ConfirmHandler): void {
+    this.confirmHandler = handler
+    this.executor.setConfirmHandler(handler)
+  }
+
+  /**
+   * Update the parser with known entity names for fuzzy matching
+   *
+   * @param options - Entity name lists
+   */
+  updateParserContext(options: {
+    projectNames?: string[]
+    mcpNames?: string[]
+    skillgroupNames?: string[]
+  }): void {
+    if (options.projectNames) {
+      this.parser.setProjectNames(options.projectNames)
+    }
+    if (options.mcpNames) {
+      this.parser.setMcpNames(options.mcpNames)
+    }
+    if (options.skillgroupNames) {
+      this.parser.setSkillgroupNames(options.skillgroupNames)
+    }
+  }
+
+  /**
+   * Get the command parser instance
+   *
+   * @returns CommandParser instance
+   */
+  getParser(): CommandParser {
+    return this.parser
+  }
+
+  /**
+   * Get help text for all supported commands
+   *
+   * @returns Formatted help text
+   */
+  getHelpText(): string {
+    return this.parser.getHelpText()
+  }
+
+  // ============ Private Methods ============
+
+  /**
+   * Handle confirmation request from executor
+   */
+  private async handleConfirmationRequest(
+    confirmId: string,
+    message: string
+  ): Promise<boolean> {
+    if (this.confirmHandler) {
+      return this.confirmHandler(confirmId, message)
+    }
+
+    // Default: auto-confirm after timeout (not recommended for production)
+    console.warn('[MasterAgent] No confirmation handler set, auto-confirming')
+    return true
+  }
+
+  /**
+   * Get help response for unknown commands
+   */
+  private getHelpResponse(message: string): string {
+    return `❌ 无法识别的指令: "${message}"
+
+${this.parser.getHelpText()}`
+  }
+
+  /**
+   * Map operation identifier to command type
+   */
+  private operationToCommandType(operation: string): ExtendedCommandType {
+    const mapping: Record<string, ExtendedCommandType> = {
+      view_status: 'status',
+      switch_project: 'switch',
+      restart_session: 'restart',
+      mcp_status: 'mcp_status',
+      mcp_start: 'mcp_start',
+      mcp_stop: 'mcp_stop',
+      skillgroup_list: 'skillgroup_list',
+      skillgroup_switch: 'skillgroup_switch',
+    }
+
+    return mapping[operation] || 'unknown'
+  }
+}
+
+// ============ Singleton Instance ============
+
+/**
+ * Default Master Agent instance
+ * Uses default configurations for all components
+ */
+export const masterAgent: MasterAgent = new MasterAgentImpl()
+
+// ============ Factory Function ============
+
+/**
+ * Create a new MasterAgent instance with custom configuration
+ *
+ * @param options - Configuration options for components
+ * @returns New MasterAgent instance
+ *
+ * @example
+ * ```typescript
+ * const customAgent = createMasterAgent({
+ *   parser: createCommandParser({ projectNames: ['proj1', 'proj2'] }),
+ *   permissionController: createPermissionController(customPermissions),
+ * });
+ * ```
+ */
+export function createMasterAgent(options?: {
+  parser?: CommandParser
+  permissionController?: PermissionController
+  executor?: OperationExecutor
+}): MasterAgent {
+  return new MasterAgentImpl(options)
 }
 
 // ============ Type Exports ============

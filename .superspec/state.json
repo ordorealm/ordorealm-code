@@ -9,8 +9,8 @@
     "updatedAt": "2026-05-26T17:35:00+08:00"
   },
   "progress": {
-    "currentPhase": 5,
-    "currentTask": "T5-01",
+    "currentPhase": 6,
+    "currentTask": "T6-01",
     "phaseStatus": "not_started"
   },
   "config": {
@@ -125,12 +125,33 @@
     {
       "id": 5,
       "name": "UI 界面",
+      "status": "completed",
+      "tasks": [
+        { "id": "T5-01", "name": "创建 RemoteControlSettings 组件", "status": "completed" },
+        { "id": "T5-02", "name": "创建 ChannelCard 组件", "status": "completed" },
+        { "id": "T5-03", "name": "创建 AddChannelDialog 组件", "status": "completed" },
+        { "id": "T5-04", "name": "集成到 SettingsDialog", "status": "completed" }
+      ],
+      "review": {
+        "count": 3,
+        "minCount": 3,
+        "maxCount": 5,
+        "status": "passed",
+        "history": [
+          { "round": 1, "result": "passed", "timestamp": "2026-05-26T23:30:00+08:00" },
+          { "round": 2, "result": "passed", "timestamp": "2026-05-26T23:35:00+08:00" },
+          { "round": 3, "result": "passed", "timestamp": "2026-05-26T23:40:00+08:00" }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "name": "测试验证",
       "status": "not_started",
       "tasks": [
-        { "id": "T5-01", "name": "创建 RemoteControlSettings 组件", "status": "pending" },
-        { "id": "T5-02", "name": "创建 ChannelCard 组件", "status": "pending" },
-        { "id": "T5-03", "name": "创建 AddChannelDialog 组件", "status": "pending" },
-        { "id": "T5-04", "name": "集成到 SettingsDialog", "status": "pending" }
+        { "id": "T6-01", "name": "单元测试", "status": "pending" },
+        { "id": "T6-02", "name": "集成测试", "status": "pending" },
+        { "id": "T6-03", "name": "E2E 测试", "status": "pending" }
       ],
       "review": {
         "count": 0,

@@ -37,3 +37,26 @@ declare module '@opencode-ai/sdk' {
 
   export function createOpencodeClient(options: { baseUrl: string }): OpenCodeClient
 }
+
+/**
+ * WeClaw SDK module declaration
+ *
+ * Note: The npm package 'weclaw' is a placeholder (v0.0.0, 134B).
+ * Use the local implementation from 'main/adapters/weclaw-sdk' instead.
+ *
+ * @see {@link module:main/adapters/weclaw-sdk} Local implementation
+ */
+declare module 'weclaw' {
+  import { WeClawSDK, WeClawConfig, WeClawConnection, WeClawMessage, WeClawStatus } from '../main/adapters/weclaw-sdk'
+
+  /**
+   * Create a new WeClaw SDK instance
+   * @param config - Optional initial configuration
+   */
+  export function createSDK(config?: WeClawConfig): WeClawSDK
+
+  /**
+   * WeClaw SDK class
+   */
+  export { WeClawSDK, WeClawConfig, WeClawConnection, WeClawMessage, WeClawStatus }
+}

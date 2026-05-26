@@ -447,7 +447,7 @@ export function getChannelTypeName(type: ChannelType): string {
  */
 export function getConnectedChannelCount(): number {
   const { settings } = useRemoteControlStore.getState()
-  return settings.channels.filter(c => c.status === 'connected').length
+  return (settings?.channels ?? []).filter(c => c.status === 'connected').length
 }
 
 /**
@@ -456,7 +456,7 @@ export function getConnectedChannelCount(): number {
  */
 export function canAddMoreChannels(): boolean {
   const { settings } = useRemoteControlStore.getState()
-  return settings.channels.length < REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS
+  return (settings?.channels ?? []).length < REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS
 }
 
 /**
@@ -481,7 +481,7 @@ export function isRemoteControlEnabled(): boolean {
  * @returns 通道信息或 undefined
  */
 export function getChannel(channelId: string): Channel | undefined {
-  return useRemoteControlStore.getState().settings.channels.find(c => c.id === channelId)
+  return (useRemoteControlStore.getState().settings?.channels ?? []).find(c => c.id === channelId)
 }
 
 /**
@@ -500,5 +500,5 @@ export function isChannelConnected(channelId: string): boolean {
  */
 export function getConnectedChannels(): Channel[] {
   const { settings } = useRemoteControlStore.getState()
-  return settings.channels.filter(c => c.status === 'connected')
+  return (settings?.channels ?? []).filter(c => c.status === 'connected')
 }

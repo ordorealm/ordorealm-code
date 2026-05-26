@@ -165,7 +165,8 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
     if (!channelId) return;
 
     const { settings } = useRemoteControlStore.getState();
-    const channel = settings.channels.find(c => c.id === channelId);
+    const channels = settings?.channels ?? [];
+    const channel = channels.find(c => c.id === channelId);
 
     if (channel?.status === 'connected') {
       onSuccess(channelId);
@@ -455,8 +456,9 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
 
   if (!visible) return null;
 
-  // Connected channels
-  const connectedChannels = settings.channels.filter(c => c.status === 'connected');
+  // Connected channels - use optional chaining and nullish coalescing for safety
+  const channels = settings?.channels ?? [];
+  const connectedChannels = channels.filter(c => c.status === 'connected');
   const canAddChannel = canAddMoreChannels();
 
   return (
@@ -533,7 +535,7 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
           </div>
 
           {/* Channel List */}
-          {settings.channels.length === 0 ? (
+          {channels.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-6 px-4 bg-bg-secondary border border-border rounded-lg">
               <div className="w-10 h-10 mb-2 flex items-center justify-center bg-bg-tertiary rounded-full">
                 <span className="text-xl">📱</span>
@@ -542,7 +544,7 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
             </div>
           ) : (
             <div className="space-y-2">
-              {settings.channels.map((channel) => (
+              {channels.map((channel) => (
                 <ChannelCard
                   key={channel.id}
                   channel={channel}

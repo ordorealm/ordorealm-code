@@ -129,11 +129,17 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
       const client = getRemoteControlClient()
       const response = await client.getStatus()
       // response.status 包含 RemoteControlStatus
+      // 添加防御性检查：确保 response 和 status 都存在
+      if (!response || !response.status) {
+        console.warn('[Remote Control Store] getStatus 返回空响应，使用默认设置')
+        set({ settings: DEFAULT_SETTINGS })
+        return
+      }
       const status = response.status
       set({
         settings: {
-          enabled: status.enabled,
-          requireConfirm: status.requireConfirm,
+          enabled: status.enabled ?? false,
+          requireConfirm: status.requireConfirm ?? true,
           channels: (status.channels ?? []).map((c: { id: string; type: ChannelType; status: ChannelStatus; connectedAt: string | null }) => ({
             id: c.id,
             type: c.type,

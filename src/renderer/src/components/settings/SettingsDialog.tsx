@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { ProviderSettings } from './ProviderSettings';
 import { SkillLibrarySettings } from './SkillLibrarySettings';
 import { MCPSettings } from './MCPSettings';
+import { RemoteControlSettings } from './RemoteControlSettings';
 import { useAppearanceStore, type Theme } from '@/stores/appearance-store';
 
 interface SettingsDialogProps {
@@ -18,7 +19,7 @@ interface SettingsDialogProps {
 }
 
 /** Available settings tabs */
-type SettingsTab = 'provider' | 'appearance' | 'skill-library' | 'mcp';
+type SettingsTab = 'provider' | 'appearance' | 'skill-library' | 'mcp' | 'remote-control';
 
 /**
  * SettingsDialog component
@@ -100,6 +101,17 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps): JSX.El
             >
               MCP 工具
             </button>
+            <button
+              onClick={() => setActiveTab('remote-control')}
+              className={`
+                w-full px-3 py-2 text-left text-sm transition-colors
+                ${activeTab === 'remote-control'
+                  ? 'bg-bg-primary text-text-primary border-r-2 border-accent-indigo'
+                  : 'text-text-secondary hover:bg-bg-hover'}
+              `}
+            >
+              远程控制
+            </button>
           </div>
 
           {/* Tab content */}
@@ -115,6 +127,9 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps): JSX.El
             )}
             {activeTab === 'mcp' && (
               <MCPSettings />
+            )}
+            {activeTab === 'remote-control' && (
+              <RemoteControlSettings />
             )}
           </div>
         </div>

@@ -1,31 +1,53 @@
 {
   "version": "1.0.0",
-  "generatedAt": "2026-05-24T05:41:37Z",
   "project": {
     "type": "desktop",
-    "name": "ordorealm-code",
+    "name": "devflow-ide",
+    "mode": "existing",
     "framework": {
       "frontend": "react",
-      "backend": null
+      "backend": null,
+      "desktop": "electron"
     }
   },
   "frontend": {
-    "framework": "electron",
-    "startCommand": "npm start",
+    "framework": "react",
+    "port": 5173,
+    "startCommand": "npm run dev",
     "buildCommand": "npm run build",
-    "testCommand": "npm run test"
+    "testCommand": "npm run test",
+    "healthCheck": "http://localhost:5173"
   },
   "backend": null,
   "database": null,
+  "desktop": {
+    "framework": "electron",
+    "startCommand": "npm run dev",
+    "buildCommand": "npm run build",
+    "buildMac": "npm run build:mac",
+    "buildWin": "npm run build:win",
+    "testCommand": "npm run test"
+  },
   "dependencies": {
     "required": {
       "git": ">=2.0",
-      "node": ">=18.0"
+      "node": ">=18.0",
+      "npm": ">=9.0"
     },
-    "optional": {}
+    "optional": {
+      "pnpm": ">=8.0"
+    }
   },
   "envVars": {
     "required": [],
     "optional": []
+  },
+  "testStrategy": {
+    "e2e": true,
+    "unit": true,
+    "visual": true,
+    "a11y": false,
+    "api": false,
+    "cli": false
   }
 }

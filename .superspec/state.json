@@ -9,9 +9,9 @@
     "updatedAt": "2026-05-26T17:35:00+08:00"
   },
   "progress": {
-    "currentPhase": 2,
-    "currentTask": "T2-04",
-    "phaseStatus": "in_review"
+    "currentPhase": 3,
+    "currentTask": "T3-01",
+    "phaseStatus": "not_started"
   },
   "config": {
     "review": {
@@ -58,12 +58,35 @@
     {
       "id": 2,
       "name": "通道适配器",
-      "status": "in_review",
+      "status": "completed",
       "tasks": [
         { "id": "T2-01", "name": "定义适配器接口", "status": "completed" },
         { "id": "T2-02", "name": "安装 WeClaw SDK", "status": "completed" },
         { "id": "T2-03", "name": "实现微信适配器", "status": "completed" },
         { "id": "T2-04", "name": "实现适配器管理器", "status": "completed" }
+      ],
+      "review": {
+        "count": 3,
+        "minCount": 3,
+        "maxCount": 5,
+        "status": "passed",
+        "history": [
+          { "round": 1, "result": "failed", "timestamp": "2026-05-26T20:30:00+08:00" },
+          { "round": 2, "result": "failed", "timestamp": "2026-05-26T20:45:00+08:00" },
+          { "round": 3, "result": "passed", "timestamp": "2026-05-26T21:00:00+08:00" }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "主控 Agent",
+      "status": "not_started",
+      "tasks": [
+        { "id": "T3-01", "name": "定义 Agent 接口", "status": "pending" },
+        { "id": "T3-02", "name": "实现指令解析器", "status": "pending" },
+        { "id": "T3-03", "name": "实现权限控制器", "status": "pending" },
+        { "id": "T3-04", "name": "实现操作执行器", "status": "pending" },
+        { "id": "T3-05", "name": "集成主控 Agent", "status": "pending" }
       ],
       "review": {
         "count": 0,

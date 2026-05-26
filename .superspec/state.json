@@ -36,18 +36,6 @@
   "phases": [],
   "features": [
     {
-      "id": "F01",
-      "name": "技能库管理",
-      "status": "completed",
-      "specPath": ".superspec/features/skill-library-management.md"
-    },
-    {
-      "id": "F02",
-      "name": "技能库激活",
-      "status": "completed",
-      "specPath": ".superspec/features/skill-library-activation.md"
-    },
-    {
       "id": "F03",
       "name": "远程控制",
       "status": "pending",

@@ -598,15 +598,3 @@ export function createMasterAgent(options?: {
 }): MasterAgent {
   return new MasterAgentImpl(options)
 }
-
-// ============ Type Exports ============
-
-export type {
-  ProjectInfo,
-  MCPStatus,
-  SkillGroup,
-  AgentContext,
-  OperationResult,
-  PendingConfirmation,
-  MasterAgent,
-}

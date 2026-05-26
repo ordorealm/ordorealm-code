@@ -14,7 +14,7 @@ import {
 import {
   OPERATIONS_REQUIRING_CONFIRMATION,
   requiresConfirmation,
-} from './master-agent'
+} from './remote-control-constants'
 
 // ============ Permission Result Types ============
 
@@ -277,7 +277,3 @@ export const SENSITIVE_OPERATIONS = PERMISSIONS.allow.filter((op) =>
  * Operations that are explicitly denied
  */
 export const FORBIDDEN_OPERATIONS = [...PERMISSIONS.deny]
-
-// ============ Type Exports ============
-
-export type { PermissionResult, PermissionController }

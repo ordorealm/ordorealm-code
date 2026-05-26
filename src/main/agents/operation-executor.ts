@@ -766,7 +766,3 @@ export function createOperationExecutor(
 ): OperationExecutor {
   return new DefaultOperationExecutor(permissionCtrl)
 }
-
-// ============ Type Exports ============
-
-export type { OperationExecutor, ConfirmHandler }

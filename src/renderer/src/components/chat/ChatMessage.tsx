@@ -1,11 +1,12 @@
 /**
  * Chat Message Component
  * Renders a single chat message with markdown support
+ * Supports thinking content display with collapsible block
  * Refactored to follow SpectrAI architecture pattern
  * @module components/chat/ChatMessage
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Message } from '@/types';
 
 interface ChatMessageProps {
@@ -198,6 +199,87 @@ function formatToolInput(input: Record<string, unknown> | undefined): string {
 }
 
 /**
+ * Thinking Block Component
+ * Collapsible block to display AI thinking content
+ */
+function ThinkingBlock({
+  thinkingText,
+  isThinking,
+}: {
+  thinkingText: string;
+  isThinking: boolean;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+
+  // Calculate thinking duration hint
+  const lineCount = useMemo(() => {
+    return thinkingText.split('\n').length;
+  }, [thinkingText]);
+
+  // Truncate for summary
+  const summary = useMemo(() => {
+    const firstLine = thinkingText.split('\n')[0];
+    if (firstLine.length > 50) {
+      return firstLine.slice(0, 50) + '...';
+    }
+    return firstLine + (lineCount > 1 ? '...' : '');
+  }, [thinkingText, lineCount]);
+
+  return (
+    <div className="mb-3">
+      {/* Collapsed header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={`
+          w-full flex items-center gap-2 px-3 py-2 rounded-lg
+          bg-gradient-to-r from-accent-indigo/10 to-accent-purple/10
+          border border-accent-indigo/20
+          hover:border-accent-indigo/40 transition-colors
+          text-left group
+        `}
+      >
+        {/* Brain icon */}
+        <span className="text-lg">🧠</span>
+
+        {/* Status text */}
+        <span className="text-sm text-accent-indigo font-medium">
+          {isThinking ? '思考中...' : `已思考`}
+        </span>
+
+        {/* Summary preview */}
+        <span className="text-sm text-text-muted truncate flex-1">
+          {summary}
+        </span>
+
+        {/* Line count badge */}
+        {!isThinking && (
+          <span className="text-xs text-text-muted bg-bg-secondary px-2 py-0.5 rounded">
+            {lineCount} 行
+          </span>
+        )}
+
+        {/* Expand/collapse icon */}
+        <svg
+          className={`w-4 h-4 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div className="mt-2 p-3 rounded-lg bg-bg-secondary border border-border text-sm text-text-secondary whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
+          {thinkingText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * ChatMessage component
  * Displays a single message with role indicator, content, and actions
  * Supports SpectrAI architecture: user, assistant, system, tool_use, tool_result roles
@@ -228,6 +310,9 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
   const isSystem = message.role === 'system';
   const isToolUse = message.role === 'tool_use';
   const isToolResult = message.role === 'tool_result';
+
+  // Check if message has thinking content
+  const hasThinking = isAssistant && message.thinkingText && message.thinkingText.length > 0;
 
   // For tool_use and tool_result, we don't show the normal message UI
   // They are handled by ToolOperationGroup component in the message grouping
@@ -341,18 +426,18 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
     <div
       ref={messageRef}
       className={`
-        group flex gap-3 p-4 rounded-lg
-        ${isUser ? 'bg-bg-secondary ml-8' : ''}
-        ${isAssistant ? 'bg-bg-tertiary mr-8' : ''}
+        group flex gap-3 p-4 rounded-xl
+        ${isUser ? 'bg-gradient-to-br from-accent-indigo/5 to-accent-purple/5 ml-8' : ''}
+        ${isAssistant ? 'bg-bg-secondary' : ''}
         ${isSystem ? 'bg-bg-secondary border border-accent-yellow/30' : ''}
       `}
     >
       {/* Role Avatar */}
       <div
         className={`
-          flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium
-          ${isUser ? 'bg-accent-indigo text-white' : ''}
-          ${isAssistant ? 'bg-text-muted text-white' : ''}
+          flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-base
+          ${isUser ? 'bg-gradient-to-br from-accent-indigo to-accent-purple text-white shadow-lg shadow-accent-indigo/20' : ''}
+          ${isAssistant ? 'bg-gradient-to-br from-accent-blue to-accent-indigo text-white shadow-lg shadow-accent-blue/20' : ''}
           ${isSystem ? 'bg-accent-yellow text-white' : ''}
         `}
       >
@@ -364,15 +449,15 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
       {/* Message Content */}
       <div className="flex-1 min-w-0">
         {/* Header */}
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-sm font-medium text-text-primary">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-sm font-semibold text-text-primary">
             {isUser && '用户'}
             {isAssistant && 'Agent'}
             {isSystem && '系统'}
           </span>
           <span className="text-xs text-text-muted">{formatTime(message.timestamp)}</span>
           {message.isStreaming && (
-            <span className="inline-flex items-center gap-1 text-xs text-accent-indigo">
+            <span className="inline-flex items-center gap-1.5 text-xs text-accent-indigo bg-accent-indigo/10 px-2 py-0.5 rounded-full">
               <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
                 <circle
                   className="opacity-25"
@@ -389,27 +474,36 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 />
               </svg>
-              生成中...
+              生成中
             </span>
           )}
         </div>
 
+        {/* Thinking Block - show before content */}
+        {hasThinking && (
+          <ThinkingBlock
+            thinkingText={message.thinkingText!}
+            isThinking={message.isThinking || false}
+          />
+        )}
+
         {/* Content */}
-        {/* whitespace-pre-wrap preserves line breaks, prose class may override so we use !important equivalent via inline style if needed */}
-        <div
-          className="text-sm text-text-primary leading-relaxed max-w-none"
-          style={{ whiteSpace: 'pre-wrap' }}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-        />
+        {message.content && (
+          <div
+            className="text-sm text-text-primary leading-relaxed max-w-none prose prose-sm prose-invert"
+            style={{ whiteSpace: 'pre-wrap' }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+          />
+        )}
 
         {/* Streaming cursor animation */}
         {message.isStreaming && (
-          <span className="inline-block w-2 h-4 bg-accent-indigo animate-pulse ml-1" />
+          <span className="inline-block w-2 h-4 bg-accent-indigo animate-pulse ml-1 rounded-sm" />
         )}
       </div>
 
       {/* Actions */}
-      {showCopyButton && !message.isStreaming && message.content && (
+      {showCopyButton && !message.isStreaming && (message.content || message.thinkingText) && (
         <div className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={handleCopy}

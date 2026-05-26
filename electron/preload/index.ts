@@ -160,6 +160,10 @@ const api = {
     closeSession: (sessionId: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('claude:closeSession', sessionId),
 
+    /** Answer AskUserQuestion tool (submit user's answers) */
+    answerQuestion: (sessionId: string, answers: Record<string, string>): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('claude:answerQuestion', sessionId, answers),
+
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (
       options: ClaudeExecuteOptions,
@@ -349,6 +353,54 @@ const api = {
     /** Activate a skill in a project */
     activate: (params: SkillLibraryActivateParams) =>
       ipcRenderer.invoke('skill-library:activate', params),
+  },
+
+  // MCP Manager APIs
+  mcp: {
+    /** Get all MCP definitions */
+    list: () => ipcRenderer.invoke('mcp:list'),
+
+    /** Get all MCP instances */
+    instances: () => ipcRenderer.invoke('mcp:instances'),
+
+    /** Enable an MCP */
+    enable: (id: string) => ipcRenderer.invoke('mcp:enable', id),
+
+    /** Disable an MCP */
+    disable: (id: string) => ipcRenderer.invoke('mcp:disable', id),
+
+    /** Start an MCP */
+    start: (id: string) => ipcRenderer.invoke('mcp:start', id),
+
+    /** Stop an MCP */
+    stop: (id: string) => ipcRenderer.invoke('mcp:stop', id),
+
+    /** Restart an MCP */
+    restart: (id: string) => ipcRenderer.invoke('mcp:restart', id),
+
+    /** Get MCP stats */
+    stats: () => ipcRenderer.invoke('mcp:stats'),
+
+    /** Download an MCP */
+    download: (id: string) => ipcRenderer.invoke('mcp:download', id),
+
+    /** Listen for download progress events */
+    onDownloadProgress: (callback: (event: { id: string; progress: number; file: string }) => void) => {
+      const listener = (_: unknown, data: unknown) => {
+        callback(data as { id: string; progress: number; file: string })
+      }
+      ipcRenderer.on('mcp:download-progress', listener)
+      return () => ipcRenderer.removeListener('mcp:download-progress', listener)
+    },
+
+    /** Listen for status change events */
+    onStatusChange: (callback: (event: { id: string; status: string }) => void) => {
+      const listener = (_: unknown, data: unknown) => {
+        callback(data as { id: string; status: string })
+      }
+      ipcRenderer.on('mcp:status-change', listener)
+      return () => ipcRenderer.removeListener('mcp:status-change', listener)
+    },
   },
 }
 

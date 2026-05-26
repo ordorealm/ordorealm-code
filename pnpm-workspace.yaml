@@ -1,0 +1,5 @@
+allowBuilds:
+  '@anthropic-ai/claude-code': true
+  electron: true
+  electron-winstaller: true
+  esbuild: true

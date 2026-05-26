@@ -6,7 +6,9 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { useSessionStore } from '@/stores/session-store';
+import { useActivityStore } from '@/stores/activity-store';
 import { useProjectStore } from '@/stores/project-store';
 import { ChatMessage } from './ChatMessage';
 import { ToolOperationGroup } from './ToolOperationGroup';
@@ -48,9 +50,6 @@ function throttle<T extends (...args: unknown[]) => unknown>(fn: T, delay: numbe
     }
   }) as T;
 }
-
-/** Messages per page for history loading */
-const MESSAGES_PER_PAGE = 20;
 
 /** Scroll threshold for considering user at bottom (in pixels) */
 const SCROLL_BOTTOM_THRESHOLD = 100;
@@ -259,13 +258,77 @@ export function ChatPanel(): JSX.Element {
 
   /**
    * Handle abort streaming
+   * 发送中断请求后，主动重置前端状态作为保险
    */
   const handleAbort = useCallback(async () => {
     if (!sessionId) return;
+
+    // ★ 先记录当前 streaming 的消息 ID，防止竞态条件
+    const session = useSessionStore.getState().sessions[sessionId];
+    const streamingMsgId = session?.messages.find(m => m.role === 'assistant' && m.isStreaming)?.id;
+
+    if (!streamingMsgId) {
+      console.log('[ChatPanel] No streaming message to abort');
+      return;
+    }
+
     try {
       await window.api.claude.abort(sessionId);
     } catch (err) {
       console.error('[ChatPanel] Failed to abort:', err);
+    }
+
+    // ★ 再次检查，确保只更新之前记录的消息 ID
+    // 这样即使期间创建了新消息，也不会被错误更新
+    const currentSession = useSessionStore.getState().sessions[sessionId];
+    if (currentSession) {
+      // 只更新之前记录的消息
+      const msg = currentSession.messages.find(m => m.id === streamingMsgId);
+      if (msg && msg.isStreaming) {
+        useSessionStore.getState().updateMessage(sessionId, streamingMsgId, {
+          isStreaming: false,
+          content: msg.content || '⚠️ 已中断',
+        });
+      }
+
+      // ★ 为所有没有 tool_result 的 tool_use 添加中断标记
+      const toolUseIds = new Set<string>();
+      const toolResultIds = new Set<string>();
+
+      currentSession.messages.forEach(m => {
+        if (m.role === 'tool_use' && m.toolUseId) {
+          toolUseIds.add(m.toolUseId);
+        }
+        if (m.role === 'tool_result' && m.toolUseId) {
+          toolResultIds.add(m.toolUseId);
+        }
+      });
+
+      const pendingToolUseIds = [...toolUseIds].filter(id => !toolResultIds.has(id));
+
+      if (pendingToolUseIds.length > 0) {
+        console.log('[ChatPanel] Adding abort tool_result for pending tools:', pendingToolUseIds);
+
+        const abortResults = pendingToolUseIds.map(toolUseId => {
+          const toolUseMsg = currentSession.messages.find(m => m.toolUseId === toolUseId);
+          return {
+            id: uuidv4(),
+            role: 'tool_result' as const,
+            content: '⚠️ 操作已中断',
+            timestamp: new Date().toISOString(),
+            sessionId,
+            toolUseId,
+            toolName: toolUseMsg?.toolName || 'unknown',
+            toolResult: '⚠️ 操作已中断',
+            isError: true,
+          };
+        });
+
+        useSessionStore.getState().prependMessages(sessionId, abortResults);
+      }
+
+      useActivityStore.getState().endThinking(sessionId);
+      useActivityStore.getState().endActivity(sessionId);
     }
   }, [sessionId]);
 
@@ -467,14 +530,14 @@ export function ChatPanel(): JSX.Element {
             message={session.interactivePanel.pendingPermission.message}
             onAllow={() => handlePermissionResponse(true)}
             onDeny={() => handlePermissionResponse(false)}
-            disabled={isStreaming}
+            disabled={isStreaming && !session.interactivePanel?.pendingPermission}
           />
         )}
         {session.interactivePanel?.pendingQuestion && (
           <AskUserQuestionPanel
             questions={session.interactivePanel.pendingQuestion.questions}
             onSubmit={handleQuestionSubmit}
-            disabled={isStreaming}
+            disabled={isStreaming && !session.interactivePanel?.pendingQuestion}
           />
         )}
         {session.interactivePanel?.pendingApproval && (
@@ -482,7 +545,7 @@ export function ChatPanel(): JSX.Element {
             toolInput={session.interactivePanel.pendingApproval.planContent as Record<string, unknown>}
             onApprove={() => handleApprovalResponse(true)}
             onReject={() => handleApprovalResponse(false)}
-            disabled={isStreaming}
+            disabled={isStreaming && !session.interactivePanel?.pendingApproval}
           />
         )}
 

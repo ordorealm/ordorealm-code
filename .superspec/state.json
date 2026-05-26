@@ -10,8 +10,8 @@
   },
   "progress": {
     "currentPhase": 1,
-    "currentTask": null,
-    "phaseStatus": "not_started"
+    "currentTask": "T1-04",
+    "phaseStatus": "in_review"
   },
   "config": {
     "review": {

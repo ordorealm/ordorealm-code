@@ -11,14 +11,27 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 
 /**
+ * Cached encryption key for performance optimization
+ * Key is computed once and reused for all encrypt/decrypt operations
+ */
+let cachedEncryptionKey: Buffer | null = null;
+
+/**
  * 基于机器唯一标识生成加密密钥
  *
  * 使用 hostname + platform + cpu model 组合生成唯一标识，
  * 确保密钥与当前机器绑定，增强安全性。
  *
+ * 密钥会被缓存，避免每次加密/解密都重新计算。
+ *
  * @returns 32 字节的 AES-256 密钥
  */
 function getEncryptionKey(): Buffer {
+  // Return cached key if available
+  if (cachedEncryptionKey) {
+    return cachedEncryptionKey;
+  }
+
   const hostname = os.hostname();
   const platform = os.platform();
   const cpus = os.cpus();
@@ -27,7 +40,9 @@ function getEncryptionKey(): Buffer {
   const machineId = hostname + platform + cpuModel;
   console.log('[Encryption] Generating encryption key from machine identifier');
 
-  return crypto.createHash('sha256').update(machineId).digest();
+  // Cache the key for future use
+  cachedEncryptionKey = crypto.createHash('sha256').update(machineId).digest();
+  return cachedEncryptionKey;
 }
 
 /**

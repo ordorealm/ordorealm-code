@@ -11,7 +11,8 @@ import type {
   Channel,
   ChannelType,
   ChannelStatus,
-  RemoteControlStatus
+  RemoteControlStatus,
+  RemoteControlApi
 } from '../../../shared/types/remote-control'
 import { REMOTE_CONTROL_CONSTRAINTS } from '../../../shared/types/remote-control'
 
@@ -93,23 +94,11 @@ function isRemoteControlApiAvailable(): boolean {
 /**
  * 获取远程控制 API
  */
-function getRemoteControlApi() {
+function getRemoteControlApi(): RemoteControlApi | null {
   if (!isRemoteControlApiAvailable()) {
     return null
   }
   return (window as unknown as { api: { remoteControl: RemoteControlApi } }).api.remoteControl
-}
-
-/**
- * 远程控制 API 接口定义
- */
-interface RemoteControlApi {
-  getStatus(): Promise<RemoteControlStatus>
-  connect(channelType: ChannelType): Promise<{ qrCode: string; channelId: string }>
-  disconnect(channelId: string): Promise<{ success: boolean }>
-  updateSettings(partial: Partial<RemoteControlSettings>): Promise<{ success: boolean }>
-  onStatusChange?(callback: (status: RemoteControlStatus) => void): () => void
-  onChannelStatusChange?(callback: (event: { channelId: string; status: ChannelStatus }) => void): () => void
 }
 
 /**
@@ -141,7 +130,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
       set({
         settings: {
           enabled: status.enabled,
-          requireConfirm: true, // 默认需要确认
+          requireConfirm: DEFAULT_SETTINGS.requireConfirm, // 使用默认设置
           channels: status.channels.map(c => ({
             id: c.id,
             type: c.type,

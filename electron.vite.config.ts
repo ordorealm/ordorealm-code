@@ -41,6 +41,9 @@ export default defineConfig({
         plugins: [tailwindcss]
       }
     },
+    server: {
+      port: 9527
+    },
     build: {
       rollupOptions: {
         input: {

@@ -306,7 +306,18 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
   const mcpList = useMemo(() => {
     const cwd = initData?.cwd;
     const plugins = initData?.plugins;
-    const mcpServers = initData?.mcpServers || [];
+    const rawMcpServers = initData?.mcpServers || [];
+
+    // ★ 按 name 去重（SDK 可能返回重复的 MCP）
+    const seenNames = new Set<string>();
+    const mcpServers = rawMcpServers.filter((mcp: McpServerInfo) => {
+      const name = typeof mcp === 'string' ? mcp : mcp.name;
+      if (seenNames.has(name)) {
+        return false;
+      }
+      seenNames.add(name);
+      return true;
+    });
 
     // Parse tools to get tool count per MCP server
     const toolsByServer: Record<string, number> = {};

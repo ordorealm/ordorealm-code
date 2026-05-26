@@ -21,7 +21,7 @@ import type { SkillLibrary } from '@/types/skill-library.types'
 
 /** Progress callback type for Claude Code execution (legacy) */
 export type ProgressCallback = (data: {
-  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>
@@ -37,6 +37,56 @@ export type ProgressCallback = (data: {
     agents?: string[]
     cwd?: string
     projectSkillNames?: string[]
+  }
+  /** Status data for api_retry, task events, tool progress etc. */
+  statusData?: {
+    status: string
+    reason?: string
+    /** task_started / task_progress / task_updated */
+    taskId?: string
+    subagentType?: string
+    description?: string
+    /** task_progress */
+    toolUseId?: string
+    /** task_updated */
+    taskStatus?: string
+    error?: string
+    /** tool_progress */
+    toolName?: string
+    parentToolUseId?: string
+    elapsed_time_seconds?: number
+    /** tool_use_summary */
+    precedingToolUseIds?: string[]
+    /** session_state_changed */
+    sessionState?: 'idle' | 'running' | 'requires_action'
+    /** permission_denied */
+    permissionDenied?: {
+      toolName: string
+      reason: string
+    }
+    /** rate_limit */
+    rateLimit?: {
+      tier: string
+      requestsRemaining?: number
+      resetAt?: string
+    }
+    /** memory_recall */
+    memories?: Array<{
+      path: string
+      scope: string
+      content?: string
+    }>
+    /** notification */
+    notification?: {
+      level: 'info' | 'warning' | 'error'
+      title?: string
+    }
+  }
+  /** Token usage data from SDK result */
+  usageData?: {
+    inputTokens: number
+    outputTokens: number
+    contextWindow: number
   }
 }) => void
 
@@ -132,6 +182,8 @@ export interface Api {
     abort: (sessionId: string) => Promise<{ success: boolean }>
     /** Close a session */
     closeSession: (sessionId: string) => Promise<{ success: boolean }>
+    /** Answer AskUserQuestion tool (submit user's answers) */
+    answerQuestion: (sessionId: string, answers: Record<string, string>) => Promise<{ success: boolean; error?: string }>
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (options: ClaudeExecuteOptions, onProgress?: ProgressCallback) => Promise<ClaudeCodeResult>
     /** Listen for progress events (legacy, for backward compatibility) */
@@ -210,6 +262,66 @@ export interface Api {
       id: string
       projectPath: string
     }) => Promise<{ success: boolean; error?: string }>
+  }
+  mcp: {
+    /** Get all MCP definitions */
+    list: () => Promise<{
+      definitions: Array<{
+        id: string
+        name: string
+        description: string
+        category: 'query' | 'browser' | 'desktop' | 'memory' | 'debug'
+        packageName: string
+        version: string
+        platforms: string[]
+        builtin: boolean
+        defaultEnabled: boolean
+        downloadSize: number
+        runtimeSize: number
+      }>
+    }>
+    /** Get all MCP instances */
+    instances: () => Promise<{
+      instances: Record<string, {
+        id: string
+        status: 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
+        downloadStatus: 'not_downloaded' | 'downloading' | 'downloaded' | 'download_failed' | 'extracting' | 'ready'
+        installPath?: string
+        pid?: number
+        startTime?: number
+        error?: string
+        downloadProgress?: number
+        downloadingFile?: string
+        toolsUsed?: string[]
+        lastActivity?: number
+      }>
+    }>
+    /** Enable an MCP */
+    enable: (id: string) => Promise<void>
+    /** Disable an MCP */
+    disable: (id: string) => Promise<void>
+    /** Start an MCP */
+    start: (id: string) => Promise<void>
+    /** Stop an MCP */
+    stop: (id: string) => Promise<void>
+    /** Restart an MCP */
+    restart: (id: string) => Promise<void>
+    /** Get MCP stats */
+    stats: () => Promise<{
+      stats: {
+        total: number
+        enabled: number
+        running: number
+        totalDownloadSize: number
+        downloadedSize: number
+      }
+    }>
+    /** Download an MCP */
+    download: (id: string) => Promise<void>
+    /** Listen for download progress events */
+    onDownloadProgress: (callback: (event: { id: string; progress: number; file: string }) => void) => () => void
+    /** Listen for status change events */
+    onStatusChange: (callback: (event: { id: string; status: string }) => void) => () => void
   }
 }
 

@@ -21,14 +21,155 @@ import { useProjectStore } from './project-store';
 import { useActivityStore } from './activity-store';
 import { getSessionFilePath, saveSessionToDisk, loadSessionFromDisk } from '@/services/session-storage';
 
-/** Maximum number of messages per session in memory */
+/** Maximum number of conversation rounds to keep in memory */
+const MAX_ROUNDS = 200;
+
+/** Initial number of rounds to load on startup */
+const INITIAL_ROUNDS = 20;
+
+/** Rounds per page for history loading */
+const ROUNDS_PER_PAGE = 20;
+
+/** @deprecated Use MAX_ROUNDS instead */
 const MAX_MESSAGES = 500;
 
-/** Initial number of messages to load on startup */
+/** @deprecated Use INITIAL_ROUNDS instead */
 const INITIAL_MESSAGES = 20;
 
-/** Messages per page for history loading */
+/** @deprecated Use ROUNDS_PER_PAGE instead */
 const MESSAGES_PER_PAGE = 20;
+
+/**
+ * Conversation round structure
+ * A round = user message + all tool operations + assistant response
+ */
+interface ConversationRound {
+  /** Index of the round (0-based) */
+  roundIndex: number;
+  /** Start index in the messages array */
+  startIndex: number;
+  /** End index in the messages array (exclusive) */
+  endIndex: number;
+  /** Number of messages in this round */
+  messageCount: number;
+  /** Timestamp of the user message */
+  timestamp: string;
+}
+
+/**
+ * Identify conversation rounds from messages
+ * A round starts with a user message and ends before the next user message
+ * @param messages Message array
+ * @returns Array of conversation rounds
+ */
+function identifyRounds(messages: Message[]): ConversationRound[] {
+  if (messages.length === 0) return [];
+
+  const rounds: ConversationRound[] = [];
+  let currentRoundStart = 0;
+  let roundIndex = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+
+    // A new round starts with a user message (except the first message)
+    if (message.role === 'user' && i > 0) {
+      // Close the previous round
+      rounds.push({
+        roundIndex,
+        startIndex: currentRoundStart,
+        endIndex: i,
+        messageCount: i - currentRoundStart,
+        timestamp: messages[currentRoundStart].timestamp,
+      });
+      currentRoundStart = i;
+      roundIndex++;
+    }
+  }
+
+  // Close the last round
+  if (currentRoundStart < messages.length) {
+    rounds.push({
+      roundIndex,
+      startIndex: currentRoundStart,
+      endIndex: messages.length,
+      messageCount: messages.length - currentRoundStart,
+      timestamp: messages[currentRoundStart].timestamp,
+    });
+  }
+
+  return rounds;
+}
+
+/**
+ * Trim messages by conversation rounds
+ * Keeps the most recent MAX_ROUNDS rounds
+ * @param messages Message array
+ * @returns Trimmed message array
+ */
+function trimMessagesByRounds(messages: Message[]): Message[] {
+  const rounds = identifyRounds(messages);
+
+  if (rounds.length <= MAX_ROUNDS) {
+    return messages;
+  }
+
+  // Keep the most recent MAX_ROUNDS rounds
+  const roundsToKeep = rounds.slice(-MAX_ROUNDS);
+  const startIndex = roundsToKeep[0].startIndex;
+
+  console.log(`[SessionStore] Trimming messages: ${rounds.length} rounds -> ${MAX_ROUNDS} rounds, ${messages.length} messages -> ${messages.length - startIndex} messages`);
+
+  return messages.slice(startIndex);
+}
+
+/**
+ * Get messages for the most recent N rounds
+ * @param messages Message array
+ * @param numRounds Number of rounds to get
+ * @returns Messages for the most recent N rounds
+ */
+function getRecentRounds(messages: Message[], numRounds: number): Message[] {
+  const rounds = identifyRounds(messages);
+
+  if (rounds.length <= numRounds) {
+    return [...messages]; // Return copy to ensure React detects change
+  }
+
+  const roundsToGet = rounds.slice(-numRounds);
+  const startIndex = roundsToGet[0].startIndex;
+
+  return messages.slice(startIndex);
+}
+
+/**
+ * Get older messages by rounds (for history loading)
+ * @param allMessages All messages from disk
+ * @param currentMessages Messages already in memory
+ * @param numRounds Number of rounds to load
+ * @returns Messages to prepend (in chronological order)
+ */
+function getOlderRounds(allMessages: Message[], currentMessages: Message[], numRounds: number): Message[] {
+  if (allMessages.length === 0) return [];
+
+  // Get IDs of messages already in memory
+  const currentIds = new Set(currentMessages.map(m => m.id));
+
+  // Find messages not in current memory
+  const olderMessages = allMessages.filter(m => !currentIds.has(m.id));
+  if (olderMessages.length === 0) return [];
+
+  // Identify rounds in older messages
+  const rounds = identifyRounds(olderMessages);
+  if (rounds.length === 0) return [];
+
+  // Get the most recent N rounds from older messages
+  const roundsToLoad = rounds.slice(-numRounds);
+  const startIndex = roundsToLoad[0].startIndex;
+
+  // Return in chronological order (oldest first) for prepending
+  return olderMessages.slice(startIndex);
+}
 
 /** Store state type for helper functions */
 type StoreState = SessionState & SessionActions;
@@ -49,9 +190,7 @@ let lastProgressEventTime: number = 0;
 /** ★ 心跳检测定时器 */
 let heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
 /** ★ 心跳超时时间（毫秒）- 如果超过这个时间没有收到任何事件，认为连接断开 */
-const HEARTBEAT_TIMEOUT = 300000; // 5分钟（给长时间操作足够时间）
-/** ★ 全局超时时间（毫秒）- 操作最大允许时间 */
-const GLOBAL_TIMEOUT = 600000; // 10分钟
+const HEARTBEAT_TIMEOUT = 1800000; // 30分钟（复杂任务可能需要很长时间）
 
 /**
  * 设置进度事件监听器
@@ -77,9 +216,49 @@ function setupProgressListener(
       cwd?: string;
       projectSkillNames?: string[];
     };
+    /** Status data for api_retry, task events, tool progress etc. */
     statusData?: {
       status: string;
       reason?: string;
+      /** task_started / task_progress / task_updated */
+      taskId?: string;
+      subagentType?: string;
+      description?: string;
+      /** task_progress */
+      toolUseId?: string;
+      /** task_updated */
+      taskStatus?: string;
+      error?: string;
+      /** tool_progress */
+      toolName?: string;
+      parentToolUseId?: string;
+      elapsed_time_seconds?: number;
+      /** tool_use_summary */
+      precedingToolUseIds?: string[];
+      /** session_state_changed */
+      sessionState?: 'idle' | 'running' | 'requires_action';
+      /** permission_denied */
+      permissionDenied?: {
+        toolName: string;
+        reason: string;
+      };
+      /** rate_limit */
+      rateLimit?: {
+        tier: string;
+        requestsRemaining?: number;
+        resetAt?: string;
+      };
+      /** memory_recall */
+      memories?: Array<{
+        path: string;
+        scope: string;
+        content?: string;
+      }>;
+      /** notification */
+      notification?: {
+        level: 'info' | 'warning' | 'error';
+        title?: string;
+      };
     };
     usageData?: {
       inputTokens: number;
@@ -160,6 +339,18 @@ function startHeartbeatCheck(
         heartbeatCheckTimer = null;
       }
 
+      // ★ 调用主进程的 abort，通知 SDK 中断会话
+      // 使用 async IIFE 确保正确处理 Promise
+      (async () => {
+        try {
+          await window.api.claude.abort(sessionId);
+          console.log('[SessionStore] Session abort request sent successfully');
+        } catch (err) {
+          console.warn('[SessionStore] Failed to abort session:', err);
+          // ★ 即使 abort 失败，也要重置前端状态
+        }
+      })();
+
       // 设置错误状态
       immediateFlushBuffer(set, sessionId);
       set(state => {
@@ -168,7 +359,7 @@ function startHeartbeatCheck(
 
         const updatedMessages = existingSession.messages.map(m =>
           m.id === assistantMessageId
-            ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 连接超时（5分钟无响应），请检查后端服务是否正常。如需继续，可尝试重新发送消息。' }
+            ? { ...m, isStreaming: false, isThinking: false, content: m.content + '\n\n⚠️ 连接超时（30分钟无响应），请检查后端服务是否正常。如需继续，可尝试重新发送消息。' }
             : m
         );
 
@@ -362,15 +553,12 @@ function getActivityDetail(toolName: string, toolInput?: Record<string, unknown>
 
 /**
  * Trim messages if exceeding maximum limit
+ * Now uses round-based trimming instead of message count
  * @param messages Message array
  * @returns Trimmed message array
  */
 function trimMessages(messages: Message[]): Message[] {
-  if (messages.length <= MAX_MESSAGES) {
-    return messages;
-  }
-  // Keep the most recent messages
-  return messages.slice(messages.length - MAX_MESSAGES);
+  return trimMessagesByRounds(messages);
 }
 
 /**
@@ -532,13 +720,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 const sessionData = await loadSessionFromDisk(sessionId);
                 console.log(`[SessionStore] Loaded session ${sessionId}: ${sessionData?.messages?.length || 0} messages from disk`);
                 if (sessionData) {
-                  // ★ Fix: Only load the most recent INITIAL_MESSAGES on startup
+                  // ★ Round-based loading: Only load the most recent INITIAL_ROUNDS on startup
                   // User can load older messages via "load history" button
                   const trimmedSession: Session = {
                     ...sessionData,
-                    messages: sessionData.messages.length > INITIAL_MESSAGES
-                      ? sessionData.messages.slice(-INITIAL_MESSAGES)
-                      : sessionData.messages,
+                    messages: getRecentRounds(sessionData.messages, INITIAL_ROUNDS),
                   };
                   loadedSessions[sessionId] = trimmedSession;
 
@@ -814,15 +1000,164 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           });
           console.log('[SessionStore] Session init data saved:', initData);
         } else if (type === 'status' && statusData) {
-          // 处理状态事件（如 api_retry）
+          // ★ 处理各种状态事件（api_retry、子 Agent 状态、工具进度等）
           console.log('[SessionStore] Status event:', statusData);
-          if (statusData.status === 'retrying') {
-            useActivityStore.getState().startActivity(sessionId, {
-              type: 'status',
-              detail: 'API 重试中...',
-              timestamp: Date.now(),
-            });
+
+          switch (statusData.status) {
+            case 'retrying':
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: 'API 重试中...',
+                timestamp: Date.now(),
+              });
+              break;
+
+            case 'task_started':
+              // 子 Agent/任务开始
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'tool_use',
+                detail: `启动子任务: ${statusData.subagentType || statusData.description || 'unknown'}`,
+                timestamp: Date.now(),
+                metadata: { taskId: statusData.taskId, subagentType: statusData.subagentType },
+              });
+              break;
+
+            case 'task_progress':
+              // 子 Agent/任务进度更新
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'tool_use',
+                detail: statusData.description || '子任务执行中...',
+                timestamp: Date.now(),
+                metadata: { taskId: statusData.taskId, toolUseId: statusData.toolUseId },
+              });
+              break;
+
+            case 'task_updated':
+              // 子 Agent/任务状态变化
+              if (statusData.taskStatus === 'completed') {
+                useActivityStore.getState().startActivity(sessionId, {
+                  type: 'tool_result',
+                  detail: '子任务完成',
+                  timestamp: Date.now(),
+                  metadata: { taskId: statusData.taskId },
+                });
+              } else if (statusData.taskStatus === 'failed') {
+                useActivityStore.getState().startActivity(sessionId, {
+                  type: 'status',
+                  detail: `子任务失败: ${statusData.error || 'unknown'}`,
+                  timestamp: Date.now(),
+                  metadata: { taskId: statusData.taskId, error: statusData.error },
+                });
+              }
+              break;
+
+            case 'tool_progress':
+              // 工具执行进度（包括子 Agent）
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'tool_use',
+                detail: `${statusData.toolName || 'Tool'} 执行中...`,
+                timestamp: Date.now(),
+                metadata: {
+                  toolName: statusData.toolName,
+                  toolUseId: statusData.toolUseId,
+                  parentToolUseId: statusData.parentToolUseId,
+                },
+              });
+              break;
+
+            case 'tool_summary':
+              // 工具使用摘要
+              if (statusData.precedingToolUseIds) {
+                console.log('[SessionStore] Tool summary for tools:', statusData.precedingToolUseIds);
+              }
+              break;
+
+            case 'session_state_changed':
+              // 会话状态变化（权威的轮次结束信号）
+              console.log('[SessionStore] Session state changed:', statusData.sessionState);
+              if (statusData.sessionState === 'requires_action') {
+                useActivityStore.getState().startActivity(sessionId, {
+                  type: 'status',
+                  detail: '等待用户操作...',
+                  timestamp: Date.now(),
+                });
+              }
+              break;
+
+            case 'permission_denied':
+              // 权限被拒绝
+              console.log('[SessionStore] Permission denied:', statusData.permissionDenied);
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: `工具 ${statusData.permissionDenied?.toolName || 'unknown'} 被拒绝`,
+                timestamp: Date.now(),
+              });
+              break;
+
+            case 'memory_recall':
+              // 记忆召回
+              console.log('[SessionStore] Memory recall:', statusData.memories?.length, 'memories');
+              break;
+
+            case 'task_notification':
+              // 后台任务通知
+              console.log('[SessionStore] Task notification:', statusData.taskId);
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: eventContent || '后台任务通知',
+                timestamp: Date.now(),
+                metadata: { taskId: statusData.taskId },
+              });
+              break;
+
+            case 'notification':
+              // 通用通知
+              console.log('[SessionStore] Notification:', statusData.notification);
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: eventContent,
+                timestamp: Date.now(),
+              });
+              break;
+
+            case 'elicitation_complete':
+              // MCP elicitation 完成
+              console.log('[SessionStore] MCP elicitation complete');
+              break;
+
+            case 'compact_boundary':
+              // 上下文压缩
+              console.log('[SessionStore] Context compacted');
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: '上下文已压缩',
+                timestamp: Date.now(),
+              });
+              break;
+
+            case 'auth_status':
+              // 认证状态
+              console.log('[SessionStore] Auth status:', eventContent);
+              break;
+
+            case 'prompt_suggestion':
+              // 提示建议
+              console.log('[SessionStore] Prompt suggestion available');
+              break;
+
+            default:
+              // 其他状态事件，记录日志
+              console.log('[SessionStore] Unhandled status type:', statusData.status);
           }
+        } else if (type === 'rate_limit') {
+          // ★ 速率限制事件
+          console.log('[SessionStore] Rate limit:', statusData?.rateLimit);
+          useActivityStore.getState().startActivity(sessionId, {
+            type: 'status',
+            detail: `速率限制: ${statusData?.rateLimit?.tier || 'unknown'}`,
+            timestamp: Date.now(),
+            metadata: { rateLimit: statusData?.rateLimit },
+          });
         } else if (type === 'text') {
           // Use buffering to reduce re-renders during streaming
           bufferStreamingText(sessionId, assistantMessageId, eventContent, set);
@@ -830,6 +1165,43 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           useActivityStore.getState().startActivity(sessionId, {
             type: 'thinking',
             detail: '正在回复...',
+            timestamp: Date.now(),
+          });
+        } else if (type === 'thinking') {
+          // ★ 处理 thinking 事件（来自 thinking_delta 或 thinking 块）
+          // 累积 thinking 内容到消息的 thinkingText 字段
+          if (eventContent) {
+            set(state => {
+              const existingSession = state.sessions[sessionId];
+              if (!existingSession) return state;
+              const msg = existingSession.messages.find(m => m.id === assistantMessageId);
+              if (!msg) return state;
+
+              const updatedMessages = existingSession.messages.map(m =>
+                m.id === assistantMessageId
+                  ? {
+                      ...m,
+                      thinkingText: (m.thinkingText || '') + eventContent,
+                      isThinking: true,
+                    }
+                  : m
+              );
+
+              return {
+                sessions: {
+                  ...state.sessions,
+                  [sessionId]: {
+                    ...existingSession,
+                    messages: updatedMessages,
+                  },
+                },
+              };
+            });
+          }
+          // 更新活动状态，表示 AI 正在思考（防止心跳超时）
+          useActivityStore.getState().startActivity(sessionId, {
+            type: 'thinking',
+            detail: '正在思考...',
             timestamp: Date.now(),
           });
         } else if (type === 'tool_use' && toolName) {
@@ -940,22 +1312,22 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
           console.log('[SessionStore] Tool result received:', { toolUseId, isError, content: eventContent?.substring(0, 50) });
 
+          // ★ 先在 set 外部查找 toolName，用于后续活动状态更新
+          const existingSessionForLookup = get().sessions[sessionId];
+          let matchingToolName = toolName || 'unknown';
+          if (toolUseId && existingSessionForLookup) {
+            const toolUseMessage = existingSessionForLookup.messages.find(
+              m => m.role === 'tool_use' && m.toolUseId === toolUseId
+            );
+            if (toolUseMessage?.toolName) {
+              matchingToolName = toolUseMessage.toolName;
+            }
+          }
+
           // Add tool_result message as independent message in the messages array
-          // Find the corresponding tool_use message to get toolName within the set callback
           set(state => {
             const existingSession = state.sessions[sessionId];
             if (!existingSession) return state;
-
-            // Find the corresponding tool_use message to get toolName
-            let matchingToolName = toolName || 'unknown';
-            if (toolUseId) {
-              const toolUseMessage = existingSession.messages.find(
-                m => m.role === 'tool_use' && m.toolUseId === toolUseId
-              );
-              if (toolUseMessage?.toolName) {
-                matchingToolName = toolUseMessage.toolName;
-              }
-            }
 
             // Create independent tool_result message (SpectrAI architecture)
             const toolResultMessage: Message = {
@@ -985,8 +1357,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             };
           });
 
-          // End activity
-          useActivityStore.getState().endActivity(sessionId);
+          // ★ 不在这里调用 endActivity！
+          // tool_result 只是某个工具的返回结果，父 Agent 可能还在继续执行
+          // 只有 complete/error 事件才应该清除活动状态
+          // 改为更新活动状态，表示工具已完成
+          useActivityStore.getState().startActivity(sessionId, {
+            type: 'tool_result',
+            detail: matchingToolName ? `${matchingToolName} 完成` : '工具执行完成',
+            timestamp: Date.now(),
+          });
         } else if (type === 'error') {
           // Flush any buffered text before handling error
           immediateFlushBuffer(set, sessionId);
@@ -994,6 +1373,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           get().updateMessage(sessionId, assistantMessageId, {
             content: `Error: ${eventContent}`,
             isStreaming: false,
+            isThinking: false,
           });
           // ★ 重要：结束思考计时器和活动状态
           useActivityStore.getState().endThinking(sessionId);
@@ -1003,9 +1383,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         } else if (type === 'complete') {
           // Flush any remaining buffered text before marking complete
           immediateFlushBuffer(set, sessionId);
-          // Mark streaming as complete
+          // Mark streaming as complete and thinking as finished
           get().updateMessage(sessionId, assistantMessageId, {
             isStreaming: false,
+            isThinking: false,
           });
           // End thinking timer and clear activity
           useActivityStore.getState().endThinking(sessionId);
@@ -1080,43 +1461,6 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             resolve();
           }
         }, 100);
-
-        // ★ 超时保护（5分钟）- 必须重置 isStreaming 状态
-        setTimeout(() => {
-          clearInterval(checkInterval);
-          // ★ 检查是否仍在 streaming，如果是则强制重置
-          const currentSession = get().sessions[sessionId];
-          const msg = currentSession?.messages.find(m => m.id === assistantMessageId);
-          if (msg?.isStreaming) {
-            console.warn(`[SessionStore] Timeout detected, forcing isStreaming to false for session: ${sessionId}`);
-            // 重置状态
-            immediateFlushBuffer(set, sessionId);
-            set(state => {
-              const existingSession = state.sessions[sessionId];
-              if (!existingSession) return state;
-
-              const updatedMessages = existingSession.messages.map(m =>
-                m.id === assistantMessageId
-                  ? { ...m, isStreaming: false, content: m.content + '\n\n⚠️ 操作超时（5分钟），已自动重置' }
-                  : m
-              );
-
-              return {
-                sessions: {
-                  ...state.sessions,
-                  [sessionId]: {
-                    ...existingSession,
-                    messages: updatedMessages,
-                  },
-                },
-              };
-            });
-            useActivityStore.getState().endThinking(sessionId);
-            useActivityStore.getState().endActivity(sessionId);
-            cleanupProgressListener();
-          }
-          resolve();
-        }, GLOBAL_TIMEOUT);
       });
 
       console.log(`[SessionStore] Message sent and response received for session: ${sessionId}`);
@@ -1134,6 +1478,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       get().updateMessage(sessionId, assistantMessageId, {
         content: `发送消息失败: ${errorMessage}`,
         isStreaming: false,
+        isThinking: false,
       });
       console.error('[SessionStore] Failed to send message:', error);
     } finally {
@@ -1268,9 +1613,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
     // ★ 关键修复：必须确保 messages 是全新的数组，这样 React 才会检测到变化
     // 并且要确保 sessionId 作为 activeSessionId 被设置，触发 UI 重新渲染
-    const messagesToShow = loadedMessages.length > INITIAL_MESSAGES
-      ? loadedMessages.slice(-INITIAL_MESSAGES)
-      : [...loadedMessages];  // ★ 使用 spread 创建新数组
+    // Round-based loading: Only load the most recent INITIAL_ROUNDS
+    const messagesToShow = getRecentRounds(loadedMessages, INITIAL_ROUNDS);
 
     set(state => ({
       activeSessionId: state.activeSessionId || sessionId,  // 确保激活
@@ -1337,7 +1681,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   },
 
   /**
-   * Load paginated history messages
+   * Load paginated history messages (round-based)
    * Returns messages from disk that are NOT already in the current session.
    * This is used for "load older messages" functionality.
    * @param sessionId Session ID
@@ -1363,27 +1707,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
     const diskMessages = sessionData.messages || [];
 
-    // Get IDs of messages already in session for deduplication
-    const currentMessageIds = new Set(session.messages.map(m => m.id));
+    // ★ Round-based loading: Load older messages by conversation rounds
+    const pageMessages = getOlderRounds(diskMessages, session.messages, ROUNDS_PER_PAGE);
 
-    // Filter to only messages NOT already in session
-    const newMessages = diskMessages.filter(m => !currentMessageIds.has(m.id));
-
-    if (newMessages.length === 0) {
-      console.log(`[SessionStore] No new messages to load for session: ${sessionId}`);
-      return [];
-    }
-
-    // ★ Fix: Always take the most recent MESSAGES_PER_PAGE from newMessages
-    // This gets the messages that are chronologically just before the current ones
-    // After prependMessages, the next call will return the next batch
-    const startIndex = Math.max(0, newMessages.length - MESSAGES_PER_PAGE);
-    const endIndex = newMessages.length;
-
-    // Return in chronological order (oldest first) for prepending
-    const pageMessages = newMessages.slice(startIndex, endIndex);
-
-    console.log(`[SessionStore] Loaded ${pageMessages.length} history messages for session: ${sessionId}`);
+    console.log(`[SessionStore] Loaded ${pageMessages.length} history messages (${ROUNDS_PER_PAGE} rounds) for session: ${sessionId}`);
 
     return pageMessages;
   },
@@ -1494,6 +1821,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       content,
       timestamp: new Date().toISOString(),
       isStreaming,
+      thinkingText: '',
+      isThinking: false,
     };
 
     set(state => {
@@ -1675,13 +2004,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
     console.log('[SessionStore] Responding to question:', answers);
 
-    // Format answers as response message
+    // ★ 调用 answerQuestion IPC 将答案传回 SDK 的 canUseTool 回调
+    // 不能使用 sendMessage，因为那会发送新消息而不是回答工具调用
     try {
-      const answerText = Object.entries(answers)
-        .map(([idx, answer]) => `Q${Number(idx) + 1}: ${answer}`)
-        .join('\n');
-
-      await window.api.claude.sendMessage(sessionId, answerText);
+      const result = await window.api.claude.answerQuestion(sessionId, answers);
+      console.log('[SessionStore] answerQuestion result:', result);
 
       // Clear the pending state
       get().clearInteractivePanel(sessionId);

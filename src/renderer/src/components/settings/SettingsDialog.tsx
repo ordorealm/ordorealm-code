@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { ProviderSettings } from './ProviderSettings';
 import { SkillLibrarySettings } from './SkillLibrarySettings';
+import { MCPSettings } from './MCPSettings';
 import { useAppearanceStore, type Theme } from '@/stores/appearance-store';
 
 interface SettingsDialogProps {
@@ -17,7 +18,7 @@ interface SettingsDialogProps {
 }
 
 /** Available settings tabs */
-type SettingsTab = 'provider' | 'appearance' | 'skill-library';
+type SettingsTab = 'provider' | 'appearance' | 'skill-library' | 'mcp';
 
 /**
  * SettingsDialog component
@@ -88,6 +89,17 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps): JSX.El
             >
               专家技能库
             </button>
+            <button
+              onClick={() => setActiveTab('mcp')}
+              className={`
+                w-full px-3 py-2 text-left text-sm transition-colors
+                ${activeTab === 'mcp'
+                  ? 'bg-bg-primary text-text-primary border-r-2 border-accent-indigo'
+                  : 'text-text-secondary hover:bg-bg-hover'}
+              `}
+            >
+              MCP 工具
+            </button>
           </div>
 
           {/* Tab content */}
@@ -100,6 +112,9 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps): JSX.El
             )}
             {activeTab === 'skill-library' && (
               <SkillLibrarySettings />
+            )}
+            {activeTab === 'mcp' && (
+              <MCPSettings />
             )}
           </div>
         </div>

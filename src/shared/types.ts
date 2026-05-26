@@ -930,6 +930,32 @@ export const IPC_CHANNELS = {
   SESSION_EVENT: 'session-event' as const,
   /** Legacy progress channel for backward compatibility */
   LEGACY_PROGRESS: 'claude:progress' as const,
+
+  // MCP Manager channels
+  /** MCP list request/response */
+  MCP_LIST: 'mcp:list' as const,
+  /** MCP instances request/response */
+  MCP_INSTANCES: 'mcp:instances' as const,
+  /** MCP enable request */
+  MCP_ENABLE: 'mcp:enable' as const,
+  /** MCP disable request */
+  MCP_DISABLE: 'mcp:disable' as const,
+  /** MCP start request */
+  MCP_START: 'mcp:start' as const,
+  /** MCP stop request */
+  MCP_STOP: 'mcp:stop' as const,
+  /** MCP restart request */
+  MCP_RESTART: 'mcp:restart' as const,
+  /** MCP stats request */
+  MCP_STATS: 'mcp:stats' as const,
+  /** MCP download request */
+  MCP_DOWNLOAD: 'mcp:download' as const,
+  /** MCP download progress event */
+  MCP_DOWNLOAD_PROGRESS: 'mcp:download-progress' as const,
+  /** MCP status change event */
+  MCP_STATUS_CHANGE: 'mcp:status-change' as const,
+  /** MCP output event */
+  MCP_OUTPUT: 'mcp:output' as const,
 } as const
 
 /**

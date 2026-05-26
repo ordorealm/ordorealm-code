@@ -26,7 +26,7 @@ export interface ToolCallResult {
 
 /** 进度事件数据 */
 export interface ProgressEvent {
-  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit';
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -43,9 +43,49 @@ export interface ProgressEvent {
     cwd?: string;
     projectSkillNames?: string[];
   };
+  /** Status data for api_retry, task events, tool progress etc. */
   statusData?: {
     status: string;
     reason?: string;
+    /** task_started / task_progress / task_updated */
+    taskId?: string;
+    subagentType?: string;
+    description?: string;
+    /** task_progress */
+    toolUseId?: string;
+    /** task_updated */
+    taskStatus?: string;
+    error?: string;
+    /** tool_progress */
+    toolName?: string;
+    parentToolUseId?: string;
+    elapsed_time_seconds?: number;
+    /** tool_use_summary */
+    precedingToolUseIds?: string[];
+    /** session_state_changed */
+    sessionState?: 'idle' | 'running' | 'requires_action';
+    /** permission_denied */
+    permissionDenied?: {
+      toolName: string;
+      reason: string;
+    };
+    /** rate_limit */
+    rateLimit?: {
+      tier: string;
+      requestsRemaining?: number;
+      resetAt?: string;
+    };
+    /** memory_recall */
+    memories?: Array<{
+      path: string;
+      scope: string;
+      content?: string;
+    }>;
+    /** notification */
+    notification?: {
+      level: 'info' | 'warning' | 'error';
+      title?: string;
+    };
   };
 }
 

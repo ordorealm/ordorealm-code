@@ -23,6 +23,7 @@ import type {
 import { BaseProviderAdapter } from './BaseProviderAdapter'
 import { AsyncIterableQueue } from '../shared/async-queue'
 import { RuntimeManager, type RuntimeEnvConfig } from '../main/runtime-manager'
+import { getMCPConnector } from '../main/mcp/connector'
 
 // ─── V1 Query Types (runtime loaded from SDK) ─────────────────────────────────
 
@@ -213,6 +214,24 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
     // Extra MCP servers
     if (config.extraMcpServers) {
       sdkOptions.mcpServers = config.extraMcpServers
+    }
+
+    // 集成内置 MCP 服务
+    try {
+      const mcpConnector = getMCPConnector()
+      const mcpServerConfigs = mcpConnector.getMCPServerConfigs()
+      const mcpCount = Object.keys(mcpServerConfigs).length
+
+      if (mcpCount > 0) {
+        console.log(`[ClaudeSdkAdapter] 集成 ${mcpCount} 个内置 MCP 服务`)
+        // 合并到现有 mcpServers 配置中
+        sdkOptions.mcpServers = {
+          ...sdkOptions.mcpServers,
+          ...mcpServerConfigs
+        }
+      }
+    } catch (err) {
+      console.warn('[ClaudeSdkAdapter] 获取 MCP 服务配置失败:', err)
     }
 
     console.log('[ClaudeSdkAdapter] Starting query with model:', config.model || 'default')

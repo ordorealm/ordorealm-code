@@ -53,7 +53,10 @@ export interface RemoteControlStatus {
   enabled: boolean
   /** Number of connected channels */
   connectedChannels: number
-  /** List of channels with their status */
+  /**
+   * List of channels with their status
+   * @note authToken is NOT included for security reasons; use dedicated token APIs instead
+   */
   channels: Array<{
     id: string
     type: ChannelType
@@ -374,6 +377,27 @@ export interface ConfirmationResponse {
   confirmed: boolean
   /** Response timestamp */
   timestamp: string
+}
+
+// ============ Renderer API Types ============
+
+/**
+ * Remote control API interface for renderer process
+ * Provides type-safe access to IPC remote control APIs
+ */
+export interface RemoteControlApi {
+  /** Get current remote control status */
+  getStatus(): Promise<RemoteControlStatus>
+  /** Connect a new channel */
+  connect(channelType: ChannelType): Promise<{ qrCode: string; channelId: string }>
+  /** Disconnect a channel */
+  disconnect(channelId: string): Promise<{ success: boolean }>
+  /** Update remote control settings */
+  updateSettings(partial: Partial<RemoteControlSettings>): Promise<{ success: boolean }>
+  /** Subscribe to status changes (optional) */
+  onStatusChange?(callback: (status: RemoteControlStatus) => void): () => void
+  /** Subscribe to channel status changes (optional) */
+  onChannelStatusChange?(callback: (event: { channelId: string; status: ChannelStatus }) => void): () => void
 }
 
 // ============ Constraints ============

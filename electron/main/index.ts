@@ -10,6 +10,8 @@ import { SecureStorage } from './secure-storage'
 import * as git from './git'
 import { RuntimeManager } from './runtime-manager'
 import { registerSkillLibraryHandlers } from './skill-library-handlers'
+import { initializeMCPIPC } from './mcp-ipc'
+import { getMCPConnector } from './mcp/connector'
 
 // Check if running in development mode
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -112,7 +114,7 @@ interface ClaudeExecuteOptions {
 
 // 进度事件类型
 interface ProgressEvent {
-  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>
@@ -126,10 +128,49 @@ interface ProgressEvent {
     tools?: string[]
     mcpServers?: string[]
   }
-  /** Status data for api_retry etc. */
+  /** Status data for api_retry, task events, tool progress etc. */
   statusData?: {
     status: string
     reason?: string
+    /** task_started / task_progress / task_updated */
+    taskId?: string
+    subagentType?: string
+    description?: string
+    /** task_progress */
+    toolUseId?: string
+    /** task_updated */
+    taskStatus?: string
+    error?: string
+    /** tool_progress */
+    toolName?: string
+    parentToolUseId?: string
+    elapsed_time_seconds?: number
+    /** tool_use_summary */
+    precedingToolUseIds?: string[]
+    /** session_state_changed */
+    sessionState?: 'idle' | 'running' | 'requires_action'
+    /** permission_denied */
+    permissionDenied?: {
+      toolName: string
+      reason: string
+    }
+    /** rate_limit */
+    rateLimit?: {
+      tier: string
+      requestsRemaining?: number
+      resetAt?: string
+    }
+    /** memory_recall */
+    memories?: Array<{
+      path: string
+      scope: string
+      content?: string
+    }>
+    /** notification */
+    notification?: {
+      level: 'info' | 'warning' | 'error'
+      title?: string
+    }
   }
   /** Token usage data from SDK result */
   usageData?: {
@@ -143,6 +184,8 @@ interface ProgressEvent {
 type SDKQuery = {
   close(): void
   interrupt(): Promise<void>
+  /** 动态设置 MCP 服务器配置 */
+  setMcpServers?(servers: Record<string, any>): Promise<void>
   [Symbol.asyncIterator](): AsyncIterator<any>
 }
 
@@ -166,6 +209,8 @@ interface ClaudeSession {
   originalEnv?: Record<string, string | undefined>
   /** ★ 软中断标记：表示这是用户主动中断而非错误，会话可继续使用 */
   isSoftAbort?: boolean
+  /** ★ SDK 内部的会话 ID，用于 resume 恢复上下文 */
+  providerSessionId?: string
   /** ★ Provider 配置，用于中断后自动恢复 */
   providerConfig?: {
     apiKey: string
@@ -174,13 +219,33 @@ interface ClaudeSession {
     apiType?: 'anthropic' | 'openai'
     envOverrides?: Record<string, string>
   }
+  /** ★ 是否有工具调用（用于判断空内容是否正常） */
+  hasToolCalls?: boolean
+  /** ★ 是否有 thinking 内容（用于判断空内容是否正常） */
+  hasThinking?: boolean
+  /** ★ MCP 配置快照，用于检测变化并动态更新 */
+  mcpConfigSnapshot?: Record<string, any>
 }
 
 // 活跃会话映射
 const activeSessions = new Map<string, ClaudeSession>()
 
+/**
+ * 获取所有活跃会话
+ * 用于 MCP Connector 在 MCP 启动/停止时更新会话配置
+ */
+export function getAllActiveSessions(): Map<string, ClaudeSession> {
+  return activeSessions
+}
+
 // 会话创建锁（防止并发创建同一会话）
 const sessionCreationLocks = new Map<string, Promise<ClaudeSession>>()
+
+// ★ AskUserQuestion 挂起队列（参考 SpectrAI）
+const pendingQuestions = new Map<string, {
+  resolve: (result: any) => void
+  toolInput: Record<string, unknown>
+}>()
 
 /**
  * 写入调试日志到文件
@@ -293,6 +358,65 @@ async function loadSdk(): Promise<any> {
 }
 
 /**
+ * ★ 创建权限回调函数（参考 SpectrAI 的 createPermissionHandler）
+ *
+ * bypassPermissions 模式下，AskUserQuestion 仍需要用户交互才能继续
+ * 因此通过 canUseTool 回调拦截 AskUserQuestion，弹面板等待用户回答
+ *
+ * @param sessionId 会话 ID
+ */
+function createPermissionHandler(sessionId: string) {
+  return async (
+    toolName: string,
+    input: Record<string, unknown>,
+    _options: any
+  ): Promise<any> => {
+    // ★ AskUserQuestion：弹面板等待用户回答
+    // 必须返回 { behavior: 'deny', message: '用户答案' } 格式
+    // Claude 会从 deny message 中提取答案继续执行
+    if (toolName === 'AskUserQuestion') {
+      console.log('[Claude SDK] AskUserQuestion intercepted, waiting for user answer:', JSON.stringify(input).slice(0, 200))
+      return new Promise((resolve) => {
+        pendingQuestions.set(sessionId, { resolve, toolInput: input })
+
+        // 发送事件到前端，显示问题面板
+        const mainWindow = BrowserWindow.getAllWindows()[0]
+        if (mainWindow) {
+          mainWindow.webContents.send('claude:progress', {
+            type: 'tool_use',
+            content: 'Tool: AskUserQuestion',
+            toolName: 'AskUserQuestion',
+            toolInput: input,
+            toolUseId: `ask-${Date.now()}`,
+          } as ProgressEvent)
+        }
+      })
+    }
+
+    // ★ ExitPlanMode：自动批准（发出事件让 UI 展示，但不等用户点击）
+    if (toolName === 'ExitPlanMode') {
+      console.log('[Claude SDK] ExitPlanMode auto-approved')
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+      if (mainWindow) {
+        mainWindow.webContents.send('claude:progress', {
+          type: 'tool_use',
+          content: 'Tool: ExitPlanMode',
+          toolName: 'ExitPlanMode',
+          toolInput: input,
+          toolUseId: `exit-plan-${Date.now()}`,
+        } as ProgressEvent)
+      }
+      return { behavior: 'allow' }
+    }
+
+    // 普通工具：自动放行（与 bypassPermissions 行为一致）
+    // ⚠️ 普通工具的 "allow" 返回格式是 { updatedInput: Record }（将工具输入原样传回）
+    // 不能用 { behavior: 'allow' }，否则 SDK Zod 校验失败
+    return { updatedInput: input }
+  }
+}
+
+/**
  * 创建或获取会话
  * 参考 SpectrAI 的 startSession 模式
  *
@@ -305,12 +429,66 @@ async function getOrCreateSession(
   apiType: 'anthropic' | 'openai',
   baseUrl?: string,
   model?: string,
-  envOverrides?: Record<string, string>
+  envOverrides?: Record<string, string>,
+  /** ★ 用于恢复会话上下文的 SDK session ID */
+  resumeSessionId?: string
 ): Promise<ClaudeSession> {
   // 检查是否已有活跃会话
   const existing = activeSessions.get(sessionId)
-  if (existing && existing.status !== 'error') {
+  // ★ 只有当 status 不是 error 且 sdkQuery 存在时才复用
+  // 如果 sdkQuery 为 null，说明之前被中断并关闭了，需要重建
+  if (existing && existing.status !== 'error' && existing.sdkQuery) {
+    // ★ 即使复用会话，也检查并更新 MCP 配置
+    try {
+      const mcpConnector = getMCPConnector()
+      const builtinMcpServers = mcpConnector.getMCPServerConfigs()
+
+      // 读取全局 MCP 配置
+      let globalMcpServers: Record<string, any> = {}
+      try {
+        const claudeJsonPath = join(app.getPath('home'), '.claude.json')
+        const claudeJsonContent = await fs.readFile(claudeJsonPath, 'utf-8')
+        const claudeJson = JSON.parse(claudeJsonContent)
+        globalMcpServers = claudeJson.mcpServers || {}
+      } catch {}
+
+      // 合并配置
+      const mergedConfig = {
+        ...globalMcpServers,
+        ...builtinMcpServers
+      }
+
+      // 比较配置是否有变化
+      if (JSON.stringify(existing.mcpConfigSnapshot) !== JSON.stringify(mergedConfig)) {
+        console.log('[Claude SDK] MCP 配置变化，动态更新')
+        console.log('[Claude SDK] 内置 MCP:', Object.keys(builtinMcpServers))
+
+        // 使用 SDK API 更新
+        if (existing.sdkQuery.setMcpServers) {
+          await existing.sdkQuery.setMcpServers(mergedConfig)
+          existing.mcpConfigSnapshot = mergedConfig
+          console.log('[Claude SDK] MCP 配置已更新')
+        } else {
+          console.warn('[Claude SDK] SDK 不支持 setMcpServers，无法动态更新 MCP')
+        }
+      }
+    } catch (err) {
+      console.warn('[Claude SDK] 更新 MCP 配置失败:', err)
+    }
+
     return existing
+  }
+
+  // 如果会话存在但 sdkQuery 为 null，需要重建
+  // 保存 providerSessionId 用于恢复上下文
+  let savedProviderSessionId: string | undefined = resumeSessionId
+  if (existing && !existing.sdkQuery) {
+    console.log(`[Claude SDK] Session ${sessionId} exists but sdkQuery is null, will recreate`)
+    // 如果没有传入 resumeSessionId，尝试使用保存的
+    if (!savedProviderSessionId && existing.providerSessionId) {
+      savedProviderSessionId = existing.providerSessionId
+      console.log(`[Claude SDK] Will resume with providerSessionId: ${savedProviderSessionId}`)
+    }
   }
 
   // 检查是否有正在创建中的会话（并发锁）
@@ -403,6 +581,122 @@ async function getOrCreateSession(
         skills: 'all',
         // 直接配置 MCP 服务器（从全局配置读取）
         mcpServers: globalMcpServers,
+        // ★ canUseTool 回调：拦截 AskUserQuestion 等需要用户交互的工具
+        canUseTool: createPermissionHandler(sessionId),
+      }
+
+      // ★ 添加系统提示，指导 AI 使用内置 MCP 工具
+      sdkOptions.systemPrompt = {
+        type: 'preset',
+        preset: 'claude_code',
+        append: `
+## 内置 MCP 工具使用指南
+
+当用户询问以下内容时，请自动调用相应的 MCP 工具：
+
+### 1. 网络搜索 (mcp__open-websearch__search)
+用于搜索网络信息，包括但不限于：
+- 天气查询：用户问"今天天气"、"北京天气"等，调用 search 工具
+- 新闻资讯：用户问"最新新闻"、"科技新闻"等
+- 知识查询：用户问"什么是..."、"如何..."等需要搜索的问题
+- 示例：用户问"今天北京天气怎么样"，调用 \`mcp__open-websearch__search\` 搜索"北京今天天气"
+
+### 2. 网页内容抓取 (mcp__fetch__get_markdown)
+用于获取网页内容：
+- 用户需要查看某个网页的内容时
+- 用户提供了 URL 并希望获取其内容时
+
+### 3. 浏览器自动化 (mcp__playwright__*)
+用于需要操作浏览器的场景：
+- 截取网页截图
+- 填写表单
+- 点击按钮
+- 页面导航
+
+### 4. macOS 自动化 (mcp__macos-automator__*)
+用于 macOS 系统自动化：
+- 执行 AppleScript
+- 运行快捷指令
+- 系统控制
+
+### 5. ⭐ 知识记忆系统 (mcp__memory__*) - 重要！
+
+**Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储和查询重要信息。**
+
+#### 什么时候必须存储记忆？
+- 用户说"记住..."、"别忘了..."、"记下来..."
+- 用户提供了重要的个人信息（姓名、偏好、联系方式等）
+- 用户提到了项目配置、API 密钥、账号信息等
+- 用户明确要求下次记住某些设置
+
+#### 什么时候必须查询记忆？
+- **每次对话开始时**，先调用 \`mcp__memory__read_graph\` 或 \`mcp__memory__search_nodes\` 查询历史记忆
+- 用户问"之前说的..."、"上次提到的..."、"我记得..."
+- 用户询问自己的偏好、设置、历史记录
+
+#### 记忆工具使用方法：
+- \`mcp__memory__create_entities\`：创建实体（人、项目、概念等）
+  - 示例：用户说"我叫张三"，创建实体 {name: "张三", type: "person", observations: ["用户的名字"]}
+- \`mcp__memory__add_observations\`：为实体添加属性/观察
+  - 示例：用户说"我喜欢用深色主题"，添加观察 ["喜欢深色主题"] 到用户实体
+- \`mcp__memory__create_relations\`：创建实体间关系
+  - 示例：用户说"我在做项目A"，创建关系 {from: "张三", to: "项目A", relationType: "正在做"}
+- \`mcp__memory__search_nodes\`：搜索已存储的知识
+  - 示例：用户问"我喜欢什么"，搜索 "喜欢" 或 "偏好"
+- \`mcp__memory__read_graph\`：读取整个知识图谱
+
+**重要**：
+1. 当用户的问题可以通过上述工具解决时，请主动调用工具，不要询问用户是否需要使用工具。
+2. 记忆系统是核心功能，必须积极使用，不要让用户反复提供相同信息。
+
+### 6. Windows 桌面自动化 (mcp__desktop-touch__*)
+用于 Windows 系统桌面自动化操作：
+- 鼠标移动、点击、拖拽
+- 键盘输入、快捷键
+- 窗口控制（移动、调整大小、关闭）
+- 屏幕截图
+
+使用场景：
+- 用户需要自动化操作 Windows 应用
+- 用户需要模拟鼠标键盘操作
+- 用户需要控制窗口位置和大小
+
+### 7. 浏览器自动化 - MCPBrowser (mcp__mcpbrowser__*)
+用于浏览器自动化，支持 Cookie 持久化和浏览器指纹保持：
+- 网页导航、点击、输入
+- 表单自动填写
+- 网页截图
+- Cookie 管理（保持登录状态）
+
+使用场景：
+- 需要保持登录状态的自动化操作
+- 需要避免被网站检测为自动化工具
+- 需要跨会话保持浏览器状态
+`
+      }
+
+      // ★ 集成内置 MCP 服务
+      try {
+        const mcpConnector = getMCPConnector()
+        const builtinMcpServers = mcpConnector.getMCPServerConfigs()
+        const builtinMcpCount = Object.keys(builtinMcpServers).length
+
+        if (builtinMcpCount > 0) {
+          console.log(`[Claude SDK] 集成 ${builtinMcpCount} 个内置 MCP 服务:`, Object.keys(builtinMcpServers))
+          // 合并到现有 mcpServers 配置中
+          sdkOptions.mcpServers = {
+            ...sdkOptions.mcpServers,
+            ...builtinMcpServers
+          }
+        }
+      } catch (err) {
+        console.warn('[Claude SDK] 获取内置 MCP 服务配置失败:', err)
+      }
+
+      // ★ 如果有 resumeSessionId，添加 resume 选项恢复上下文
+      if (savedProviderSessionId) {
+        sdkOptions.resume = savedProviderSessionId
+        console.log('[Claude SDK] Resuming session with providerSessionId:', savedProviderSessionId)
       }
 
       // ★ 在打包模式下显式指定原生二进制路径
@@ -451,6 +745,9 @@ async function getOrCreateSession(
 
       console.log('[Claude SDK] SDK options mcpServers:', JSON.stringify(sdkOptions.mcpServers, null, 2))
 
+      // ★ 保存 MCP 配置快照，用于后续检测变化
+      const mcpConfigSnapshot = { ...sdkOptions.mcpServers }
+
       // ★ 设置模型（通过 SDK 的 model 选项）
       if (model) {
         sdkOptions.model = model
@@ -477,6 +774,16 @@ async function getOrCreateSession(
         output: '',
         lastActivity: Date.now(),
         originalEnv,  // 保存原始环境变量
+        providerConfig: {
+          apiKey,
+          baseUrl,
+          model,
+          apiType,
+          envOverrides,
+        },
+        hasToolCalls: false,
+        hasThinking: false,
+        mcpConfigSnapshot,  // ★ 保存 MCP 配置快照
       }
 
       activeSessions.set(sessionId, session)
@@ -522,9 +829,17 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
       switch (msg.type) {
         case 'system':
+          session.lastActivity = Date.now()
           if (msg.subtype === 'init') {
             console.log('[Claude SDK] Initialized:', msg.model)
             session.status = 'running'
+
+            // ★ 保存 SDK 内部的 session_id，用于 resume 恢复上下文
+            if (msg.session_id) {
+              session.providerSessionId = msg.session_id
+              console.log('[Claude SDK] Provider session ID:', msg.session_id)
+            }
+
             // 发送 init 数据给渲染进程（包含 tools 和 mcpServers）
             const tools = msg.tools || []
             const mcpServers = msg.mcp_servers || msg.mcpServers || []
@@ -611,19 +926,209 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
                 status: msg.status || 'unknown',
               },
             } as ProgressEvent)
+          } else if (msg.subtype === 'task_started') {
+            // ★ 子 Agent/任务开始
+            console.log('[Claude SDK] Task started:', msg.task_id, msg.subagent_type, msg.description)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `启动子任务: ${msg.description || msg.subagent_type || 'unknown'}`,
+              statusData: {
+                status: 'task_started',
+                taskId: msg.task_id,
+                subagentType: msg.subagent_type,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'task_progress') {
+            // ★ 子 Agent/任务进度
+            console.log('[Claude SDK] Task progress:', msg.task_id, msg.description, msg.usage)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: msg.description || '子任务执行中...',
+              statusData: {
+                status: 'task_progress',
+                taskId: msg.task_id,
+                toolUseId: msg.tool_use_id,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'task_updated') {
+            // ★ 子 Agent/任务状态更新
+            console.log('[Claude SDK] Task updated:', msg.task_id, msg.patch?.status)
+            // 发送所有任务状态更新（不只是 completed/failed）
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: msg.patch?.status === 'completed'
+                ? '子任务完成'
+                : msg.patch?.status === 'failed'
+                  ? `子任务失败: ${msg.patch?.error || 'unknown'}`
+                  : `子任务状态: ${msg.patch?.status || 'unknown'}`,
+              statusData: {
+                status: 'task_updated',
+                taskId: msg.task_id,
+                taskStatus: msg.patch?.status,
+                error: msg.patch?.error,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'session_state_changed') {
+            // ★ 会话状态变化（权威的轮次结束信号）
+            console.log('[Claude SDK] Session state changed:', msg.state)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `会话状态: ${msg.state}`,
+              statusData: {
+                status: 'session_state_changed',
+                sessionState: msg.state,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'permission_denied') {
+            // ★ 权限被拒绝（自动拒绝，非交互式）
+            console.log('[Claude SDK] Permission denied:', msg.tool_name, msg.reason)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `工具 ${msg.tool_name} 被拒绝: ${msg.reason || 'unknown'}`,
+              statusData: {
+                status: 'permission_denied',
+                permissionDenied: {
+                  toolName: msg.tool_name,
+                  reason: msg.reason || 'unknown',
+                },
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'memory_recall') {
+            // ★ 记忆召回
+            console.log('[Claude SDK] Memory recall:', msg.mode, msg.memories?.length)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `召回 ${msg.memories?.length || 0} 条记忆`,
+              statusData: {
+                status: 'memory_recall',
+                memories: msg.memories,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'task_notification') {
+            // ★ 后台任务通知
+            console.log('[Claude SDK] Task notification:', msg.task_id, msg.message)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: msg.message || '后台任务通知',
+              statusData: {
+                status: 'task_notification',
+                taskId: msg.task_id,
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'notification') {
+            // ★ 通用通知
+            console.log('[Claude SDK] Notification:', msg.level, msg.message)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: msg.message || '通知',
+              statusData: {
+                status: 'notification',
+                notification: {
+                  level: msg.level,
+                  title: msg.title,
+                },
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'elicitation_complete') {
+            // ★ MCP elicitation 完成
+            console.log('[Claude SDK] Elicitation complete:', msg.mcp_server_name)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `MCP elicitation 完成: ${msg.mcp_server_name}`,
+              statusData: {
+                status: 'elicitation_complete',
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'compact_boundary') {
+            // ★ 压缩边界（上下文压缩事件）
+            console.log('[Claude SDK] Compact boundary:', msg.boundary_type)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: '上下文已压缩',
+              statusData: {
+                status: 'compact_boundary',
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'files_persisted') {
+            // ★ 文件持久化事件
+            console.log('[Claude SDK] Files persisted:', msg.files?.length)
+            // 不发送到前端，仅记录日志
+          } else if (msg.subtype === 'auth_status') {
+            // ★ 认证状态
+            console.log('[Claude SDK] Auth status:', msg.status)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: `认证状态: ${msg.status}`,
+              statusData: {
+                status: 'auth_status',
+              },
+            } as ProgressEvent)
+          } else if (msg.subtype === 'prompt_suggestion') {
+            // ★ 提示建议
+            console.log('[Claude SDK] Prompt suggestion:', msg.suggestions?.length)
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: '有可用的提示建议',
+              statusData: {
+                status: 'prompt_suggestion',
+              },
+            } as ProgressEvent)
+          } else {
+            // 其他 system 子类型，记录日志
+            console.log('[Claude SDK] Unhandled system subtype:', msg.subtype, msg)
+          }
+          break
+
+        case 'tool_progress':
+          // ★ 工具执行进度（包括子 Agent）
+          session.lastActivity = Date.now()
+          console.log('[Claude SDK] Tool progress:', msg.tool_name, msg.tool_use_id, msg.elapsed_time_seconds)
+          mainWindow.webContents.send('claude:progress', {
+            type: 'status',
+            content: `${msg.tool_name} 执行中... (${msg.elapsed_time_seconds}s)`,
+            statusData: {
+              status: 'tool_progress',
+              toolName: msg.tool_name,
+              toolUseId: msg.tool_use_id,
+              parentToolUseId: msg.parent_tool_use_id,
+            },
+          } as ProgressEvent)
+          break
+
+        case 'tool_use_summary':
+          // ★ 工具使用摘要 - 可能包含子 Agent 的结果
+          session.lastActivity = Date.now()
+          console.log('[Claude SDK] Tool use summary:', msg.summary, msg.preceding_tool_use_ids)
+          // 如果有摘要内容，发送给前端
+          if (msg.summary) {
+            mainWindow.webContents.send('claude:progress', {
+              type: 'status',
+              content: msg.summary,
+              statusData: {
+                status: 'tool_summary',
+                precedingToolUseIds: msg.preceding_tool_use_ids,
+              },
+            } as ProgressEvent)
           }
           break
 
         case 'stream_event':
+          session.lastActivity = Date.now()
           const evt = msg.event
           if (evt?.type === 'content_block_delta') {
             const delta = evt.delta
             if (delta?.type === 'text_delta' && delta.text) {
               session.output += delta.text
-              session.lastActivity = Date.now()
               mainWindow.webContents.send('claude:progress', {
                 type: 'text',
                 content: delta.text,
+              } as ProgressEvent)
+            } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+              // ★ 处理 thinking_delta，转发到前端（防止心跳超时）
+              session.hasThinking = true
+              mainWindow.webContents.send('claude:progress', {
+                type: 'thinking',
+                content: delta.thinking,
               } as ProgressEvent)
             }
             // Handle input_json_delta for tool_use streaming
@@ -637,6 +1142,9 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             const contentBlock = evt.content_block
             if (contentBlock?.type === 'tool_use') {
               console.log('[Claude SDK] Tool use started:', contentBlock.name, contentBlock.id)
+              // ★ 标记有工具调用（防止空内容误判）
+              session.hasToolCalls = true
+              session.lastActivity = Date.now()
               mainWindow.webContents.send('claude:progress', {
                 type: 'tool_use',
                 content: `Tool: ${contentBlock.name}`,
@@ -649,6 +1157,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           break
 
         case 'assistant':
+          session.lastActivity = Date.now()
           const content = msg.message?.content || []
           for (const block of content) {
             if (block.type === 'text') {
@@ -660,7 +1169,17 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
                   content: text,
                 } as ProgressEvent)
               }
+            } else if (block.type === 'thinking') {
+              // ★ 处理 thinking 块
+              session.hasThinking = true
+              const thinkingText = block.thinking || ''
+              mainWindow.webContents.send('claude:progress', {
+                type: 'thinking',
+                content: thinkingText,
+              } as ProgressEvent)
             } else if (block.type === 'tool_use') {
+              // ★ 标记有工具调用
+              session.hasToolCalls = true
               mainWindow.webContents.send('claude:progress', {
                 type: 'tool_use',
                 content: `Tool: ${block.name}`,
@@ -673,6 +1192,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           break
 
         case 'user':
+          session.lastActivity = Date.now()
           const userContent = msg.message?.content || []
           for (const block of userContent) {
             if (block.type === 'tool_result') {
@@ -684,14 +1204,30 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               } as ProgressEvent)
             }
           }
+
+          // ★ 处理 tool_use_result 字段 - 可能包含子 Agent 的结果
+          if (msg.tool_use_result !== undefined && msg.tool_use_result !== null) {
+            console.log('[Claude SDK] User message has tool_use_result:', msg.parent_tool_use_id)
+            // parent_tool_use_id 关联到父 Agent 的 Agent 工具调用
+            if (msg.parent_tool_use_id) {
+              mainWindow.webContents.send('claude:progress', {
+                type: 'tool_result',
+                toolUseId: msg.parent_tool_use_id,
+                content: String(msg.tool_use_result).slice(0, 500),
+                isError: false,
+              } as ProgressEvent)
+            }
+          }
           break
 
         case 'result':
+          session.lastActivity = Date.now()
           const isSuccess = msg.subtype === 'success'
           console.log('[Claude SDK] Result:', isSuccess ? 'success' : 'failed')
           console.log('[Claude SDK] Result message keys:', Object.keys(msg))
           console.log('[Claude SDK] Result usage:', JSON.stringify(msg.usage, null, 2))
           console.log('[Claude SDK] Result totalTokens:', msg.totalTokens)
+          console.log('[Claude SDK] Session hasToolCalls:', session.hasToolCalls, 'hasThinking:', session.hasThinking)
           session.status = isSuccess ? 'idle' : 'error'
 
           // ★ 提取 token 使用量数据
@@ -715,11 +1251,23 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               handleSoftAbortCleanup(session)
               return
             }
-            mainWindow.webContents.send('claude:progress', {
-              type: 'complete',
-              content: session.output,
-              usageData,
-            } as ProgressEvent)
+
+            // ★ 检查 output 是否为空 - 但如果有工具调用或 thinking，则不算空
+            const hasContent = session.output?.trim() || session.hasToolCalls || session.hasThinking
+            if (!hasContent) {
+              console.warn(`[Claude SDK] Empty output detected for session: ${session.id}`)
+              console.warn('[Claude SDK] This may indicate SDK returned success without generating content')
+              mainWindow.webContents.send('claude:progress', {
+                type: 'error',
+                content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
+              } as ProgressEvent)
+            } else {
+              mainWindow.webContents.send('claude:progress', {
+                type: 'complete',
+                content: session.output || '',
+                usageData,
+              } as ProgressEvent)
+            }
           } else {
             const errorMsg = msg.result || 'Unknown error'
             mainWindow.webContents.send('claude:progress', {
@@ -727,6 +1275,29 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               content: errorMsg,
             } as ProgressEvent)
           }
+          break
+
+        case 'rate_limit_event':
+          // ★ 速率限制事件
+          session.lastActivity = Date.now()
+          console.log('[Claude SDK] Rate limit event:', msg.tier, msg.rate_limit_info)
+          mainWindow.webContents.send('claude:progress', {
+            type: 'rate_limit',
+            content: `速率限制: ${msg.tier || 'unknown'}`,
+            statusData: {
+              status: 'rate_limit',
+              rateLimit: {
+                tier: msg.tier,
+                requestsRemaining: msg.rate_limit_info?.requests_remaining,
+                resetAt: msg.rate_limit_info?.reset_at,
+              },
+            },
+          } as ProgressEvent)
+          break
+
+        default:
+          // ★ 处理未知消息类型，记录日志防止遗漏
+          console.log('[Claude SDK] Unhandled message type:', msg.type, msg)
           break
       }
     }
@@ -740,13 +1311,23 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
       return
     }
 
-    // 发送 complete 事件给前端，确保 isStreaming 被重置
+    // 发送 complete/error 事件给前端，确保 isStreaming 被重置
     const mainWindow = BrowserWindow.getAllWindows()[0]
     if (mainWindow) {
-      mainWindow.webContents.send('claude:progress', {
-        type: 'complete',
-        content: session.output,
-      } as ProgressEvent)
+      // ★ 检查 output 是否为空 - 但如果有工具调用或 thinking，则不算空
+      const hasContent = session.output?.trim() || session.hasToolCalls || session.hasThinking
+      if (!hasContent) {
+        console.warn(`[Claude SDK] Stream ended with empty output for session: ${session.id}`)
+        mainWindow.webContents.send('claude:progress', {
+          type: 'error',
+          content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
+        } as ProgressEvent)
+      } else {
+        mainWindow.webContents.send('claude:progress', {
+          type: 'complete',
+          content: session.output || '',
+        } as ProgressEvent)
+      }
     }
 
   } catch (err: any) {
@@ -1073,8 +1654,15 @@ function registerClaudeHandlers(): void {
       console.log('[Claude SDK] Received model:', model)
       console.log('[Claude SDK] Received baseUrl:', baseUrl)
 
+      // ★ 如果已有会话，获取保存的 providerSessionId 用于恢复上下文
+      const existingSession = activeSessions.get(sessionId)
+      const resumeSessionId = existingSession?.providerSessionId
+      if (resumeSessionId) {
+        console.log('[Claude SDK] Will resume with existing providerSessionId:', resumeSessionId)
+      }
+
       try {
-        await getOrCreateSession(sessionId, workingDirectory, apiKey, apiType, baseUrl, model, envOverrides)
+        await getOrCreateSession(sessionId, workingDirectory, apiKey, apiType, baseUrl, model, envOverrides, resumeSessionId)
         console.log('[Claude SDK] Session started:', sessionId)
         return { success: true }
       } catch (err: any) {
@@ -1092,7 +1680,7 @@ function registerClaudeHandlers(): void {
       console.log('[Claude SDK] ===== claude:sendMessage called =====')
       console.log('[Claude SDK] Session:', sessionId, 'Prompt:', prompt.substring(0, 50))
 
-      const session = activeSessions.get(sessionId)
+      let session = activeSessions.get(sessionId)
       if (!session) {
         console.error('[Claude SDK] Session not found:', sessionId)
         return { success: false, error: `Session ${sessionId} not found. Please start session first.` }
@@ -1104,8 +1692,46 @@ function registerClaudeHandlers(): void {
         return { success: false, error: 'Session is in error state' }
       }
 
+      // ★ 检查 sdkQuery 是否可用，如果不可用需要重建会话
+      if (!session.sdkQuery) {
+        console.log('[Claude SDK] sdkQuery is null, need to recreate session')
+
+        // 使用保存的 providerConfig 重建会话
+        const config = session.providerConfig
+        if (!config) {
+          console.error('[Claude SDK] No providerConfig saved, cannot recreate session')
+          return { success: false, error: 'Session was interrupted and cannot be restored. Please restart the session.' }
+        }
+
+        // ★ 获取保存的 providerSessionId 用于恢复上下文
+        const resumeSessionId = session.providerSessionId
+        if (resumeSessionId) {
+          console.log('[Claude SDK] Will resume with providerSessionId:', resumeSessionId)
+        }
+
+        try {
+          // 调用 getOrCreateSession 重建会话，传入 resumeSessionId
+          session = await getOrCreateSession(
+            sessionId,
+            session.workingDirectory,
+            config.apiKey,
+            config.apiType || 'anthropic',
+            config.baseUrl,
+            config.model,
+            config.envOverrides,
+            resumeSessionId  // ★ 传入用于恢复上下文的 session ID
+          )
+          console.log('[Claude SDK] Session recreated successfully')
+        } catch (err: any) {
+          console.error('[Claude SDK] Failed to recreate session:', err)
+          return { success: false, error: `Failed to recreate session: ${err.message}` }
+        }
+      }
+
       // 重置输出（每轮对话重新开始）
       session.output = ''
+      session.hasToolCalls = false
+      session.hasThinking = false
       session.status = 'running'
       session.lastActivity = Date.now()
 
@@ -1133,9 +1759,18 @@ function registerClaudeHandlers(): void {
 
       console.log('[Claude SDK] Soft abort for session:', sessionId)
 
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+
       // 检查会话状态
       if (session.status !== 'running') {
-        console.log(`[Claude SDK] Session ${sessionId} not running (status=${session.status}), skip abort`)
+        console.log(`[Claude SDK] Session ${sessionId} not running (status=${session.status}), skip abort but notify frontend`)
+        // ★ 即使会话不是 running，也要通知前端重置状态（防止前端卡在 streaming）
+        if (mainWindow) {
+          mainWindow.webContents.send('claude:progress', {
+            type: 'complete',
+            content: session.output || '',
+          } as ProgressEvent)
+        }
         return { success: true }
       }
 
@@ -1156,6 +1791,11 @@ function registerClaudeHandlers(): void {
             ),
           ])
           console.log('[Claude SDK] SDK interrupt called successfully')
+
+          // ★ interrupt 成功后，主动发送 complete 事件
+          // 不依赖 consumeSessionStream 的处理，确保前端状态被重置
+          // 注意：consumeSessionStream 可能会在 interrupt 后继续处理一些消息
+          // 所以这里不立即发送 complete，让 consumeSessionStream 的 handleSoftAbortCleanup 处理
         } catch (err) {
           console.warn('[Claude SDK] Error calling interrupt:', err)
           // interrupt 失败时，强制关闭 SDK query
@@ -1167,6 +1807,29 @@ function registerClaudeHandlers(): void {
           }
           // 清空 sdkQuery 引用，下次发送消息时会重新创建
           session.sdkQuery = null
+
+          // ★ 重要：interrupt 失败时，必须主动通知前端重置状态
+          // 否则前端会一直卡在 streaming 状态
+          console.log('[Claude SDK] Notifying frontend of forced abort')
+          session.status = 'idle'
+          session.isSoftAbort = false
+          if (mainWindow) {
+            mainWindow.webContents.send('claude:progress', {
+              type: 'complete',
+              content: session.output || '',
+            } as ProgressEvent)
+          }
+        }
+      } else {
+        // ★ 没有 sdkQuery 时，也要通知前端重置状态
+        console.log('[Claude SDK] No sdkQuery, notifying frontend to reset state')
+        session.status = 'idle'
+        session.isSoftAbort = false
+        if (mainWindow) {
+          mainWindow.webContents.send('claude:progress', {
+            type: 'complete',
+            content: session.output || '',
+          } as ProgressEvent)
         }
       }
 
@@ -1182,6 +1845,8 @@ function registerClaudeHandlers(): void {
       if (!session) return { success: false }
 
       console.log('[Claude SDK] Closing session:', sessionId)
+
+      const mainWindow = BrowserWindow.getAllWindows()[0]
 
       // 恢复原始环境变量
       if (session.originalEnv) {
@@ -1206,7 +1871,54 @@ function registerClaudeHandlers(): void {
         }
       }
 
+      // ★ 通知前端重置状态（防止前端卡在 streaming）
+      if (mainWindow && session.status === 'running') {
+        mainWindow.webContents.send('claude:progress', {
+          type: 'complete',
+          content: session.output || '',
+        } as ProgressEvent)
+      }
+
       activeSessions.delete(sessionId)
+      return { success: true }
+    }
+  )
+
+  // ★ 回答 AskUserQuestion（参考 SpectrAI 的 sendQuestionAnswer）
+  // 用户在 UI 中回答问题后，调用此接口将答案传回 SDK
+  ipcMain.handle(
+    'claude:answerQuestion',
+    async (_event, sessionId: string, answers: Record<string, string>): Promise<{ success: boolean; error?: string }> => {
+      console.log('[Claude SDK] answerQuestion called for session:', sessionId)
+      console.log('[Claude SDK] Answers:', JSON.stringify(answers))
+
+      const pending = pendingQuestions.get(sessionId)
+      if (!pending) {
+        console.warn('[Claude SDK] No pending question for session:', sessionId)
+        return { success: false, error: 'No pending question' }
+      }
+
+      // 格式化答案为 Claude 可理解的格式
+      // 必须返回 { behavior: 'deny', message: '答案内容' }
+      // Claude 会从 deny message 中提取答案继续执行
+      const questions = pending.toolInput.questions as Array<{ question: string; header?: string }> | undefined
+      let answersText = '用户已回答了您的问题：\n'
+      if (Array.isArray(questions)) {
+        questions.forEach((q, i) => {
+          const key = String(i)
+          const answer = answers[key] || answers[q.header || ''] || answers[q.question] || '（未填写）'
+          answersText += `• ${q.header || q.question}：${answer}\n`
+        })
+      } else {
+        answersText += JSON.stringify(answers)
+      }
+
+      console.log('[Claude SDK] Formatted answers:', answersText)
+
+      // 调用 resolve 函数，将答案传回 SDK
+      pending.resolve({ behavior: 'deny', message: answersText })
+      pendingQuestions.delete(sessionId)
+
       return { success: true }
     }
   )
@@ -1234,6 +1946,8 @@ function registerClaudeHandlers(): void {
 
         // 发送用户消息
         session.output = ''
+        session.hasToolCalls = false
+        session.hasThinking = false
         session.status = 'running'
         session.inputStream.enqueue({
           type: 'user',
@@ -1513,6 +2227,22 @@ app.whenReady().then(async () => {
   registerFileWatcherHandlers()
   registerGitHandlers()
   registerSkillLibraryHandlers()
+
+  // Initialize MCP Manager (built-in MCP tools)
+  console.log('[Main] Initializing MCP Manager...')
+  try {
+    // ★ 先设置 Connector 的活跃会话回调（在 MCP 启动之前）
+    getMCPConnector().setGetActiveSessionsCallback(() => activeSessions)
+
+    // 然后初始化 MCP（会自动恢复运行中的 MCP）
+    await initializeMCPIPC()
+
+    console.log('[Main] MCP Manager initialized')
+  } catch (err) {
+    console.error('[Main] Failed to initialize MCP Manager:', err)
+    // Continue without MCP - not critical for basic functionality
+  }
+
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

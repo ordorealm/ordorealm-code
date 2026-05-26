@@ -704,7 +704,7 @@ export class ChannelManager {
 
     // Connected event
     unsubscribers.push(
-      adapter.on('connected', (data: any) => {
+      adapter.on('connected', (data: { userId?: string; nickname?: string }) => {
         this.handleAdapterConnected(channelId, data)
       })
     )

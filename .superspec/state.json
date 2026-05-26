@@ -77,11 +77,30 @@
       ]
     },
     "plan": {
-      "rounds": 0,
+      "rounds": 3,
       "minRounds": 3,
       "maxRounds": 5,
-      "status": "pending",
-      "history": []
+      "status": "passed",
+      "history": [
+        {
+          "round": 1,
+          "theme": "结构完整性",
+          "result": "passed",
+          "timestamp": "2026-05-26T18:00:00+08:00"
+        },
+        {
+          "round": 2,
+          "theme": "依赖正确性",
+          "result": "passed",
+          "timestamp": "2026-05-26T18:01:00+08:00"
+        },
+        {
+          "round": 3,
+          "theme": "任务合理性",
+          "result": "passed",
+          "timestamp": "2026-05-26T18:02:00+08:00"
+        }
+      ]
     }
   },
   "verification": {

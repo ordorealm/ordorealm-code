@@ -15,6 +15,7 @@ import type {
   RemoteControlApi
 } from '../../../shared/types/remote-control'
 import { REMOTE_CONTROL_CONSTRAINTS } from '../../../shared/types/remote-control'
+import { getRemoteControlClient } from '../services/remote-control-client'
 
 /**
  * 远程控制 Store 状态
@@ -119,19 +120,21 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
    * 加载远程控制设置
    */
   loadSettings: async () => {
-    const api = getRemoteControlApi()
-    if (!api) {
+    if (!isRemoteControlApiAvailable()) {
       set({ settings: DEFAULT_SETTINGS })
       return
     }
 
     try {
-      const status = await api.getStatus()
+      const client = getRemoteControlClient()
+      const response = await client.getStatus()
+      // response.status 包含 RemoteControlStatus
+      const status = response.status
       set({
         settings: {
           enabled: status.enabled,
           requireConfirm: status.requireConfirm,
-          channels: status.channels.map(c => ({
+          channels: (status.channels ?? []).map((c: { id: string; type: ChannelType; status: ChannelStatus; connectedAt: string | null }) => ({
             id: c.id,
             type: c.type,
             status: c.status,
@@ -152,8 +155,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
    * @param partial - 部分设置更新
    */
   updateSettings: async (partial: Partial<RemoteControlSettings>) => {
-    const api = getRemoteControlApi()
-    if (!api) {
+    if (!isRemoteControlApiAvailable()) {
       // 优雅降级：直接更新本地状态
       set(state => ({
         settings: { ...state.settings, ...partial }
@@ -163,15 +165,15 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
     }
 
     try {
-      const result = await api.updateSettings(partial)
-      if (result.success) {
-        set(state => ({
-          settings: { ...state.settings, ...partial }
-        }))
-        console.log('[Remote Control Store] 设置更新成功')
-      } else {
-        throw new Error('更新设置失败')
+      const client = getRemoteControlClient()
+      // updateSettings 只接受 requireConfirm 参数
+      if (partial.requireConfirm !== undefined) {
+        await client.updateSettings(partial.requireConfirm)
       }
+      set(state => ({
+        settings: { ...state.settings, ...partial }
+      }))
+      console.log('[Remote Control Store] 设置更新成功')
     } catch (err) {
       console.error('[Remote Control Store] 更新设置失败:', err)
       set({ error: String(err) })
@@ -203,8 +205,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
    * @returns Promise resolving to QR code and channel ID
    */
   connectChannel: async (channelType: ChannelType) => {
-    const api = getRemoteControlApi()
-    if (!api) {
+    if (!isRemoteControlApiAvailable()) {
       throw new Error('远程控制 API 不可用')
     }
 
@@ -218,7 +219,8 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
       set({ connectingChannelId: 'pending', scanCountdown: 60 })
       console.log(`[Remote Control Store] 开始连接 ${channelType} 通道`)
 
-      const result = await api.connect(channelType)
+      const client = getRemoteControlClient()
+      const result = await client.connect(channelType)
 
       // 添加新通道到列表
       const newChannel: Channel = {
@@ -251,8 +253,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
    * @param channelId - 通道 ID
    */
   disconnectChannel: async (channelId: string) => {
-    const api = getRemoteControlApi()
-    if (!api) {
+    if (!isRemoteControlApiAvailable()) {
       // 优雅降级：直接从本地状态移除
       set(state => ({
         settings: {
@@ -265,18 +266,15 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
     }
 
     try {
-      const result = await api.disconnect(channelId)
-      if (result.success) {
-        set(state => ({
-          settings: {
-            ...state.settings,
-            channels: state.settings.channels.filter(c => c.id !== channelId)
-          }
-        }))
-        console.log(`[Remote Control Store] 通道 ${channelId} 已断开`)
-      } else {
-        throw new Error('断开通道失败')
-      }
+      const client = getRemoteControlClient()
+      await client.disconnect(channelId)
+      set(state => ({
+        settings: {
+          ...state.settings,
+          channels: state.settings.channels.filter(c => c.id !== channelId)
+        }
+      }))
+      console.log(`[Remote Control Store] 通道 ${channelId} 已断开`)
     } catch (err) {
       console.error(`[Remote Control Store] 断开通道 ${channelId} 失败:`, err)
       set({ error: String(err) })
@@ -354,7 +352,7 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
                 ...state.settings,
                 enabled: status.enabled,
                 requireConfirm: status.requireConfirm,
-                channels: status.channels.map(c => ({
+                channels: (status.channels ?? []).map(c => ({
                   id: c.id,
                   type: c.type,
                   status: c.status,

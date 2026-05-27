@@ -196,6 +196,13 @@ export class ChannelManager {
    *
    * Initializes storage and loads existing channels from persistence.
    * If autoConnect is enabled, attempts to reconnect to stored channels.
+   *
+   * Auto-reconnect logic:
+   * 1. Load channels from storage
+   * 2. For each channel that was 'connected', check if WeClaw service is running
+   * 3. If WeClaw is running and has credentials, restore channel to 'connected'
+   * 4. If WeClaw is not running but has credentials, start WeClaw and restore
+   * 5. If no credentials, mark channel as 'disconnected'
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -213,7 +220,7 @@ export class ChannelManager {
 
     this.logger.info(`Loaded ${settings.channels.length} channels from storage`)
 
-    // Add channels to memory (without adapters initially)
+    // Add channels to memory
     for (const channel of settings.channels) {
       this.channels.set(channel.id, {
         channel,
@@ -221,11 +228,92 @@ export class ChannelManager {
         unsubscribers: [],
       })
 
-      this.logger.debug(`Loaded channel: ${channel.id} (${channel.type})`)
+      this.logger.debug(`Loaded channel: ${channel.id} (${channel.type}) - status: ${channel.status}`)
     }
 
     this.initialized = true
     this.logger.info('ChannelManager initialized successfully')
+
+    // Auto-reconnect channels that were previously connected
+    if (this.config.autoConnect) {
+      await this.restoreConnections()
+    }
+  }
+
+  /**
+   * Restore connections for channels that were previously connected
+   *
+   * This method is called during initialization to restore connections
+   * for channels that were in 'connected' state when the app was closed.
+   *
+   * For WeChat channels, this checks:
+   * 1. If WeClaw service is running (health check)
+   * 2. If credentials exist (user is logged in)
+   * 3. If both are true, restores channel to 'connected' state
+   */
+  async restoreConnections(): Promise<void> {
+    this.logger.info('Restoring channel connections...')
+
+    for (const [channelId, entry] of this.channels) {
+      // Only restore channels that were connected
+      if (entry.channel.status !== 'connected') {
+        this.logger.debug(`Skipping channel ${channelId} - status is ${entry.channel.status}`)
+        continue
+      }
+
+      if (entry.channel.type === 'wechat') {
+        try {
+          // Import WeClaw SDK to check service status
+          const { WeClawSDKImpl } = await import('../adapters/weclaw-sdk')
+          const sdk = new WeClawSDKImpl()
+          sdk.init({ debug: this.config.enableLogging })
+
+          const status = await sdk.checkServiceStatus()
+
+          if (status.running && status.loggedIn) {
+            this.logger.info(`WeClaw service is running and logged in, restoring channel ${channelId}`)
+
+            // Create adapter and set up events
+            const adapter = this.createAdapter('wechat', channelId)
+            const unsubscribers = this.setupAdapterEvents(channelId, adapter)
+
+            // Update channel entry
+            this.channels.set(channelId, {
+              channel: {
+                ...entry.channel,
+                status: 'connected',
+              },
+              adapter,
+              unsubscribers,
+            })
+
+            // Persist status update
+            await this.storage.updateChannelStatus(channelId, 'connected')
+
+            // Emit connected event
+            this.eventEmitter.emit('channel_connected', {
+              channelId,
+              userId: status.userId,
+            })
+
+            this.logger.info(`Channel ${channelId} restored successfully`)
+          } else {
+            this.logger.info(`WeClaw service not ready (running: ${status.running}, loggedIn: ${status.loggedIn}), marking channel ${channelId} as disconnected`)
+
+            // Update status to disconnected
+            entry.channel.status = 'disconnected'
+            await this.storage.updateChannelStatus(channelId, 'disconnected')
+          }
+        } catch (error) {
+          this.logger.error(`Failed to restore channel ${channelId}:`, error)
+          // Mark as disconnected on error
+          entry.channel.status = 'disconnected'
+          await this.storage.updateChannelStatus(channelId, 'disconnected')
+        }
+      }
+    }
+
+    this.logger.info('Channel connection restoration complete')
   }
 
   /**

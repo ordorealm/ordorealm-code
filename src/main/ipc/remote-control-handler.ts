@@ -112,6 +112,9 @@ export interface RemoteControlHandler {
 
   /** Set storage service */
   setStorage(storage: RemoteControlStorage): void
+
+  /** Set up channel manager event listeners for real-time updates */
+  setupChannelManagerEvents(): void
 }
 
 // ============ Main Class ============

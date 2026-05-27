@@ -2275,28 +2275,24 @@ function createIdeApiAdapter(): IdeApiAdapter {
     },
 
     /**
-     * Map MCP internal status to API status type
-     * Internal: 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
-     * API: 'running' | 'stopped' | 'error'
-     */
-    const mapMcpStatus = (status: string): 'running' | 'stopped' | 'error' => {
-      switch (status) {
-        case 'running':
-        case 'starting':
-          return 'running'
-        case 'stopped':
-        case 'stopping':
-          return 'stopped'
-        case 'error':
-        default:
-          return 'error'
-      }
-    }
-
-    /**
      * Get MCP tools status
      */
     async getMcpStatus(): Promise<MCPStatus[]> {
+      // Map MCP internal status to API status type
+      const mapMcpStatus = (status: string): 'running' | 'stopped' | 'error' => {
+        switch (status) {
+          case 'running':
+          case 'starting':
+            return 'running'
+          case 'stopped':
+          case 'stopping':
+            return 'stopped'
+          case 'error':
+          default:
+            return 'error'
+        }
+      }
+
       try {
         const mcpManager = getMCPManager()
         const instances = mcpManager.getInstances()
@@ -2408,9 +2404,10 @@ async function initializeRemoteControl(): Promise<void> {
     await remoteControlStorage.initialize()
     console.log('[RemoteControl] Storage initialized')
 
-    // Initialize channel manager
+    // Initialize channel manager with autoConnect to restore previous connections
     channelManager = new ChannelManager({
       enableLogging: true,
+      autoConnect: true,  // Auto-restore connections on startup
     })
     await channelManager.initialize()
     console.log('[RemoteControl] Channel manager initialized')
@@ -2420,7 +2417,9 @@ async function initializeRemoteControl(): Promise<void> {
     handler.setChannelManager(channelManager)
     handler.setStorage(remoteControlStorage)
     handler.register()
-    console.log('[RemoteControl] IPC handlers registered')
+    // Set up event forwarding from channel manager to renderer
+    handler.setupChannelManagerEvents()
+    console.log('[RemoteControl] IPC handlers registered and events set up')
 
     // Create and inject IDE API adapter for real IDE operations
     const ideApiAdapter = createIdeApiAdapter()

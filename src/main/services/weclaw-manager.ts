@@ -470,11 +470,15 @@ export class WeClawManager {
       throw new Error('WeClaw binary not found. Please ensure WeClaw is installed.');
     }
 
-    this.logger.info('Starting WeClaw login process...');
+    this.logger.info(`Starting WeClaw login process with binary: ${this.config.binaryPath}`);
 
     return new Promise((resolve, reject) => {
+      let output = '';
+      let resolved = false;
+      let loginProcess: ReturnType<typeof spawn> | null = null;
+
       try {
-        const loginProcess = spawn(
+        loginProcess = spawn(
           this.config.binaryPath,
           ['login'],
           {
@@ -482,10 +486,11 @@ export class WeClawManager {
           }
         );
 
-        let output = '';
-        let resolved = false;
+        // Log when process starts
+        this.logger.info(`WeClaw login process spawned (PID: ${loginProcess.pid})`);
 
-        loginProcess.stdout.on('data', (data) => {
+        // Use optional chaining since TypeScript thinks stdout/stderr could be null
+        loginProcess.stdout?.on('data', (data) => {
           output += data.toString();
           this.logger.debug(`WeClaw stdout: ${data.toString().trim()}`);
 
@@ -495,11 +500,13 @@ export class WeClawManager {
           if (qrUrlMatch && !resolved) {
             resolved = true;
             this.logger.info(`QR URL captured: ${qrUrlMatch[1]}`);
+            // Kill the process after capturing QR URL
+            loginProcess?.kill();
             resolve(qrUrlMatch[1]);
           }
         });
 
-        loginProcess.stderr.on('data', (data) => {
+        loginProcess.stderr?.on('data', (data) => {
           output += data.toString();
           this.logger.debug(`WeClaw stderr: ${data.toString().trim()}`);
         });
@@ -508,11 +515,17 @@ export class WeClawManager {
           this.logger.error('WeClaw login process error:', error);
           if (!resolved) {
             resolved = true;
-            reject(error);
+            // Check for architecture mismatch error
+            if (error.message.includes('bad CPU type') || error.message.includes('exec format')) {
+              reject(new Error(`WeClaw 二进制文件架构不匹配。当前系统: ${process.platform}-${process.arch}，请检查 WeClaw 安装包。`));
+            } else {
+              reject(error);
+            }
           }
         });
 
-        loginProcess.on('close', (code) => {
+        loginProcess.on('close', (code, signal) => {
+          this.logger.info(`WeClaw login process closed (code: ${code}, signal: ${signal})`);
           // If we haven't resolved yet, check if we found a QR URL
           if (!resolved) {
             if (code === 0 || output.includes('QR URL:')) {
@@ -528,14 +541,22 @@ export class WeClawManager {
               }
             } else {
               this.logger.error(`WeClaw login failed with code ${code}`);
-              reject(new Error(`WeClaw login failed with code ${code}. Output: ${output}`));
+              // Provide more helpful error message
+              const errorMsg = output.includes('bad CPU type')
+                ? 'WeClaw 二进制文件架构不匹配。请检查 WeClaw 安装包是否与您的系统架构兼容。'
+                : output.includes('command not found')
+                  ? 'WeClaw 命令未找到。请确保 WeClaw 已正确安装。'
+                  : `WeClaw login failed with code ${code}. Output: ${output}`;
+              reject(new Error(errorMsg));
             }
           }
         });
 
       } catch (error) {
         this.logger.error('Failed to start WeClaw login:', error);
-        reject(error);
+        if (!resolved) {
+          reject(error);
+        }
       }
     });
   }

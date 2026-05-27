@@ -1,0 +1,206 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - text: "skip to:"
+          - link "skip to content" [ref=e8] [cursor=pointer]:
+            - /url: "#main"
+            - text: content
+          - link "skip to package search" [ref=e9] [cursor=pointer]:
+            - /url: "#search"
+            - text: package search
+          - link "skip to sign in" [ref=e10] [cursor=pointer]:
+            - /url: "#signin"
+            - text: sign in
+        - generic [ref=e11]:
+          - button "Light mode — click for dark" [ref=e12] [cursor=pointer]:
+            - img [ref=e13]
+          - navigation "Product Navigation" [ref=e15]:
+            - list [ref=e16]:
+              - listitem [ref=e17]:
+                - link "Pro" [ref=e18] [cursor=pointer]:
+                  - /url: /products/pro
+              - listitem [ref=e19]:
+                - link "Teams" [ref=e20] [cursor=pointer]:
+                  - /url: /products/teams
+              - listitem [ref=e21]:
+                - link "Pricing" [ref=e22] [cursor=pointer]:
+                  - /url: /products
+              - listitem [ref=e23]:
+                - link "Documentation" [ref=e24] [cursor=pointer]:
+                  - /url: https://docs.npmjs.com
+      - generic [ref=e26]:
+        - generic [ref=e27]: npm
+        - link "Npm" [ref=e29] [cursor=pointer]:
+          - /url: /
+          - img [ref=e30]
+        - generic [ref=e33]:
+          - generic [ref=e35]:
+            - img [ref=e37]
+            - combobox "Search packages" [ref=e43]
+          - button "Search" [ref=e45]
+        - generic [ref=e47]:
+          - link "Sign Up" [ref=e48] [cursor=pointer]:
+            - /url: /signup
+          - link "Sign In" [ref=e49] [cursor=pointer]:
+            - /url: /login
+    - main [ref=e50]:
+      - generic [ref=e51]:
+        - generic [ref=e52]:
+          - heading "weclaw" [level=1] [ref=e53]:
+            - generic [ref=e54]: weclaw
+          - generic [ref=e55]: 0.0.0 •
+          - generic [ref=e56]: Public
+          - generic [ref=e57]:
+            - text: • Published
+            - time [ref=e58]: 2 months ago
+        - tablist [ref=e59]:
+          - tab "Readme" [selected] [ref=e60] [cursor=pointer]:
+            - generic [ref=e61]:
+              - img [ref=e62]
+              - text: Readme
+          - tab "Code Beta" [ref=e64] [cursor=pointer]:
+            - generic [ref=e65]:
+              - img [ref=e66]
+              - text: Code
+              - generic [ref=e69]: Beta
+          - tab "0 Dependencies" [ref=e70] [cursor=pointer]:
+            - generic [ref=e71]:
+              - img [ref=e72]
+              - text: 0 Dependencies
+          - tab "0 Dependents" [ref=e74] [cursor=pointer]:
+            - generic [ref=e75]:
+              - img [ref=e76]
+              - text: 0 Dependents
+          - tab "1 Versions" [ref=e78] [cursor=pointer]:
+            - generic [ref=e79]:
+              - img [ref=e80]
+              - text: 1 Versions
+        - generic [ref=e83]:
+          - tabpanel "Readme" [ref=e84]:
+            - article [ref=e86]:
+              - generic [ref=e87]:
+                - text: This package does not have a README.
+                - link "Add a README" [ref=e88] [cursor=pointer]:
+                  - /url: https://docs.npmjs.com/about-package-readme-files
+                - text: to your package so that users know how to get started.
+            - generic [ref=e89]:
+              - heading "Readme" [level=2] [ref=e90]
+              - heading "Keywords" [level=3] [ref=e91]
+              - text: none
+          - tabpanel
+          - tabpanel
+          - tabpanel "0 Dependencies"
+          - tabpanel "0 Dependents"
+          - tabpanel "1 Versions"
+        - complementary "Package sidebar" [ref=e92]:
+          - heading "Package Sidebar" [level=2] [ref=e93]
+          - heading "Install" [level=3] [ref=e94]
+          - generic [ref=e95]:
+            - img
+            - paragraph [ref=e96]:
+              - generic [ref=e97]:
+                - code [ref=e98]: npm i weclaw
+                - button "Copy install command line" [ref=e99] [cursor=pointer]:
+                  - img
+          - button "Showing weekly downloads" [ref=e100]:
+            - heading "Weekly Downloads" [level=3] [ref=e101]:
+              - img [ref=e102]
+              - text: Weekly Downloads
+            - generic [ref=e106]:
+              - img [ref=e107]
+              - paragraph [ref=e112]: "17"
+          - generic [ref=e113]:
+            - heading "Version" [level=3] [ref=e114]
+            - paragraph [ref=e116]: 0.0.0
+          - generic [ref=e117]:
+            - heading "License" [level=3] [ref=e118]
+            - paragraph [ref=e119]: MIT
+          - generic [ref=e120]:
+            - heading "Last publish" [level=3] [ref=e121]
+            - paragraph [ref=e122]:
+              - time [ref=e123]: 2 months ago
+          - generic [ref=e124]:
+            - heading "Collaborators" [level=3] [ref=e125]
+            - list "Collaborators" [ref=e126]:
+              - listitem [ref=e127]:
+                - link "yunyoujun" [ref=e129] [cursor=pointer]:
+                  - /url: /~yunyoujun
+                  - img "yunyoujun" [ref=e130]
+          - generic [ref=e131]:
+            - link "Analyze security with Socket" [ref=e132] [cursor=pointer]:
+              - /url: https://socket.dev/npm/package/weclaw
+              - img [ref=e133]
+              - strong [ref=e135]: Analyze security
+              - text: with Socket
+            - link "Check bundle size" [ref=e136] [cursor=pointer]:
+              - /url: https://bundlephobia.com/package/weclaw
+              - img [ref=e137]
+              - strong [ref=e139]: Check bundle size
+            - link "View package health" [ref=e140] [cursor=pointer]:
+              - /url: https://snyk.io/advisor/npm-package/weclaw
+              - img [ref=e141]
+              - strong [ref=e143]: View package health
+            - link "Explore dependencies" [ref=e144] [cursor=pointer]:
+              - /url: https://npmgraph.js.org/?q=weclaw
+              - img [ref=e145]
+              - strong [ref=e147]: Explore dependencies
+          - link "Report malware" [ref=e149] [cursor=pointer]:
+            - /url: /support?inquire=security&security-inquire=malware&package=weclaw&version=0.0.0
+            - img [ref=e150]
+            - strong [ref=e152]: Report
+            - text: malware
+    - contentinfo [ref=e153]:
+      - heading "Footer" [level=2] [ref=e154]
+      - generic [ref=e155]:
+        - generic [ref=e156]:
+          - link "Visit npm GitHub page" [ref=e158] [cursor=pointer]:
+            - /url: https://github.com/npm
+            - img [ref=e159]
+          - link "GitHub" [ref=e163] [cursor=pointer]:
+            - /url: https://github.com
+            - img [ref=e164]
+        - generic [ref=e166]:
+          - heading "Support" [level=3] [ref=e167]
+          - list "Support" [ref=e168]:
+            - listitem [ref=e169]:
+              - link "Help" [ref=e170] [cursor=pointer]:
+                - /url: https://docs.npmjs.com
+            - listitem [ref=e171]:
+              - link "Advisories" [ref=e172] [cursor=pointer]:
+                - /url: https://github.com/advisories
+            - listitem [ref=e173]:
+              - link "Status" [ref=e174] [cursor=pointer]:
+                - /url: http://status.npmjs.org/
+            - listitem [ref=e175]:
+              - link "Contact npm" [ref=e176] [cursor=pointer]:
+                - /url: /support
+        - generic [ref=e177]:
+          - heading "Company" [level=3] [ref=e178]
+          - list "Company" [ref=e179]:
+            - listitem [ref=e180]:
+              - link "About" [ref=e181] [cursor=pointer]:
+                - /url: /about
+            - listitem [ref=e182]:
+              - link "Blog" [ref=e183] [cursor=pointer]:
+                - /url: https://github.blog/tag/npm/
+            - listitem [ref=e184]:
+              - link "Press" [ref=e185] [cursor=pointer]:
+                - /url: /press
+        - generic [ref=e186]:
+          - heading "Terms & Policies" [level=3] [ref=e187]
+          - list "Terms & Policies" [ref=e188]:
+            - listitem [ref=e189]:
+              - link "Policies" [ref=e190] [cursor=pointer]:
+                - /url: /policies/
+            - listitem [ref=e191]:
+              - link "Terms of Use" [ref=e192] [cursor=pointer]:
+                - /url: /policies/terms
+            - listitem [ref=e193]:
+              - link "Code of Conduct" [ref=e194] [cursor=pointer]:
+                - /url: /policies/conduct
+            - listitem [ref=e195]:
+              - link "Privacy" [ref=e196] [cursor=pointer]:
+                - /url: /policies/privacy
+  - generic [ref=e198]: Viewing weclaw version 0.0.0

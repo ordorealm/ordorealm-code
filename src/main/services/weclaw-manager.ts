@@ -7,7 +7,7 @@
  * @module main/services/weclaw-manager
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -25,7 +25,7 @@ export interface WeClawManagerConfig {
   debug?: boolean;
 }
 
-export interface WeClawStatus {
+export interface WeClawManagerStatus {
   /** Whether the WeClaw process is running */
   running: boolean;
   /** Whether logged in to WeChat */
@@ -144,13 +144,20 @@ export class WeClawManager {
    */
   isBinaryAvailable(): boolean {
     if (this.config.binaryPath === 'weclaw' || this.config.binaryPath === 'weclaw.exe') {
-      // System PATH binary - check if command exists
+      // System PATH binary - check if command exists using execSync
       try {
-        const result = spawn(this.config.binaryPath, ['--version'], {
-          timeout: 5000,
-        });
-        return result.pid !== undefined;
+        execSync(`which ${this.config.binaryPath}`, { timeout: 5000, stdio: 'pipe' });
+        return true;
       } catch {
+        // On Windows, use 'where' command instead
+        if (process.platform === 'win32') {
+          try {
+            execSync(`where ${this.config.binaryPath}`, { timeout: 5000, stdio: 'pipe' });
+            return true;
+          } catch {
+            return false;
+          }
+        }
         return false;
       }
     }
@@ -194,17 +201,27 @@ export class WeClawManager {
         // Detach to let it run independently
         this.process.unref();
 
-        // Wait a bit for the process to start
-        setTimeout(async () => {
+        // Poll for process readiness (every 200ms, max 5 seconds)
+        const maxAttempts = 25; // 25 * 200ms = 5000ms
+        let attempts = 0;
+
+        const checkReady = async (): Promise<boolean> => {
+          attempts++;
           const newStatus = await this.getStatus();
           if (newStatus.running) {
             this.logger.info(`WeClaw started successfully (PID: ${newStatus.pid})`);
-            resolve(true);
-          } else {
-            this.logger.error('WeClaw failed to start');
-            reject(new Error('WeClaw failed to start'));
+            return true;
           }
-        }, 2000);
+          if (attempts >= maxAttempts) {
+            this.logger.error('WeClaw failed to start within 5 seconds');
+            throw new Error('WeClaw failed to start within timeout');
+          }
+          // Wait 200ms and try again
+          await new Promise(resolve => setTimeout(resolve, 200));
+          return checkReady();
+        };
+
+        checkReady().then(resolve).catch(reject);
 
       } catch (error) {
         this.logger.error('Failed to start WeClaw:', error);
@@ -269,8 +286,8 @@ export class WeClawManager {
    * 2. PID file check
    * 3. Credentials file check for login status
    */
-  async getStatus(): Promise<WeClawStatus> {
-    const status: WeClawStatus = {
+  async getStatus(): Promise<WeClawManagerStatus> {
+    const status: WeClawManagerStatus = {
       running: false,
       loggedIn: false,
       apiAddr: this.config.apiAddr,

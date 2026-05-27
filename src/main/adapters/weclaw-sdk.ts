@@ -11,6 +11,9 @@
  */
 
 import { EventEmitter } from 'events'
+import * as os from 'os'
+import * as path from 'path'
+import * as fs from 'fs'
 import { Logger } from '../utils/logger'
 
 // ============ Type Definitions ============
@@ -294,10 +297,6 @@ export class WeClawSDKImpl implements WeClawSDK {
    * @private
    */
   private loadCredentials(): { ilink_user_id: string; bot_token: string } | null {
-    const os = require('os')
-    const path = require('path')
-    const fs = require('fs')
-
     const homeDir = os.homedir()
     const accountsDir = path.join(homeDir, '.weclaw', 'accounts')
 

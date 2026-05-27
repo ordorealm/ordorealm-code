@@ -345,7 +345,8 @@ async function main(): Promise<void> {
   }
 }
 
-// Run if called directly
-if (require.main === module) {
+// Run if called directly (compatible with both CommonJS and ES modules)
+// Using a simple check that works in both environments
+if (process.argv[1] && (process.argv[1].includes('weclaw-downloader'))) {
   main();
 }

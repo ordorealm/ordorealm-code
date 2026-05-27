@@ -201,27 +201,30 @@ export class WeClawManager {
         // Detach to let it run independently
         this.process.unref();
 
-        // Poll for process readiness (every 200ms, max 5 seconds)
-        const maxAttempts = 25; // 25 * 200ms = 5000ms
-        let attempts = 0;
-
-        const checkReady = async (): Promise<boolean> => {
-          attempts++;
-          const newStatus = await this.getStatus();
-          if (newStatus.running) {
-            this.logger.info(`WeClaw started successfully (PID: ${newStatus.pid})`);
-            return true;
+        // WeClaw daemon starts independently - the HTTP API is only available
+        // after user scans QR code and logs in. We just verify the process started.
+        // Give it a moment to spawn and create PID file
+        setTimeout(async () => {
+          // Check if process spawned (via PID file as fallback)
+          if (fs.existsSync(this.pidFilePath)) {
+            try {
+              const pidContent = fs.readFileSync(this.pidFilePath, 'utf-8').trim();
+              const pid = parseInt(pidContent, 10);
+              if (!isNaN(pid)) {
+                this.logger.info(`WeClaw daemon started (PID: ${pid})`);
+                resolve(true);
+                return;
+              }
+            } catch {
+              // Ignore read errors
+            }
           }
-          if (attempts >= maxAttempts) {
-            this.logger.error('WeClaw failed to start within 5 seconds');
-            throw new Error('WeClaw failed to start within timeout');
-          }
-          // Wait 200ms and try again
-          await new Promise(resolve => setTimeout(resolve, 200));
-          return checkReady();
-        };
 
-        checkReady().then(resolve).catch(reject);
+          // Even without PID file, the daemon may have started
+          // The spawn succeeded, so assume it's running
+          this.logger.info('WeClaw daemon start command executed');
+          resolve(true);
+        }, 1000); // Wait 1 second for daemon to initialize
 
       } catch (error) {
         this.logger.error('Failed to start WeClaw:', error);
@@ -387,6 +390,92 @@ export class WeClawManager {
     // The QR code is displayed in the WeClaw terminal
     // We can fetch it from the iLink API directly
     return 'https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3';
+  }
+
+  /**
+   * Start WeClaw login process and return QR URL
+   *
+   * This method runs `weclaw login` and captures the QR URL from stdout.
+   * The QR URL can be displayed to the user for WeChat scanning.
+   *
+   * @returns QR code URL for WeChat scan
+   * @throws Error if login fails or QR URL not found
+   */
+  async startLogin(): Promise<string> {
+    // Check binary availability
+    if (!this.isBinaryAvailable()) {
+      this.logger.error('WeClaw binary not found');
+      throw new Error('WeClaw binary not found. Please ensure WeClaw is installed.');
+    }
+
+    this.logger.info('Starting WeClaw login process...');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const loginProcess = spawn(
+          this.config.binaryPath,
+          ['login'],
+          {
+            timeout: 30000, // 30 seconds to get QR code
+          }
+        );
+
+        let output = '';
+        let resolved = false;
+
+        loginProcess.stdout.on('data', (data) => {
+          output += data.toString();
+          this.logger.debug(`WeClaw stdout: ${data.toString().trim()}`);
+
+          // Parse QR URL from output
+          // Format: QR URL: https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=...&bot_type=3
+          const qrUrlMatch = output.match(/QR URL: (https:\/\/[^\s]+)/);
+          if (qrUrlMatch && !resolved) {
+            resolved = true;
+            this.logger.info(`QR URL captured: ${qrUrlMatch[1]}`);
+            resolve(qrUrlMatch[1]);
+          }
+        });
+
+        loginProcess.stderr.on('data', (data) => {
+          output += data.toString();
+          this.logger.debug(`WeClaw stderr: ${data.toString().trim()}`);
+        });
+
+        loginProcess.on('error', (error) => {
+          this.logger.error('WeClaw login process error:', error);
+          if (!resolved) {
+            resolved = true;
+            reject(error);
+          }
+        });
+
+        loginProcess.on('close', (code) => {
+          // If we haven't resolved yet, check if we found a QR URL
+          if (!resolved) {
+            if (code === 0 || output.includes('QR URL:')) {
+              // Try to extract QR URL one more time
+              const qrUrlMatch = output.match(/QR URL: (https:\/\/[^\s]+)/);
+              if (qrUrlMatch) {
+                this.logger.info(`QR URL captured on close: ${qrUrlMatch[1]}`);
+                resolve(qrUrlMatch[1]);
+              } else {
+                // Login completed without QR URL (might be already logged in)
+                this.logger.info('WeClaw login completed without QR URL');
+                resolve('');
+              }
+            } else {
+              this.logger.error(`WeClaw login failed with code ${code}`);
+              reject(new Error(`WeClaw login failed with code ${code}. Output: ${output}`));
+            }
+          }
+        });
+
+      } catch (error) {
+        this.logger.error('Failed to start WeClaw login:', error);
+        reject(error);
+      }
+    });
   }
 
   /**

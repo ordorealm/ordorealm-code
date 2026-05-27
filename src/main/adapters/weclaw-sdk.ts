@@ -331,90 +331,104 @@ export class WeClawSDKImpl implements WeClawSDK {
    * Generate a QR code for WeChat scanning
    *
    * This method checks if the WeClaw service is running and logged in.
-   * WeClaw runs as an independent service and displays its own QR code
-   * for WeChat login. Our IDE interacts with WeClaw via HTTP API.
+   * - If already logged in: returns session ID directly
+   * - If not running: starts WeClaw and returns QR URL for user to scan
+   * - If running but not logged in: returns QR URL for user to scan
    *
-   * If the service is not running, this method will attempt to start
-   * the bundled WeClaw binary automatically.
+   * The QR URL is displayed to the user as a clickable link or QR code image.
+   * After scanning, the user will be logged in and the HTTP API becomes available.
    *
-   * @returns Promise resolving to session ID if connected
-   * @throws WeClawError if service not running or not logged in
+   * @returns Promise resolving to QR URL (for scanning) or session ID (if already connected)
+   * @throws WeClawError if service cannot be started
    */
   async getQRCode(): Promise<string> {
     this.logger.info('Checking WeClaw service status...')
 
     const status = await this.checkServiceStatus()
 
-    // 如果服务未运行，尝试自动启动捆绑的 WeClaw 二进制
-    if (!status.running) {
-      this.logger.info('WeClaw service not running, attempting to start bundled binary...')
-
-      const manager = getWeClawManager({
-        apiAddr: this.config.apiAddr || WECLAW_API_DEFAULT_ADDR,
-        debug: this.config.debug
-      })
-
-      // 检查二进制是否存在
-      if (!manager.isBinaryAvailable()) {
-        throw createError(
-          'not_connected',
-          'WeClaw 二进制文件未找到。请确保应用程序已正确安装。'
-        )
+    // 如果服务已运行且已登录，直接创建 session
+    if (status.running && status.loggedIn) {
+      this.sessionId = generateSessionId()
+      this.status = {
+        connected: true,
+        connectedAt: Date.now(),
+        user: {
+          userId: status.userId || `user_${Date.now().toString(36)}`,
+          nickname: 'WeChat User',
+          token: `token_${Math.random().toString(36).substring(2, 15)}`,
+          connectedAt: Date.now(),
+        },
+        sessionId: this.sessionId,
       }
 
-      // 尝试启动服务
-      try {
-        await manager.start()
-        this.logger.info('WeClaw service started successfully')
-
-        // 重新检查状态
-        const newStatus = await this.checkServiceStatus()
-        if (!newStatus.running) {
-          throw createError('not_connected', 'WeClaw 服务启动失败，请检查日志')
-        }
-
-        // 更新 status 变量
-        status.running = newStatus.running
-        status.loggedIn = newStatus.loggedIn
-        status.userId = newStatus.userId
-      } catch (startError) {
-        this.logger.error('Failed to start WeClaw:', startError)
-        throw createError(
-          'not_connected',
-          'WeClaw 服务启动失败。请检查应用程序日志或手动启动 WeClaw。'
-        )
-      }
+      this.logger.info(`WeClaw service already connected, session: ${this.sessionId}`)
+      this.eventEmitter.emit('connected', this.status.user)
+      return this.sessionId
     }
 
-    if (!status.loggedIn) {
+    // 服务未运行或未登录，需要启动并获取 QR URL
+    this.logger.info('WeClaw service not ready, starting login process...')
+
+    const manager = getWeClawManager({
+      apiAddr: this.config.apiAddr || WECLAW_API_DEFAULT_ADDR,
+      debug: this.config.debug
+    })
+
+    // 检查二进制是否存在
+    if (!manager.isBinaryAvailable()) {
       throw createError(
         'not_connected',
-        'WeClaw 服务已运行但未登录微信。请在 WeClaw 终端中使用微信扫描二维码登录。'
+        'WeClaw 二进制文件未找到。请确保应用程序已正确安装。'
       )
     }
 
-    // Service is running and logged in, create session
-    this.sessionId = generateSessionId()
-    this.status.sessionId = this.sessionId
+    // 启动 WeClaw 并捕获 QR URL
+    try {
+      const qrUrl = await manager.startLogin()
+      this.logger.info(`WeClaw login started, QR URL: ${qrUrl}`)
 
-    // Set connected status with user info
-    this.status = {
-      connected: true,
-      connectedAt: Date.now(),
-      user: {
-        userId: status.userId || `user_${Date.now().toString(36)}`,
-        nickname: 'WeChat User',
-        token: `token_${Math.random().toString(36).substring(2, 15)}`,
-        connectedAt: Date.now(),
-      },
-      sessionId: this.sessionId,
+      // 创建 session ID 用于追踪
+      this.sessionId = generateSessionId()
+      this.status.sessionId = this.sessionId
+
+      // 如果获取到了 QR URL，返回给前端显示
+      if (qrUrl) {
+        // 发出 qrcode 事件，包含 QR URL
+        this.eventEmitter.emit('qrcode', qrUrl)
+        return qrUrl  // 返回 QR URL 而不是 session ID
+      } else {
+        // 没有获取到 QR URL，可能已经登录了
+        // 重新检查状态
+        const newStatus = await this.checkServiceStatus()
+        if (newStatus.loggedIn) {
+          this.sessionId = generateSessionId()
+          this.status = {
+            connected: true,
+            connectedAt: Date.now(),
+            user: {
+              userId: newStatus.userId || `user_${Date.now().toString(36)}`,
+              nickname: 'WeChat User',
+              token: `token_${Math.random().toString(36).substring(2, 15)}`,
+              connectedAt: Date.now(),
+            },
+            sessionId: this.sessionId,
+          }
+          this.logger.info(`WeClaw service connected, session: ${this.sessionId}`)
+          this.eventEmitter.emit('connected', this.status.user)
+          return this.sessionId
+        }
+
+        throw createError('not_connected', '未能获取登录二维码。请重试。')
+      }
+    } catch (error) {
+      this.logger.error('Failed to start WeClaw login:', error)
+
+      // 如果是启动失败，提供更具体的错误信息
+      if (error instanceof Error) {
+        throw createError('not_connected', `WeClaw 登录启动失败: ${error.message}`)
+      }
+      throw createError('not_connected', 'WeClaw 登录启动失败。请检查应用程序日志。')
     }
-
-    this.logger.info(`WeClaw service connected, session: ${this.sessionId}`)
-    this.eventEmitter.emit('qrcode', this.sessionId)
-    this.eventEmitter.emit('connected', this.status.user)
-
-    return this.sessionId
   }
 
   /**

@@ -66,16 +66,17 @@ export class WeClawManager {
   private accountsDir: string;
 
   constructor(config?: WeClawManagerConfig) {
+    // Initialize logger first (before calling detectBinaryPath)
+    this.logger = new Logger('WeClawManager', {
+      enabled: true,
+      level: config?.debug ? 'debug' : 'info',
+    });
+
     this.config = {
       apiAddr: config?.apiAddr ?? WECLAW_DEFAULT_API_ADDR,
       binaryPath: config?.binaryPath ?? this.detectBinaryPath(),
       debug: config?.debug ?? false,
     };
-
-    this.logger = new Logger('WeClawManager', {
-      enabled: true,
-      level: this.config.debug ? 'debug' : 'info',
-    });
 
     // Set up paths
     const homeDir = os.homedir();

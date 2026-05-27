@@ -172,10 +172,11 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
 
     try {
       const client = getRemoteControlClient()
-      // updateSettings 只接受 requireConfirm 参数
-      if (partial.requireConfirm !== undefined) {
-        await client.updateSettings(partial.requireConfirm)
-      }
+      // 传递所有设置字段到后端
+      await client.updateSettings({
+        enabled: partial.enabled,
+        requireConfirm: partial.requireConfirm
+      })
       set(state => ({
         settings: { ...state.settings, ...partial }
       }))

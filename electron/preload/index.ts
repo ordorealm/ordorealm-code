@@ -426,8 +426,8 @@ const api = {
     listChannels: () => ipcRenderer.invoke('remote-control:list-channels'),
 
     /** Update remote control settings */
-    updateSettings: (requireConfirm: boolean) =>
-      ipcRenderer.invoke('remote-control:update-settings', { requireConfirm }),
+    updateSettings: (settings: { enabled?: boolean; requireConfirm?: boolean }) =>
+      ipcRenderer.invoke('remote-control:update-settings', settings),
 
     /** Listen for overall remote control status changes */
     onStatusChange: (callback: (status: unknown) => void): (() => void) => {

@@ -354,7 +354,7 @@ export interface Api {
       error?: { code: string; message: string }
     }>
     /** Update remote control settings */
-    updateSettings: (requireConfirm: boolean) => Promise<{
+    updateSettings: (settings: { enabled?: boolean; requireConfirm?: boolean }) => Promise<{
       success: boolean
       data?: { success: boolean }
       error?: { code: string; message: string }

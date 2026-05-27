@@ -89,8 +89,8 @@ export interface RemoteControlClient {
   /** Get connected channels list */
   listChannels(): Promise<Channel[]>
 
-  /** Update security settings */
-  updateSettings(requireConfirm: boolean): Promise<boolean>
+  /** Update remote control settings */
+  updateSettings(settings: { enabled?: boolean; requireConfirm?: boolean }): Promise<boolean>
 }
 
 // ============ Implementation ============
@@ -195,14 +195,14 @@ class RemoteControlClientImpl implements RemoteControlClient {
   /**
    * Update remote control settings
    *
-   * Updates security settings for remote control.
+   * Updates settings for remote control including enabled state and confirmation requirement.
    *
-   * @param requireConfirm - Whether important operations require confirmation
+   * @param settings - Settings to update (enabled and/or requireConfirm)
    * @returns Promise resolving to true if successful
    * @throws IpcClientError if IPC call fails
    */
-  async updateSettings(requireConfirm: boolean): Promise<boolean> {
-    const result = await window.api.remoteControl.updateSettings(requireConfirm) as IpcResult<{ success: boolean }>
+  async updateSettings(settings: { enabled?: boolean; requireConfirm?: boolean }): Promise<boolean> {
+    const result = await window.api.remoteControl.updateSettings(settings) as IpcResult<{ success: boolean }>
     await this.unwrapResult(result)
     return true
   }

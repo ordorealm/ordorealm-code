@@ -189,11 +189,13 @@ export interface ListChannelsResponse {
 
 /**
  * Request type for update-settings channel
- * Updates remote control security settings
+ * Updates remote control settings
  */
 export interface UpdateSettingsRequest {
+  /** Whether remote control is enabled */
+  enabled?: boolean
   /** Whether important operations require confirmation on mobile */
-  requireConfirm: boolean
+  requireConfirm?: boolean
 }
 
 /**

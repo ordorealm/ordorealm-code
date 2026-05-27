@@ -595,7 +595,7 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
   /**
    * Handle update-settings request
    *
-   * Updates remote control security settings.
+   * Updates remote control settings including enabled state and confirmation requirement.
    *
    * @param _event - IPC event (unused)
    * @param request - Update settings request
@@ -616,7 +616,22 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
         )
       }
 
-      if (typeof request.requireConfirm !== 'boolean') {
+      // At least one setting must be provided
+      if (request.enabled === undefined && request.requireConfirm === undefined) {
+        return this.createError(
+          IpcErrorCode.INVALID_REQUEST,
+          'At least one setting (enabled or requireConfirm) must be provided'
+        )
+      }
+
+      // Validate types if provided
+      if (request.enabled !== undefined && typeof request.enabled !== 'boolean') {
+        return this.createError(
+          IpcErrorCode.INVALID_REQUEST,
+          'enabled must be a boolean'
+        )
+      }
+      if (request.requireConfirm !== undefined && typeof request.requireConfirm !== 'boolean') {
         return this.createError(
           IpcErrorCode.INVALID_REQUEST,
           'requireConfirm must be a boolean'
@@ -631,11 +646,18 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
         )
       }
 
+      // Build update object with only provided fields
+      const updates: { enabled?: boolean; requireConfirm?: boolean } = {}
+      if (request.enabled !== undefined) {
+        updates.enabled = request.enabled
+      }
+      if (request.requireConfirm !== undefined) {
+        updates.requireConfirm = request.requireConfirm
+      }
+
       // Update settings
-      await this.storage.updateSettings({
-        requireConfirm: request.requireConfirm,
-      })
-      this.logger.info(`Updated settings: requireConfirm=${request.requireConfirm}`)
+      await this.storage.updateSettings(updates)
+      this.logger.info(`Updated settings:`, updates)
 
       return this.createSuccess<UpdateSettingsResponse>({
         success: true,

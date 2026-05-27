@@ -374,11 +374,13 @@ export class WeClawSDKImpl implements WeClawSDK {
       debug: this.config.debug
     })
 
-    // 检查二进制是否存在
+    // 检查二进制是否存在，并提供详细错误信息
     if (!manager.isBinaryAvailable()) {
+      const binaryPath = manager.getBinaryPath()
+      this.logger.error(`WeClaw binary not found at: ${binaryPath}`)
       throw createError(
         'not_connected',
-        'WeClaw 二进制文件未找到。请确保应用程序已正确安装。'
+        `WeClaw 二进制文件未找到。检测路径: ${binaryPath || '系统 PATH'}。请确保应用程序已正确安装。`
       )
     }
 

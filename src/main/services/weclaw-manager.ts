@@ -113,8 +113,9 @@ export class WeClawManager {
       executable
     );
 
-    // Development path
-    const devPath = path.join(
+    // Development paths - check multiple possible locations
+    // 1. From compiled out/main/ directory (electron-vite build)
+    const devPathFromOut = path.join(
       __dirname,
       '..',
       '..',
@@ -125,17 +126,69 @@ export class WeClawManager {
       executable
     );
 
+    // 2. Direct from project root (when running with tsx or from src/)
+    const devPathFromCwd = path.join(
+      process.cwd(),
+      'electron',
+      'runtime',
+      'weclaw',
+      platformDir,
+      executable
+    );
+
+    // 3. From app path (Electron app.getAppPath())
+    let devPathFromApp: string | null = null;
+    try {
+      // Dynamic import to avoid error when app is not available
+      const { app } = require('electron');
+      if (app && app.isReady()) {
+        devPathFromApp = path.join(
+          app.getAppPath(),
+          'electron',
+          'runtime',
+          'weclaw',
+          platformDir,
+          executable
+        );
+      }
+    } catch {
+      // app not available, skip
+    }
+
+    // Log all paths for debugging
+    this.logger.debug('WeClaw binary path detection:');
+    this.logger.debug(`  Platform: ${platform}, Arch: ${arch}`);
+    this.logger.debug(`  Production path: ${prodPath} (exists: ${fs.existsSync(prodPath)})`);
+    this.logger.debug(`  Dev path (from out): ${devPathFromOut} (exists: ${fs.existsSync(devPathFromOut)})`);
+    this.logger.debug(`  Dev path (from cwd): ${devPathFromCwd} (exists: ${fs.existsSync(devPathFromCwd)})`);
+    if (devPathFromApp) {
+      this.logger.debug(`  Dev path (from app): ${devPathFromApp} (exists: ${fs.existsSync(devPathFromApp)})`);
+    }
+
     // Check production path first
     if (fs.existsSync(prodPath)) {
+      this.logger.info(`Using production WeClaw binary: ${prodPath}`);
       return prodPath;
     }
 
-    // Fall back to development path
-    if (fs.existsSync(devPath)) {
-      return devPath;
+    // Check development paths in order
+    if (fs.existsSync(devPathFromOut)) {
+      this.logger.info(`Using dev WeClaw binary (from out): ${devPathFromOut}`);
+      return devPathFromOut;
+    }
+
+    if (fs.existsSync(devPathFromCwd)) {
+      this.logger.info(`Using dev WeClaw binary (from cwd): ${devPathFromCwd}`);
+      return devPathFromCwd;
+    }
+
+    if (devPathFromApp && fs.existsSync(devPathFromApp)) {
+      this.logger.info(`Using dev WeClaw binary (from app): ${devPathFromApp}`);
+      return devPathFromApp;
     }
 
     // Fall back to system PATH
+    this.logger.warn(`WeClaw binary not found in any known location, falling back to system PATH`);
     return executable;
   }
 
@@ -162,6 +215,14 @@ export class WeClawManager {
       }
     }
     return fs.existsSync(this.config.binaryPath);
+  }
+
+  /**
+   * Get the current binary path
+   * Useful for error messages and debugging
+   */
+  getBinaryPath(): string {
+    return this.config.binaryPath;
   }
 
   /**

@@ -104,14 +104,10 @@ export class WeClawManager {
 
     const executable = platform === 'darwin' ? 'weclaw' : 'weclaw.exe';
 
-    // Production path (bundled)
-    const prodPath = path.join(
-      process.resourcesPath,
-      'runtime',
-      'weclaw',
-      platformDir,
-      executable
-    );
+    // Production path (bundled) - check if resourcesPath exists
+    const prodPath = process.resourcesPath
+      ? path.join(process.resourcesPath, 'runtime', 'weclaw', platformDir, executable)
+      : '';
 
     // Development paths - check multiple possible locations
     // 1. From compiled out/main/ directory (electron-vite build)
@@ -137,11 +133,13 @@ export class WeClawManager {
     );
 
     // 3. From app path (Electron app.getAppPath())
+    // Note: app.getAppPath() works even before app is ready, so we don't need isReady() check
     let devPathFromApp: string | null = null;
     try {
       // Dynamic import to avoid error when app is not available
       const { app } = require('electron');
-      if (app && app.isReady()) {
+      if (app) {
+        // app.getAppPath() works even before app is ready in development mode
         devPathFromApp = path.join(
           app.getAppPath(),
           'electron',
@@ -158,15 +156,17 @@ export class WeClawManager {
     // Log all paths for debugging
     this.logger.debug('WeClaw binary path detection:');
     this.logger.debug(`  Platform: ${platform}, Arch: ${arch}`);
-    this.logger.debug(`  Production path: ${prodPath} (exists: ${fs.existsSync(prodPath)})`);
+    if (prodPath) {
+      this.logger.debug(`  Production path: ${prodPath} (exists: ${fs.existsSync(prodPath)})`);
+    }
     this.logger.debug(`  Dev path (from out): ${devPathFromOut} (exists: ${fs.existsSync(devPathFromOut)})`);
     this.logger.debug(`  Dev path (from cwd): ${devPathFromCwd} (exists: ${fs.existsSync(devPathFromCwd)})`);
     if (devPathFromApp) {
       this.logger.debug(`  Dev path (from app): ${devPathFromApp} (exists: ${fs.existsSync(devPathFromApp)})`);
     }
 
-    // Check production path first
-    if (fs.existsSync(prodPath)) {
+    // Check production path first (only if valid)
+    if (prodPath && fs.existsSync(prodPath)) {
       this.logger.info(`Using production WeClaw binary: ${prodPath}`);
       return prodPath;
     }

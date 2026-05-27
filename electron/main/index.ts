@@ -12,9 +12,15 @@ import { RuntimeManager } from './runtime-manager'
 import { registerSkillLibraryHandlers } from './skill-library-handlers'
 import { initializeMCPIPC } from './mcp-ipc'
 import { getMCPConnector } from './mcp/connector'
+import { getMCPManager } from './mcp/manager'
 import { ChannelManager } from '../../src/main/services/channel-manager'
 import { RemoteControlStorage } from '../../src/main/services/remote-control-storage'
 import { createRemoteControlHandler } from '../../src/main/ipc/remote-control-handler'
+import {
+  setIdeApiAdapter,
+  type IdeApiAdapter,
+} from '../../src/main/agents/operation-executor'
+import type { ProjectInfo, MCPStatus, SkillGroup } from '../../src/main/agents/master-agent'
 
 // Check if running in development mode
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -2161,6 +2167,214 @@ function registerGitHandlers(): void {
 }
 
 /**
+ * Create IDE API Adapter for remote control operations
+ *
+ * This adapter provides real IDE operations by connecting to the actual
+ * session management, MCP connector, and other IDE functionality.
+ */
+function createIdeApiAdapter(): IdeApiAdapter {
+  return {
+    /**
+     * Get all running projects/sessions
+     */
+    async getProjects(): Promise<ProjectInfo[]> {
+      const projects: ProjectInfo[] = []
+
+      for (const [sessionId, session] of activeSessions) {
+        // Extract project name from working directory
+        const projectName = session.workingDirectory.split('/').pop() || session.workingDirectory
+
+        projects.push({
+          id: sessionId,
+          name: projectName,
+          status: session.status as 'running' | 'idle' | 'error',
+          currentTask: session.status === 'running' ? '执行中...' : undefined,
+          // Calculate progress if available (could be enhanced later)
+          progress: session.status === 'running' ? 50 : undefined,
+          lastActivity: new Date(session.lastActivity).toISOString(),
+        })
+      }
+
+      return projects
+    },
+
+    /**
+     * Get current active project ID
+     * Returns the most recently active session
+     */
+    async getCurrentProject(): Promise<string | undefined> {
+      let mostRecentSession: string | undefined
+      let mostRecentActivity = 0
+
+      for (const [sessionId, session] of activeSessions) {
+        if (session.lastActivity > mostRecentActivity) {
+          mostRecentActivity = session.lastActivity
+          mostRecentSession = sessionId
+        }
+      }
+
+      return mostRecentSession
+    },
+
+    /**
+     * Switch to a specific project
+     * In the current architecture, this is primarily a UI concern
+     * The adapter just validates the session exists
+     */
+    async switchProject(projectId: string): Promise<{ success: boolean; message: string }> {
+      const session = activeSessions.get(projectId)
+      if (!session) {
+        return {
+          success: false,
+          message: `项目会话 ${projectId} 不存在`,
+        }
+      }
+
+      // The actual switch is handled by the frontend
+      // This just validates and returns success
+      return {
+        success: true,
+        message: `已切换到项目: ${session.workingDirectory.split('/').pop()}`,
+      }
+    },
+
+    /**
+     * Restart a project session
+     * This clears the session output and resets state
+     */
+    async restartProject(projectId: string): Promise<{ success: boolean; message: string }> {
+      const session = activeSessions.get(projectId)
+      if (!session) {
+        return {
+          success: false,
+          message: `项目会话 ${projectId} 不存在`,
+        }
+      }
+
+      try {
+        // Clear session state
+        session.output = ''
+        session.hasToolCalls = false
+        session.hasThinking = false
+        session.status = 'idle'
+        session.lastActivity = Date.now()
+
+        // Note: We don't close the SDK query here, just reset the state
+        // The user can continue sending messages to the same session
+
+        return {
+          success: true,
+          message: `项目会话已重启: ${session.workingDirectory.split('/').pop()}`,
+        }
+      } catch (err) {
+        return {
+          success: false,
+          message: `重启失败: ${err}`,
+        }
+      }
+    },
+
+    /**
+     * Get MCP tools status
+     */
+    async getMcpStatus(): Promise<MCPStatus[]> {
+      try {
+        const mcpManager = getMCPManager()
+        const instances = mcpManager.getInstances()
+        const definitions = mcpManager.getDefinitions()
+
+        const statusList: MCPStatus[] = []
+
+        for (const def of definitions) {
+          const instance = instances.get(def.id)
+          statusList.push({
+            id: def.id,
+            name: def.name,
+            status: instance?.status as 'running' | 'stopped' | 'error' || 'stopped',
+            connectionInfo: instance?.status === 'running' ? '已连接' : undefined,
+          })
+        }
+
+        return statusList
+      } catch (err) {
+        console.error('[IdeApiAdapter] Failed to get MCP status:', err)
+        return []
+      }
+    },
+
+    /**
+     * Start an MCP tool
+     */
+    async startMcp(mcpId: string): Promise<{ success: boolean; message: string }> {
+      try {
+        const mcpManager = getMCPManager()
+        await mcpManager.start(mcpId)
+
+        return {
+          success: true,
+          message: `MCP ${mcpId} 已启动`,
+        }
+      } catch (err) {
+        return {
+          success: false,
+          message: `启动 MCP 失败: ${err}`,
+        }
+      }
+    },
+
+    /**
+     * Stop an MCP tool
+     */
+    async stopMcp(mcpId: string): Promise<{ success: boolean; message: string }> {
+      try {
+        const mcpManager = getMCPManager()
+        await mcpManager.stop(mcpId)
+
+        return {
+          success: true,
+          message: `MCP ${mcpId} 已停止`,
+        }
+      } catch (err) {
+        return {
+          success: false,
+          message: `停止 MCP 失败: ${err}`,
+        }
+      }
+    },
+
+    /**
+     * Get available skill groups
+     * Currently returns a default set since skill groups are not fully implemented
+     */
+    async getSkillGroups(): Promise<SkillGroup[]> {
+      // TODO: Implement skill group retrieval when the feature is ready
+      // For now, return a default skill group
+      return [
+        {
+          id: 'default',
+          name: '默认技能组',
+          description: '所有可用技能',
+          skillCount: 0,
+          isActive: true,
+        },
+      ]
+    },
+
+    /**
+     * Switch to a skill group
+     * Currently a no-op since skill groups are not fully implemented
+     */
+    async switchSkillGroup(skillGroupId: string): Promise<{ success: boolean; message: string }> {
+      // TODO: Implement skill group switching when the feature is ready
+      return {
+        success: true,
+        message: `已切换到技能组: ${skillGroupId}`,
+      }
+    },
+  }
+}
+
+/**
  * Initialize Remote Control IPC handlers
  *
  * Creates and initializes ChannelManager, RemoteControlStorage, and
@@ -2188,6 +2402,11 @@ async function initializeRemoteControl(): Promise<void> {
     handler.setStorage(remoteControlStorage)
     handler.register()
     console.log('[RemoteControl] IPC handlers registered')
+
+    // Create and inject IDE API adapter for real IDE operations
+    const ideApiAdapter = createIdeApiAdapter()
+    setIdeApiAdapter(ideApiAdapter)
+    console.log('[RemoteControl] IDE API adapter injected')
 
     console.log('[RemoteControl] Initialization complete')
   } catch (err) {

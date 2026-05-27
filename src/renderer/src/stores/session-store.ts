@@ -197,6 +197,10 @@ const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
 let heartbeatTimeoutCount = 0;
 /** ★ 连接恢复提示的定时器引用（用于清理） */
 let connectionNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+/** ★ 上下文使用量刷新定时器（每 5 秒刷新） */
+let contextUsageRefreshTimer: ReturnType<typeof setInterval> | null = null;
+/** ★ 当前正在刷新上下文的会话 ID */
+let contextUsageSessionId: string | null = null;
 
 /**
  * 设置进度事件监听器
@@ -341,6 +345,88 @@ function cleanupProgressListener(): void {
   if (connectionNoticeTimer) {
     clearTimeout(connectionNoticeTimer);
     connectionNoticeTimer = null;
+  }
+  // ★ 清理上下文使用量刷新定时器
+  stopContextUsageRefresh();
+}
+
+/**
+ * ★ 启动上下文使用量定时刷新（每 5 秒）
+ * 在模型执行期间调用 SDK 的 getContextUsage 获取准确的使用量
+ * @param sessionId 会话 ID
+ * @param set Zustand set 函数
+ */
+function startContextUsageRefresh(sessionId: string, set: SetFunction): void {
+  // 清理旧的定时器
+  stopContextUsageRefresh();
+
+  contextUsageSessionId = sessionId;
+  console.log(`[SessionStore] Starting context usage refresh for session: ${sessionId}`);
+
+  // 立即刷新一次
+  refreshContextUsage(sessionId, set);
+
+  // 每 5 秒刷新一次
+  contextUsageRefreshTimer = setInterval(() => {
+    refreshContextUsage(sessionId, set);
+  }, 5000);
+}
+
+/**
+ * ★ 停止上下文使用量刷新
+ */
+function stopContextUsageRefresh(): void {
+  if (contextUsageRefreshTimer) {
+    clearInterval(contextUsageRefreshTimer);
+    contextUsageRefreshTimer = null;
+  }
+  contextUsageSessionId = null;
+}
+
+/**
+ * ★ 刷新上下文使用量（调用 SDK getContextUsage）
+ * @param sessionId 会话 ID
+ * @param set Zustand set 函数
+ */
+async function refreshContextUsage(sessionId: string, set: SetFunction): Promise<void> {
+  try {
+    const result = await window.api.claude.getContextUsage(sessionId);
+
+    if (!result.success || !result.data) {
+      // 静默失败，不影响用户体验
+      return;
+    }
+
+    const { totalTokens, maxTokens, percentage, categories } = result.data;
+
+    console.log(`[SessionStore] Context usage refreshed: ${totalTokens}/${maxTokens} (${percentage.toFixed(1)}%)`);
+
+    // 更新 session 的 tokenUsage
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      const currentUsage = existingSession.tokenUsage || { inputTokens: 0, outputTokens: 0 };
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            tokenUsage: {
+              ...currentUsage,
+              // ★ 使用 SDK 返回的准确值
+              inputTokens: totalTokens,
+              contextWindow: maxTokens,
+              // 保留 outputTokens，SDK 的 getContextUsage 不返回 outputTokens
+            },
+          },
+        },
+      };
+    });
+  } catch (err) {
+    // 静默失败
+    console.warn('[SessionStore] Failed to refresh context usage:', err);
   }
 }
 
@@ -1536,6 +1622,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // Flush any pending batches before marking complete
           immediateFlushToolBatch();
           immediateFlushBuffer(set, sessionId);
+
+          // ★ 会话结束时再刷新一次上下文使用量，确保最终值准确
+          // 使用 void 显式忽略 Promise，因为回调函数不返回 Promise
+          void refreshContextUsage(sessionId, set);
+
           // Mark streaming as complete and thinking as finished
           get().updateMessage(sessionId, assistantMessageId, {
             isStreaming: false,
@@ -1548,6 +1639,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           cleanupProgressListener();
 
           // ★ 更新 token 使用量
+          // 注意：contextWindow 已由定时刷新的 getContextUsage 更新，这里只更新增量 tokens
           console.log('[SessionStore] Complete event received, usageData:', usageData);
           if (usageData) {
             console.log('[SessionStore] Updating token usage with:', usageData);
@@ -1555,18 +1647,17 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               const existingSession = state.sessions[sessionId];
               if (!existingSession) return state;
 
-              // 累积 token 使用量
+              // 获取当前使用量
               const currentUsage = existingSession.tokenUsage || { inputTokens: 0, outputTokens: 0, contextWindow: 200000 };
 
-              // ★ 优先使用较大的 contextWindow 值
-              // SDK 可能返回模型真实值，Provider 配置可能是用户扩展的（如 DeepSeek [1m]）
-              const newContextWindow = Math.max(
-                usageData.contextWindow || 0,
-                currentUsage.contextWindow,
-                provider.contextWindow || 0
-              );
+              // ★ 方案 B：contextWindow 优先使用 SDK 返回值（如果有）
+              // 如果 usageData.contextWindow 存在，说明是模型真实值
+              // 否则保持现有值（已由 getContextUsage 刷新）
+              const newContextWindow = usageData.contextWindow || currentUsage.contextWindow;
 
               const newUsage = {
+                // ★ inputTokens 使用 getContextUsage 的累积值，这里只加增量
+                // 注意：usageData.inputTokens 是单次请求的值
                 inputTokens: currentUsage.inputTokens + usageData.inputTokens,
                 outputTokens: currentUsage.outputTokens + usageData.outputTokens,
                 contextWindow: newContextWindow,
@@ -1602,6 +1693,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       // ★ 启动心跳检测
       startHeartbeatCheck(sessionId, assistantMessageId, set);
+
+      // ★ 启动上下文使用量刷新（每 5 秒）
+      startContextUsageRefresh(sessionId, set);
 
       // ★ Step 4: 等待完成（通过进度事件监听器处理）
       // 使用轮询检查 isStreaming 状态
@@ -1748,6 +1842,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       model: provider.defaultModel,
       apiType: provider.apiType,
       envOverrides: provider.envOverrides,
+      contextWindow: provider.contextWindow,  // ★ 传递上下文窗口配置
     });
 
     if (!startResult.success) {

@@ -789,7 +789,16 @@ async function getOrCreateSession(
         console.log('[Claude SDK] No model specified, SDK will use default')
       }
 
+      // ★ 设置上下文窗口和 betas（用于 1M 上下文）
+      // SDK 的 betas 选项用于启用 1M token 上下文窗口
+      // 参考: https://docs.anthropic.com/en/api/beta-headers
+      if (contextWindow && contextWindow >= 1000000) {
+        sdkOptions.betas = ['context-1m-2025-08-07']
+        console.log('[Claude SDK] Enabled 1M context window with betas: context-1m-2025-08-07')
+      }
+
       console.log('[Claude SDK] Final sdkOptions.model:', sdkOptions.model || 'not set')
+      console.log('[Claude SDK] Context window:', contextWindow || 200000)
 
       // 创建 SDK query
       const sdkQuery: SDKQuery = sdk.query({
@@ -1329,19 +1338,34 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           console.log('[Claude SDK] Result message keys:', Object.keys(msg))
           console.log('[Claude SDK] Result usage:', JSON.stringify(msg.usage, null, 2))
           console.log('[Claude SDK] Result totalTokens:', msg.totalTokens)
+          console.log('[Claude SDK] Result modelUsage:', JSON.stringify(msg.modelUsage, null, 2))
           console.log('[Claude SDK] Session hasToolCalls:', session.hasToolCalls, 'hasThinking:', session.hasThinking)
           session.status = isSuccess ? 'idle' : 'error'
 
           // ★ 提取 token 使用量数据
           // SDK 可能返回 usage 或 totalTokens 字段
+          // ★ 优先从 modelUsage 获取准确的 contextWindow
+          let contextWindow = session.contextWindow || 200000
+          if (msg.modelUsage && typeof msg.modelUsage === 'object') {
+            // modelUsage 是 Record<string, ModelUsage>，取第一个模型的值
+            const modelKeys = Object.keys(msg.modelUsage)
+            if (modelKeys.length > 0) {
+              const firstModelUsage = msg.modelUsage[modelKeys[0]]
+              if (firstModelUsage?.contextWindow) {
+                contextWindow = firstModelUsage.contextWindow
+                console.log('[Claude SDK] Got contextWindow from modelUsage:', contextWindow)
+              }
+            }
+          }
+
           const usageData = msg.usage ? {
             inputTokens: msg.usage.input_tokens || 0,
             outputTokens: msg.usage.output_tokens || 0,
-            contextWindow: session.contextWindow || 200000,  // ★ 使用会话配置的上下文窗口
+            contextWindow,  // ★ 使用从 modelUsage 获取的准确值
           } : msg.totalTokens ? {
             inputTokens: msg.totalTokens,
             outputTokens: 0,
-            contextWindow: session.contextWindow || 200000,  // ★ 使用会话配置的上下文窗口
+            contextWindow,  // ★ 使用从 modelUsage 获取的准确值
           } : undefined
 
           console.log('[Claude SDK] Extracted usageData:', usageData)
@@ -2192,6 +2216,58 @@ function registerClaudeHandlers(): void {
       pendingQuestions.delete(sessionId)
 
       return { success: true }
+    }
+  )
+
+  // ★ 获取实时上下文使用量（方案 B：使用 SDK getContextUsage）
+  // 返回累积 token 数和准确的 contextWindow
+  ipcMain.handle(
+    'claude:getContextUsage',
+    async (_event, sessionId: string): Promise<{
+      success: boolean;
+      data?: {
+        totalTokens: number;
+        maxTokens: number;
+        rawMaxTokens: number;
+        percentage: number;
+        model: string;
+        categories: { name: string; tokens: number; color: string }[];
+      };
+      error?: string;
+    }> => {
+      const session = activeSessions.get(sessionId)
+      if (!session) {
+        return { success: false, error: 'Session not found' }
+      }
+
+      if (!session.sdkQuery) {
+        return { success: false, error: 'SDK query not available' }
+      }
+
+      try {
+        // 调用 SDK 的 getContextUsage 方法获取准确的上下文使用量
+        const usage = await (session.sdkQuery as any).getContextUsage()
+        console.log('[Claude SDK] getContextUsage result:', usage)
+
+        return {
+          success: true,
+          data: {
+            totalTokens: usage.totalTokens,
+            maxTokens: usage.maxTokens,
+            rawMaxTokens: usage.rawMaxTokens,
+            percentage: usage.percentage,
+            model: usage.model,
+            categories: usage.categories?.map((c: any) => ({
+              name: c.name,
+              tokens: c.tokens,
+              color: c.color,
+            })) || [],
+          },
+        }
+      } catch (err: any) {
+        console.error('[Claude SDK] getContextUsage error:', err)
+        return { success: false, error: err.message || String(err) }
+      }
     }
   )
 

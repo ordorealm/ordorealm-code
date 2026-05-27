@@ -2269,10 +2269,29 @@ function createIdeApiAdapter(): IdeApiAdapter {
       } catch (err) {
         return {
           success: false,
-          message: `重启失败: ${err}`,
+          message: `重启失败: ${err instanceof Error ? err.message : String(err)}`,
         }
       }
     },
+
+    /**
+     * Map MCP internal status to API status type
+     * Internal: 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
+     * API: 'running' | 'stopped' | 'error'
+     */
+    const mapMcpStatus = (status: string): 'running' | 'stopped' | 'error' => {
+      switch (status) {
+        case 'running':
+        case 'starting':
+          return 'running'
+        case 'stopped':
+        case 'stopping':
+          return 'stopped'
+        case 'error':
+        default:
+          return 'error'
+      }
+    }
 
     /**
      * Get MCP tools status
@@ -2290,7 +2309,7 @@ function createIdeApiAdapter(): IdeApiAdapter {
           statusList.push({
             id: def.id,
             name: def.name,
-            status: instance?.status as 'running' | 'stopped' | 'error' || 'stopped',
+            status: instance ? mapMcpStatus(instance.status) : 'stopped',
             connectionInfo: instance?.status === 'running' ? '已连接' : undefined,
           })
         }

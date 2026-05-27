@@ -15,6 +15,7 @@ import * as os from 'os'
 import * as path from 'path'
 import * as fs from 'fs'
 import { Logger } from '../utils/logger'
+import { getWeClawManager, WeClawManager } from '../services/weclaw-manager'
 
 // ============ Type Definitions ============
 
@@ -333,6 +334,9 @@ export class WeClawSDKImpl implements WeClawSDK {
    * WeClaw runs as an independent service and displays its own QR code
    * for WeChat login. Our IDE interacts with WeClaw via HTTP API.
    *
+   * If the service is not running, this method will attempt to start
+   * the bundled WeClaw binary automatically.
+   *
    * @returns Promise resolving to session ID if connected
    * @throws WeClawError if service not running or not logged in
    */
@@ -341,14 +345,45 @@ export class WeClawSDKImpl implements WeClawSDK {
 
     const status = await this.checkServiceStatus()
 
+    // 如果服务未运行，尝试自动启动捆绑的 WeClaw 二进制
     if (!status.running) {
-      throw createError(
-        'not_connected',
-        'WeClaw 服务未运行。请先安装并启动 WeClaw：\n' +
-          '1. 运行: curl -sSL https://raw.githubusercontent.com/fastclaw-ai/weclaw/main/install.sh | sh\n' +
-          '2. 运行: weclaw start\n' +
-          '3. 使用微信扫描 WeClaw 显示的二维码登录'
-      )
+      this.logger.info('WeClaw service not running, attempting to start bundled binary...')
+
+      const manager = getWeClawManager({
+        apiAddr: this.config.apiAddr || WECLAW_API_DEFAULT_ADDR,
+        debug: this.config.debug
+      })
+
+      // 检查二进制是否存在
+      if (!manager.isBinaryAvailable()) {
+        throw createError(
+          'not_connected',
+          'WeClaw 二进制文件未找到。请确保应用程序已正确安装。'
+        )
+      }
+
+      // 尝试启动服务
+      try {
+        await manager.start()
+        this.logger.info('WeClaw service started successfully')
+
+        // 重新检查状态
+        const newStatus = await this.checkServiceStatus()
+        if (!newStatus.running) {
+          throw createError('not_connected', 'WeClaw 服务启动失败，请检查日志')
+        }
+
+        // 更新 status 变量
+        status.running = newStatus.running
+        status.loggedIn = newStatus.loggedIn
+        status.userId = newStatus.userId
+      } catch (startError) {
+        this.logger.error('Failed to start WeClaw:', startError)
+        throw createError(
+          'not_connected',
+          'WeClaw 服务启动失败。请检查应用程序日志或手动启动 WeClaw。'
+        )
+      }
     }
 
     if (!status.loggedIn) {

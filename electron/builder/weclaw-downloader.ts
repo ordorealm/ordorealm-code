@@ -11,9 +11,7 @@
 import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as zlib from 'zlib';
-import { pipeline } from 'stream/promises';
-import { createReadStream, createWriteStream } from 'fs';
+import { createWriteStream } from 'fs';
 import { execSync } from 'child_process';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -47,6 +45,7 @@ const WECLAW_DIR = path.join(__dirname, '..', 'runtime', 'weclaw');
 
 /**
  * WeClaw binaries for supported platforms
+ * Note: WeClaw releases are raw binaries, not compressed archives
  * Only macOS and Windows as per user requirement
  */
 const WECLAW_BINARIES: WeClawBinary[] = [
@@ -54,7 +53,7 @@ const WECLAW_BINARIES: WeClawBinary[] = [
   {
     platform: 'darwin',
     arch: 'x64',
-    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_${WECLAW_VERSION}_darwin_amd64.tar.gz`,
+    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_darwin_amd64`,
     dest: path.join(WECLAW_DIR, 'darwin-x64'),
     executable: 'weclaw',
   },
@@ -62,7 +61,7 @@ const WECLAW_BINARIES: WeClawBinary[] = [
   {
     platform: 'darwin',
     arch: 'arm64',
-    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_${WECLAW_VERSION}_darwin_arm64.tar.gz`,
+    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_darwin_arm64`,
     dest: path.join(WECLAW_DIR, 'darwin-arm64'),
     executable: 'weclaw',
   },
@@ -70,7 +69,7 @@ const WECLAW_BINARIES: WeClawBinary[] = [
   {
     platform: 'win32',
     arch: 'x64',
-    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_${WECLAW_VERSION}_windows_amd64.zip`,
+    url: `${GITHUB_RELEASES}/${WECLAW_VERSION}/weclaw_windows_amd64.exe`,
     dest: path.join(WECLAW_DIR, 'win32-x64'),
     executable: 'weclaw.exe',
   },
@@ -140,45 +139,6 @@ async function downloadFile(
 }
 
 /**
- * Extract a tar.gz file
- */
-async function extractTarGz(
-  tarGzPath: string,
-  destDir: string,
-): Promise<void> {
-  // Create destination directory
-  fs.mkdirSync(destDir, { recursive: true });
-
-  // Extract using tar (cross-platform on Node.js 20+)
-  execSync(
-    `tar -xzf "${tarGzPath}" -C "${destDir}"`,
-    { stdio: 'inherit' }
-  );
-}
-
-/**
- * Extract a zip file
- */
-async function extractZip(
-  zipPath: string,
-  destDir: string,
-): Promise<void> {
-  // Create destination directory
-  fs.mkdirSync(destDir, { recursive: true });
-
-  if (process.platform === 'win32') {
-    // Use PowerShell on Windows
-    execSync(
-      `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: 'inherit' }
-    );
-  } else {
-    // Use unzip on macOS/Linux
-    execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: 'inherit' });
-  }
-}
-
-/**
  * Check if WeClaw binary already exists
  */
 function weclawExists(destPath: string, executable: string): boolean {
@@ -244,12 +204,12 @@ export async function downloadWeClaw(
     // Create destination directory
     fs.mkdirSync(binary.dest, { recursive: true });
 
-    // Download file
-    const tempFile = path.join(WECLAW_DIR, path.basename(binary.url));
-    console.log('   ⬇️  Downloading...');
+    // Download directly to destination (no extraction needed)
+    const destFile = path.join(binary.dest, binary.executable);
+    console.log('   ⬇️  Downloading binary...');
 
     try {
-      await downloadFile(binary.url, tempFile, (progress) => {
+      await downloadFile(binary.url, destFile, (progress) => {
         if (progress.percent % 10 === 0 || progress.percent === 100) {
           console.log(`   ${progress.percent}% (${(progress.current / 1024 / 1024).toFixed(1)}MB / ${(progress.total / 1024 / 1024).toFixed(1)}MB)`);
         }
@@ -257,26 +217,15 @@ export async function downloadWeClaw(
 
       console.log('   ✅ Download complete');
 
-      // Extract
-      console.log('   📦 Extracting...');
-      if (binary.url.endsWith('.tar.gz')) {
-        await extractTarGz(tempFile, binary.dest);
-      } else if (binary.url.endsWith('.zip')) {
-        await extractZip(tempFile, binary.dest);
-      }
-      console.log('   ✅ Extraction complete');
-
       // Make executable (Unix)
       makeExecutable(binary.dest, binary.executable);
-
-      // Cleanup temp file
-      fs.unlinkSync(tempFile);
+      console.log('   ✅ Binary ready');
 
     } catch (error) {
       console.error(`   ❌ Error: ${error}`);
       // Cleanup on error
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
+      if (fs.existsSync(destFile)) {
+        fs.unlinkSync(destFile);
       }
       throw error;
     }

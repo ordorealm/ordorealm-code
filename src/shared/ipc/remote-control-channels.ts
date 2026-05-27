@@ -33,6 +33,73 @@ export const IPC_CHANNELS = {
   UPDATE_SETTINGS: 'remote-control:update-settings',
 } as const
 
+// ============ IPC Push Event Types ============
+
+/**
+ * Event data for channel status change events
+ * Emitted when a channel connects or disconnects
+ */
+export interface ChannelStatusChangeEvent {
+  /** Channel ID */
+  channelId: string
+  /** New status: 'connected' or 'disconnected' */
+  status: 'connected' | 'disconnected' | 'pending'
+  /** User ID (only present when status is 'connected') */
+  userId?: string
+  /** User nickname (only present when status is 'connected') */
+  nickname?: string
+}
+
+/**
+ * Event data for message received events
+ * Emitted when a message is received from a remote channel
+ */
+export interface MessageReceivedEvent {
+  /** Channel ID */
+  channelId: string
+  /** Message data */
+  message: {
+    /** Message ID */
+    messageId: string
+    /** Message content */
+    content: string
+    /** Sender user ID */
+    userId: string
+    /** Timestamp (ISO string) */
+    timestamp: string
+    /** Message type */
+    type?: 'text' | 'image' | 'voice'
+  }
+}
+
+/**
+ * Event data for confirmation request events
+ * Emitted when a sensitive operation requires user confirmation
+ */
+export interface ConfirmRequestEvent {
+  /** Confirmation ID for tracking */
+  confirmId: string
+  /** Confirmation message to display */
+  message: string
+  /** Channel ID where the request originated */
+  channelId: string
+  /** Timestamp (ISO string) */
+  timestamp: string
+}
+
+/**
+ * Event data for confirmation response events
+ * Emitted when a user responds to a confirmation request
+ */
+export interface ConfirmResponseEvent {
+  /** Confirmation ID */
+  confirmId: string
+  /** Whether the user confirmed */
+  confirmed: boolean
+  /** Channel ID where the response came from */
+  channelId: string
+}
+
 /**
  * Type for IPC channel names
  */

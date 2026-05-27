@@ -25,13 +25,15 @@ import { WeChatAdapter, WeChatAdapterConfig, createWeChatAdapter } from '../adap
 import { RemoteControlStorage } from './remote-control-storage'
 import { generateId } from '../utils/encryption'
 import { Logger } from '../utils/logger'
+import { AgentContext } from '../agents/master-agent'
 
 // ============ Type Definitions ============
 
 /**
  * Message handler function type
+ * Supports both sync and async handlers
  */
-export type MessageHandler = (channelId: string, message: ChannelMessage) => void
+export type MessageHandler = (channelId: string, message: ChannelMessage) => void | Promise<void>
 
 /**
  * Channel with its associated adapter
@@ -67,6 +69,8 @@ export type ChannelManagerEvent =
   | 'channel_disconnected'
   | 'message'
   | 'error'
+  | 'confirm_request'
+  | 'confirm_response'
 
 /**
  * Channel manager event handler
@@ -539,6 +543,122 @@ export class ChannelManager {
   }
 
   /**
+   * Set up message processing with Master Agent
+   *
+   * Connects incoming messages to the Master Agent for command processing.
+   * This method provides a convenient way to integrate the channel manager
+   * with the master agent for automated message handling.
+   *
+   * Supports confirmation flow:
+   * 1. When masterAgent returns requiresConfirm=true, the confirmation request
+   *    is sent to the channel for user response
+   * 2. When user replies with "确认 {confirmId}" or "取消 {confirmId}",
+   *    the response is processed through masterAgent.processConfirmation()
+   *
+   * @param masterAgent - Master Agent instance for command processing
+   * @param getAgentContext - Function to get current agent context for a channel
+   * @returns Cleanup function to remove the handler
+   *
+   * @example
+   * ```typescript
+   * const cleanup = channelManager.setupMasterAgentProcessing(
+   *   masterAgent,
+   *   async (channelId, userId) => ({
+   *     projects: [],
+   *     mcpStatus: [],
+   *     skillgroups: [],
+   *     userId,
+   *     channelId,
+   *     sessionId: 'session-123',
+   *   })
+   * );
+   *
+   * // Later, to clean up:
+   * cleanup();
+   * ```
+   */
+  setupMasterAgentProcessing(
+    masterAgent: {
+      handleMessage: (message: string, context: AgentContext) => Promise<string>
+      processConfirmation: (confirmId: string, confirmed: boolean) => Promise<{ success: boolean; message: string }>
+    },
+    getAgentContext: (channelId: string, userId: string) => Promise<AgentContext>
+  ): () => void {
+    // Set up message handler that processes messages through masterAgent
+    this.setMessageHandler(async (channelId: string, message: ChannelMessage) => {
+      try {
+        // Check if this is a confirmation response message
+        const confirmResponse = this.parseConfirmResponse(message.content)
+        if (confirmResponse) {
+          // Process confirmation response
+          this.logger.info(`Processing confirmation response: ${confirmResponse.confirmId} -> ${confirmResponse.confirmed ? 'confirmed' : 'cancelled'}`)
+          const result = await masterAgent.processConfirmation(
+            confirmResponse.confirmId,
+            confirmResponse.confirmed
+          )
+          await this.sendMessage(channelId, result.message)
+          return
+        }
+
+        // Get context for this channel
+        const context = await getAgentContext(channelId, message.userId)
+
+        // Process message through master agent
+        const response = await masterAgent.handleMessage(message.content, context)
+
+        // Send response back to channel
+        await this.sendMessage(channelId, response)
+      } catch (error) {
+        this.logger.error('Error processing message through master agent:', error)
+        // Send error message back
+        await this.sendMessage(channelId, '❌ 处理消息时发生错误').catch(() => {})
+      }
+    })
+
+    this.logger.info('Master Agent message processing configured')
+
+    // Return cleanup function
+    return () => {
+      this.setMessageHandler(() => {})
+      this.logger.info('Master Agent message processing disabled')
+    }
+  }
+
+  /**
+   * Parse confirmation response from message content
+   *
+   * Supports both Chinese and English responses:
+   * - "确认 {confirmId}" / "confirm {confirmId}" / "yes {confirmId}" / "ok {confirmId}"
+   * - "取消 {confirmId}" / "cancel {confirmId}" / "no {confirmId}"
+   *
+   * @param content - Message content to parse
+   * @returns Parsed response with confirmId and confirmed status, or null if not a confirmation response
+   * @private
+   */
+  private parseConfirmResponse(content: string): { confirmId: string; confirmed: boolean } | null {
+    // Validate input length
+    if (content.length > 200) {
+      return null
+    }
+
+    // Support both Chinese and English responses
+    const confirmPattern = /^(?:确认|confirm|yes|ok)\s+([a-zA-Z0-9_-]+)$/i
+    const cancelPattern = /^(?:取消|cancel|no)\s+([a-zA-Z0-9_-]+)$/i
+
+    const confirmMatch = content.trim().match(confirmPattern)
+    if (confirmMatch) {
+      return { confirmId: confirmMatch[1], confirmed: true }
+    }
+
+    const cancelMatch = content.trim().match(cancelPattern)
+    if (cancelMatch) {
+      return { confirmId: cancelMatch[1], confirmed: false }
+    }
+
+    return null
+  }
+
+  /**
    * Subscribe to channel manager events
    *
    * @param event - Event type
@@ -730,6 +850,28 @@ export class ChannelManager {
       })
     )
 
+    // Confirm request event
+    unsubscribers.push(
+      adapter.on('confirm_request', (data: { confirmId: string; message: string; timestamp: string }) => {
+        this.logger.info(`Confirmation request from ${channelId}: ${data.confirmId}`)
+        this.eventEmitter.emit('confirm_request', {
+          channelId,
+          ...data,
+        })
+      })
+    )
+
+    // Confirm response event
+    unsubscribers.push(
+      adapter.on('confirm_response', (data: { confirmId: string; confirmed: boolean; timestamp: string }) => {
+        this.logger.info(`Confirmation response from ${channelId}: ${data.confirmId} -> ${data.confirmed ? 'confirmed' : 'cancelled'}`)
+        this.eventEmitter.emit('confirm_response', {
+          channelId,
+          ...data,
+        })
+      })
+    )
+
     return unsubscribers
   }
 
@@ -783,13 +925,13 @@ export class ChannelManager {
   /**
    * Handle adapter message event
    */
-  private handleAdapterMessage(channelId: string, message: ChannelMessage): void {
+  private async handleAdapterMessage(channelId: string, message: ChannelMessage): Promise<void> {
     this.logger.debug(`Message from ${channelId}: ${message.content.substring(0, 50)}...`)
 
     // Call message handler if set
     if (this.messageHandler) {
       try {
-        this.messageHandler(channelId, message)
+        await this.messageHandler(channelId, message)
       } catch (error) {
         this.logger.error('Error in message handler:', error)
       }

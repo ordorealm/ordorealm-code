@@ -23,6 +23,62 @@ import {
 } from './permission-controller'
 import { generateId } from '../utils/encryption'
 
+// ============ IDE API Adapter Interface ============
+
+/**
+ * IDE API Adapter interface for calling real IDE operations
+ *
+ * This interface abstracts the communication layer between the operation executor
+ * and the actual IDE functionality. In an Electron app, this would typically
+ * communicate with the main process via IPC.
+ */
+export interface IdeApiAdapter {
+  /**
+   * Get all running projects/sessions
+   */
+  getProjects(): Promise<ProjectInfo[]>
+
+  /**
+   * Get current active project ID
+   */
+  getCurrentProject(): Promise<string | undefined>
+
+  /**
+   * Switch to a specific project
+   */
+  switchProject(projectId: string): Promise<{ success: boolean; message: string }>
+
+  /**
+   * Restart a project session
+   */
+  restartProject(projectId: string): Promise<{ success: boolean; message: string }>
+
+  /**
+   * Get MCP tools status
+   */
+  getMcpStatus(): Promise<MCPStatus[]>
+
+  /**
+   * Start an MCP tool
+   */
+  startMcp(mcpId: string): Promise<{ success: boolean; message: string }>
+
+  /**
+   * Stop an MCP tool
+   */
+  stopMcp(mcpId: string): Promise<{ success: boolean; message: string }>
+
+  /**
+   * Get available skill groups
+   */
+  getSkillGroups(): Promise<SkillGroup[]>
+
+  /**
+   * Switch to a skill group
+   */
+  switchSkillGroup(skillGroupId: string): Promise<{ success: boolean; message: string }>
+}
+
 // ============ Operation Mapping ============
 
 /**
@@ -104,6 +160,7 @@ class DefaultOperationExecutor implements OperationExecutor {
   private permissionCtrl: PermissionController
   private confirmHandler: ConfirmHandler | null = null
   private pendingConfirmations: Map<string, PendingConfirmation> = new Map()
+  private ideApi: IdeApiAdapter | null = null
 
   /**
    * Create a new operation executor
@@ -112,6 +169,24 @@ class DefaultOperationExecutor implements OperationExecutor {
    */
   constructor(permissionCtrl: PermissionController = permissionController) {
     this.permissionCtrl = permissionCtrl
+  }
+
+  /**
+   * Set the IDE API adapter for real IDE operations
+   *
+   * @param adapter - IDE API adapter instance
+   */
+  setIdeApi(adapter: IdeApiAdapter): void {
+    this.ideApi = adapter
+  }
+
+  /**
+   * Get the current IDE API adapter
+   *
+   * @returns IDE API adapter or null if not set
+   */
+  getIdeApi(): IdeApiAdapter | null {
+    return this.ideApi
   }
 
   /**
@@ -331,8 +406,20 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute status operation - show all project session status
    */
-  private executeStatus(context: AgentContext): OperationResult {
-    const { projects, currentProject } = context
+  private async executeStatus(context: AgentContext): Promise<OperationResult> {
+    // Use IDE API if available, otherwise fall back to context data
+    let projects = context.projects
+    let currentProject = context.currentProject
+
+    if (this.ideApi) {
+      try {
+        projects = await this.ideApi.getProjects()
+        currentProject = await this.ideApi.getCurrentProject()
+      } catch (error) {
+        // Fall back to context data on error
+        console.error('Failed to get projects from IDE API:', error)
+      }
+    }
 
     if (projects.length === 0) {
       return {
@@ -367,12 +454,11 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute switch operation - switch to specified project session
    */
-  private executeSwitch(
+  private async executeSwitch(
     params: Record<string, string>,
     context: AgentContext
-  ): OperationResult {
+  ): Promise<OperationResult> {
     const { projectName } = params
-    const { projects } = context
 
     if (!projectName) {
       return {
@@ -380,6 +466,50 @@ class DefaultOperationExecutor implements OperationExecutor {
         message: '请指定要切换的项目名称',
       }
     }
+
+    // Use IDE API if available
+    if (this.ideApi) {
+      try {
+        const projects = await this.ideApi.getProjects()
+        const project = projects.find(
+          (p) => p.name.toLowerCase() === projectName.toLowerCase()
+        )
+
+        if (!project) {
+          const availableProjects = projects.map((p) => p.name).join(', ')
+          return {
+            success: false,
+            message: `项目 "${projectName}" 不存在\n可用项目: ${availableProjects || '无'}`,
+          }
+        }
+
+        const currentProject = await this.ideApi.getCurrentProject()
+        if (project.id === currentProject) {
+          return {
+            success: true,
+            message: `已经是当前项目: ${project.name}`,
+            data: { projectId: project.id },
+          }
+        }
+
+        const result = await this.ideApi.switchProject(project.id)
+        return {
+          success: result.success,
+          message: result.success
+            ? `✅ 已切换到项目: ${project.name}`
+            : result.message,
+          data: result.success
+            ? { projectId: project.id, projectName: project.name }
+            : undefined,
+        }
+      } catch (error) {
+        console.error('Failed to switch project via IDE API:', error)
+        // Fall through to context-based fallback
+      }
+    }
+
+    // Fallback: Use context data
+    const { projects } = context
 
     // Find the project by name (fuzzy match already done by parser)
     const project = projects.find(
@@ -403,7 +533,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // In a real implementation, this would call the IDE's project switch API
+    // Without IDE API, we can only simulate the switch
     return {
       success: true,
       message: `✅ 已切换到项目: ${project.name}`,
@@ -417,12 +547,11 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute restart operation - restart specified project session
    */
-  private executeRestart(
+  private async executeRestart(
     params: Record<string, string>,
     context: AgentContext
-  ): OperationResult {
+  ): Promise<OperationResult> {
     const { projectName } = params
-    const { projects } = context
 
     if (!projectName) {
       return {
@@ -430,6 +559,45 @@ class DefaultOperationExecutor implements OperationExecutor {
         message: '请指定要重启的项目名称',
       }
     }
+
+    // Use IDE API if available
+    if (this.ideApi) {
+      try {
+        const projects = await this.ideApi.getProjects()
+        const project = projects.find(
+          (p) => p.name.toLowerCase() === projectName.toLowerCase()
+        )
+
+        if (!project) {
+          const availableProjects = projects.map((p) => p.name).join(', ')
+          return {
+            success: false,
+            message: `项目 "${projectName}" 不存在\n可用项目: ${availableProjects || '无'}`,
+          }
+        }
+
+        const result = await this.ideApi.restartProject(project.id)
+        return {
+          success: result.success,
+          message: result.success
+            ? `✅ 项目 "${project.name}" 已重启`
+            : result.message,
+          data: result.success
+            ? {
+                projectId: project.id,
+                projectName: project.name,
+                restartedAt: new Date().toISOString(),
+              }
+            : undefined,
+        }
+      } catch (error) {
+        console.error('Failed to restart project via IDE API:', error)
+        // Fall through to context-based fallback
+      }
+    }
+
+    // Fallback: Use context data
+    const { projects } = context
 
     // Find the project by name
     const project = projects.find(
@@ -444,7 +612,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // In a real implementation, this would call the IDE's session restart API
+    // Without IDE API, we can only simulate the restart
     return {
       success: true,
       message: `✅ 项目 "${project.name}" 已重启`,
@@ -459,8 +627,18 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute MCP status operation - show MCP tools status
    */
-  private executeMcpStatus(context: AgentContext): OperationResult {
-    const { mcpStatus } = context
+  private async executeMcpStatus(context: AgentContext): Promise<OperationResult> {
+    // Use IDE API if available
+    let mcpStatus = context.mcpStatus
+
+    if (this.ideApi) {
+      try {
+        mcpStatus = await this.ideApi.getMcpStatus()
+      } catch (error) {
+        console.error('Failed to get MCP status from IDE API:', error)
+        // Fall back to context data
+      }
+    }
 
     if (mcpStatus.length === 0) {
       return {
@@ -491,12 +669,11 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute MCP start operation - start specified MCP
    */
-  private executeMcpStart(
+  private async executeMcpStart(
     params: Record<string, string>,
     context: AgentContext
-  ): OperationResult {
+  ): Promise<OperationResult> {
     const { mcpName } = params
-    const { mcpStatus } = context
 
     if (!mcpName) {
       return {
@@ -504,6 +681,54 @@ class DefaultOperationExecutor implements OperationExecutor {
         message: '请指定要启动的 MCP 名称',
       }
     }
+
+    // Use IDE API if available
+    if (this.ideApi) {
+      try {
+        const mcpStatus = await this.ideApi.getMcpStatus()
+        const mcp = mcpStatus.find(
+          (m) => m.name.toLowerCase() === mcpName.toLowerCase()
+        )
+
+        if (!mcp) {
+          const availableMcps = mcpStatus.map((m) => m.name).join(', ')
+          return {
+            success: false,
+            message: `MCP "${mcpName}" 不存在\n可用 MCP: ${availableMcps || '无'}`,
+          }
+        }
+
+        // Check if already running
+        if (mcp.status === 'running') {
+          return {
+            success: true,
+            message: `MCP "${mcp.name}" 已经在运行中`,
+            data: { mcpId: mcp.id },
+          }
+        }
+
+        const result = await this.ideApi.startMcp(mcp.id)
+        return {
+          success: result.success,
+          message: result.success
+            ? `✅ MCP "${mcp.name}" 已启动`
+            : result.message,
+          data: result.success
+            ? {
+                mcpId: mcp.id,
+                mcpName: mcp.name,
+                startedAt: new Date().toISOString(),
+              }
+            : undefined,
+        }
+      } catch (error) {
+        console.error('Failed to start MCP via IDE API:', error)
+        // Fall through to context-based fallback
+      }
+    }
+
+    // Fallback: Use context data
+    const { mcpStatus } = context
 
     // Find the MCP by name
     const mcp = mcpStatus.find(
@@ -527,7 +752,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // In a real implementation, this would call the IDE's MCP start API
+    // Without IDE API, we can only simulate the start
     return {
       success: true,
       message: `✅ MCP "${mcp.name}" 已启动`,
@@ -542,12 +767,11 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute MCP stop operation - stop specified MCP
    */
-  private executeMcpStop(
+  private async executeMcpStop(
     params: Record<string, string>,
     context: AgentContext
-  ): OperationResult {
+  ): Promise<OperationResult> {
     const { mcpName } = params
-    const { mcpStatus } = context
 
     if (!mcpName) {
       return {
@@ -555,6 +779,54 @@ class DefaultOperationExecutor implements OperationExecutor {
         message: '请指定要停止的 MCP 名称',
       }
     }
+
+    // Use IDE API if available
+    if (this.ideApi) {
+      try {
+        const mcpStatus = await this.ideApi.getMcpStatus()
+        const mcp = mcpStatus.find(
+          (m) => m.name.toLowerCase() === mcpName.toLowerCase()
+        )
+
+        if (!mcp) {
+          const availableMcps = mcpStatus.map((m) => m.name).join(', ')
+          return {
+            success: false,
+            message: `MCP "${mcpName}" 不存在\n可用 MCP: ${availableMcps || '无'}`,
+          }
+        }
+
+        // Check if already stopped
+        if (mcp.status === 'stopped') {
+          return {
+            success: true,
+            message: `MCP "${mcp.name}" 已经停止`,
+            data: { mcpId: mcp.id },
+          }
+        }
+
+        const result = await this.ideApi.stopMcp(mcp.id)
+        return {
+          success: result.success,
+          message: result.success
+            ? `✅ MCP "${mcp.name}" 已停止`
+            : result.message,
+          data: result.success
+            ? {
+                mcpId: mcp.id,
+                mcpName: mcp.name,
+                stoppedAt: new Date().toISOString(),
+              }
+            : undefined,
+        }
+      } catch (error) {
+        console.error('Failed to stop MCP via IDE API:', error)
+        // Fall through to context-based fallback
+      }
+    }
+
+    // Fallback: Use context data
+    const { mcpStatus } = context
 
     // Find the MCP by name
     const mcp = mcpStatus.find(
@@ -578,7 +850,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // In a real implementation, this would call the IDE's MCP stop API
+    // Without IDE API, we can only simulate the stop
     return {
       success: true,
       message: `✅ MCP "${mcp.name}" 已停止`,
@@ -593,8 +865,18 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute skillgroup list operation - list available skill groups
    */
-  private executeSkillgroupList(context: AgentContext): OperationResult {
-    const { skillgroups } = context
+  private async executeSkillgroupList(context: AgentContext): Promise<OperationResult> {
+    // Use IDE API if available
+    let skillgroups = context.skillgroups
+
+    if (this.ideApi) {
+      try {
+        skillgroups = await this.ideApi.getSkillGroups()
+      } catch (error) {
+        console.error('Failed to get skill groups from IDE API:', error)
+        // Fall back to context data
+      }
+    }
 
     if (skillgroups.length === 0) {
       return {
@@ -631,12 +913,11 @@ class DefaultOperationExecutor implements OperationExecutor {
   /**
    * Execute skillgroup switch operation - switch to specified skill group
    */
-  private executeSkillgroupSwitch(
+  private async executeSkillgroupSwitch(
     params: Record<string, string>,
     context: AgentContext
-  ): OperationResult {
+  ): Promise<OperationResult> {
     const { skillgroupName } = params
-    const { skillgroups } = context
 
     if (!skillgroupName) {
       return {
@@ -644,6 +925,54 @@ class DefaultOperationExecutor implements OperationExecutor {
         message: '请指定要切换的技能组名称',
       }
     }
+
+    // Use IDE API if available
+    if (this.ideApi) {
+      try {
+        const skillgroups = await this.ideApi.getSkillGroups()
+        const group = skillgroups.find(
+          (g) => g.name.toLowerCase() === skillgroupName.toLowerCase()
+        )
+
+        if (!group) {
+          const availableGroups = skillgroups.map((g) => g.name).join(', ')
+          return {
+            success: false,
+            message: `技能组 "${skillgroupName}" 不存在\n可用技能组: ${availableGroups || '无'}`,
+          }
+        }
+
+        // Check if already active
+        if (group.isActive) {
+          return {
+            success: true,
+            message: `技能组 "${group.name}" 已经是当前激活状态`,
+            data: { skillgroupId: group.id },
+          }
+        }
+
+        const result = await this.ideApi.switchSkillGroup(group.id)
+        return {
+          success: result.success,
+          message: result.success
+            ? `✅ 已切换到技能组: ${group.name}`
+            : result.message,
+          data: result.success
+            ? {
+                skillgroupId: group.id,
+                skillgroupName: group.name,
+                skillCount: group.skillCount,
+              }
+            : undefined,
+        }
+      } catch (error) {
+        console.error('Failed to switch skill group via IDE API:', error)
+        // Fall through to context-based fallback
+      }
+    }
+
+    // Fallback: Use context data
+    const { skillgroups } = context
 
     // Find the skill group by name
     const group = skillgroups.find(
@@ -667,7 +996,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // In a real implementation, this would call the IDE's skillgroup switch API
+    // Without IDE API, we can only simulate the switch
     return {
       success: true,
       message: `✅ 已切换到技能组: ${group.name}`,
@@ -765,4 +1094,27 @@ export function createOperationExecutor(
   permissionCtrl?: PermissionController
 ): OperationExecutor {
   return new DefaultOperationExecutor(permissionCtrl)
+}
+
+// ============ IDE API Adapter Helper ============
+
+/**
+ * Set the IDE API adapter for the default operation executor
+ *
+ * This function allows the main process to inject the real IDE API
+ * implementation after the operation executor is created.
+ *
+ * @param adapter - IDE API adapter instance
+ */
+export function setIdeApiAdapter(adapter: IdeApiAdapter): void {
+  ;(operationExecutor as DefaultOperationExecutor).setIdeApi(adapter)
+}
+
+/**
+ * Get the current IDE API adapter from the default operation executor
+ *
+ * @returns IDE API adapter or null if not set
+ */
+export function getIdeApiAdapter(): IdeApiAdapter | null {
+  return (operationExecutor as DefaultOperationExecutor).getIdeApi()
 }

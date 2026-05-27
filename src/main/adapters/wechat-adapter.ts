@@ -207,6 +207,10 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
    * Generates a QR code for the user to scan with their WeChat app.
    * Returns the QR code data and a channel ID for tracking.
    *
+   * Includes timeout handling:
+   * - If user doesn't scan within the timeout period, the connection is cleaned up
+   * - The error is emitted via the 'error' event for UI notification
+   *
    * @param options - Optional connection configuration
    * @returns Promise resolving to QR code and channel ID
    * @throws Error if connection fails or times out
@@ -226,6 +230,26 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
       reconnectAttempts: 0,
     }
 
+    // Set up timeout cleanup
+    let timeoutId: NodeJS.Timeout | null = null
+    let timeoutOccurred = false
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(async () => {
+        timeoutOccurred = true
+        this.logger.warn('Connection timeout, cleaning up...')
+
+        // Clean up SDK state to prevent inconsistency
+        await this.sdk.disconnect().catch((err) => {
+          this.logger.debugLog('SDK disconnect during timeout cleanup failed:', err)
+        })
+
+        this.connectionState.lastError = '连接超时，请重新扫码'
+        this.eventEmitter.emit('error', new Error('Connection timeout: user did not scan QR code within the timeout period'))
+        reject(new Error('Connection timeout'))
+      }, timeout)
+    })
+
     try {
       // Generate QR code
       const qrCode = await this.sdk.getQRCode()
@@ -234,8 +258,23 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
       this.logger.info(`QR code generated: ${qrCode}`)
       this.logger.debug(`Channel ID: ${this.channelId}`)
 
-      // Wait for user to scan and connect
-      this.connection = await this.sdk.waitForConnection(timeout)
+      // Wait for user to scan and connect with timeout
+      this.connection = await Promise.race([
+        this.sdk.waitForConnection(timeout),
+        timeoutPromise
+      ])
+
+      // Clear timeout timer on successful connection
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+
+      // Check if timeout occurred during connection
+      if (timeoutOccurred) {
+        throw new Error('Connection timeout')
+      }
+
       this.userId = this.connection.userId
 
       // Update connection state
@@ -263,13 +302,21 @@ export class WeChatAdapter implements ChannelAdapterWithEvents {
         channelId: this.channelId,
       }
     } catch (error) {
+      // Clear timeout timer on error
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+
       const err = error as WeClawError
       this.connectionState.lastError = err.message
 
       this.logger.error(`Connection failed: ${err.message}`)
 
-      // Emit error event
-      this.eventEmitter.emit('error', err)
+      // Emit error event (if not already emitted by timeout)
+      if (!timeoutOccurred) {
+        this.eventEmitter.emit('error', err)
+      }
 
       throw err
     }

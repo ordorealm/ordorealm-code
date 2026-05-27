@@ -479,33 +479,112 @@ export class WeClawSDKImpl implements WeClawSDK {
       this.eventEmitter.on('connected', onConnected)
       this.eventEmitter.on('error', onError)
 
-      // Simulate connection after a delay (for testing)
-      // In production, this would wait for actual WeChat callback
-      this.simulateConnection()
+      // Poll for real connection by checking service status and credentials
+      this.pollForRealConnection()
     })
   }
 
   /**
-   * Simulate a connection for testing purposes
-   * In production, this would be triggered by WeChat callback
+   * Poll for real connection by checking WeClaw service status and credentials
+   *
+   * This method implements real connection detection by:
+   * 1. Polling WeClaw HTTP API /health endpoint for service status
+   * 2. Checking ~/.weclaw/accounts/*.json for credential files
+   * 3. When credentials appear, reading user info and triggering connection event
+   * 4. Implementing timeout mechanism (default 60 seconds)
+   *
+   * Uses a stopped flag to prevent race conditions with timeout handler.
+   *
    * @private
    */
-  private simulateConnection(): void {
-    // This is a simulation for testing
-    // In production, the connection would be established via
-    // WeChat callback when the user scans the QR code
-    const simulatedConnection: WeClawConnection = {
-      userId: `user_${Date.now().toString(36)}`,
-      nickname: 'Test User',
-      avatarUrl: undefined,
-      token: `token_${Math.random().toString(36).substring(2, 15)}`,
-      connectedAt: Date.now(),
+  private pollForRealConnection(): void {
+    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
+    const pollInterval = 2000 // Poll every 2 seconds
+    const maxAttempts = 30 // Max 30 attempts (60 seconds)
+    let attempts = 0
+    let stopped = false
+
+    const poll = async (): Promise<void> => {
+      // Check if polling was stopped (e.g., due to timeout or external connection)
+      if (stopped) {
+        this.logger.debugLog('Polling stopped, exiting')
+        return
+      }
+
+      attempts++
+
+      try {
+        // Check if service is running
+        const healthResponse = await fetch(`http://${apiAddr}/health`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(5000),
+        })
+
+        if (!healthResponse.ok) {
+          this.logger.debugLog(`Health check failed (attempt ${attempts}/${maxAttempts})`)
+          if (attempts < maxAttempts && !stopped) {
+            setTimeout(poll, pollInterval)
+          }
+          return
+        }
+
+        const healthText = await healthResponse.text()
+        if (healthText.trim() !== 'ok') {
+          this.logger.debugLog(`Health check returned non-ok (attempt ${attempts}/${maxAttempts})`)
+          if (attempts < maxAttempts && !stopped) {
+            setTimeout(poll, pollInterval)
+          }
+          return
+        }
+
+        // Service is running, check for credentials
+        const credentials = this.loadCredentials()
+        if (!credentials) {
+          this.logger.debugLog(`No credentials found (attempt ${attempts}/${maxAttempts})`)
+          if (attempts < maxAttempts && !stopped) {
+            setTimeout(poll, pollInterval)
+          }
+          return
+        }
+
+        // Credentials found! Establish connection
+        this.logger.info(`Credentials found for user: ${credentials.ilink_user_id}`)
+
+        const connection: WeClawConnection = {
+          userId: credentials.ilink_user_id,
+          nickname: 'WeChat User',
+          avatarUrl: undefined,
+          token: credentials.bot_token,
+          connectedAt: Date.now(),
+        }
+
+        // Stop polling before handling connection
+        stopped = true
+        this.handleConnection(connection)
+      } catch (error) {
+        this.logger.debugLog(`Connection poll error (attempt ${attempts}/${maxAttempts}):`, error)
+        if (attempts < maxAttempts && !stopped) {
+          setTimeout(poll, pollInterval)
+        }
+      }
     }
 
-    // Emit connection event after a short delay
+    // Set up listener to stop polling when connection is established externally
+    const onConnected = (): void => {
+      stopped = true
+      this.logger.debugLog('Connection established, stopping poll')
+    }
+    this.eventEmitter.once('connected', onConnected)
+
+    // Clean up listener after max attempts
     setTimeout(() => {
-      this.handleConnection(simulatedConnection)
-    }, 1000)
+      if (!stopped) {
+        this.eventEmitter.off('connected', onConnected)
+      }
+    }, maxAttempts * pollInterval)
+
+    // Start polling
+    poll()
   }
 
   /**
@@ -528,6 +607,11 @@ export class WeClawSDKImpl implements WeClawSDK {
   /**
    * Send a message to a WeChat user
    *
+   * This method calls the real WeClaw HTTP API to send messages:
+   * - Endpoint: POST /api/send
+   * - Body: { bot_token, to_user, message }
+   * - Uses credentials from ~/.weclaw/accounts/*.json
+   *
    * @param to - Recipient user ID
    * @param message - Message content
    * @returns Promise resolving when message is sent
@@ -541,22 +625,48 @@ export class WeClawSDKImpl implements WeClawSDK {
     this.logger.info(`Sending message to ${to}: ${message.substring(0, 50)}...`)
     this.logger.debugLog('Full message:', message)
 
-    // In a real implementation, this would call the WeClaw API
-    // to send the message via WeChat
+    // Load credentials for authentication
+    const credentials = this.loadCredentials()
+    if (!credentials) {
+      throw createError('not_connected', 'No credentials found. Please reconnect.')
+    }
 
-    // Simulate async send operation
-    return new Promise<void>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(createError('send_failed', 'Message send timeout'))
-      }, DEFAULT_TIMEOUTS.SEND)
+    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
 
-      // Simulate successful send after a short delay
-      setTimeout(() => {
-        clearTimeout(timeoutId)
-        this.logger.debugLog('Message sent successfully')
-        resolve()
-      }, 100)
-    })
+    try {
+      const response = await fetch(`http://${apiAddr}/api/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          bot_token: credentials.bot_token,
+          to_user: to,
+          message: message,
+        }),
+        signal: AbortSignal.timeout(DEFAULT_TIMEOUTS.SEND),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        this.logger.error(`Send message failed: ${response.status} ${errorText}`)
+        throw createError('send_failed', `Failed to send message: ${response.status} ${errorText}`)
+      }
+
+      this.logger.debugLog('Message sent successfully')
+    } catch (error) {
+      if ((error as Error).name === 'TimeoutError' || (error as Error).name === 'AbortError') {
+        this.logger.error('Send message timeout')
+        throw createError('send_failed', 'Message send timeout')
+      }
+
+      if ((error as WeClawError).type === 'send_failed') {
+        throw error
+      }
+
+      this.logger.error('Send message error:', error)
+      throw createError('send_failed', `Failed to send message: ${(error as Error).message}`)
+    }
   }
 
   /**

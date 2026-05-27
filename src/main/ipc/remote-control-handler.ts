@@ -13,7 +13,7 @@
  * @see Product-Spec.md Section 6.1
  */
 
-import { ipcMain, IpcMainInvokeEvent } from 'electron'
+import { ipcMain, IpcMainInvokeEvent, BrowserWindow } from 'electron'
 import {
   IPC_CHANNELS,
   GetStatusRequest,
@@ -26,10 +26,35 @@ import {
   ListChannelsResponse,
   UpdateSettingsRequest,
   UpdateSettingsResponse,
+  ChannelStatusChangeEvent,
+  MessageReceivedEvent,
+  ConfirmRequestEvent,
+  ConfirmResponseEvent,
 } from '../../shared/ipc/remote-control-channels'
 import { ChannelManager } from '../services/channel-manager'
 import { RemoteControlStorage } from '../services/remote-control-storage'
 import { Logger } from '../utils/logger'
+
+// ============ IPC Push Channels ============
+
+/**
+ * IPC push event channels for real-time updates to renderer
+ *
+ * These channels are used to push events from main process to renderer
+ * without the renderer having to poll.
+ */
+export const IPC_PUSH_CHANNELS = {
+  /** Remote control overall status changed */
+  STATUS_CHANGE: 'remote-control:status-change',
+  /** Individual channel status changed (connected/disconnected) */
+  CHANNEL_STATUS_CHANGE: 'remote-control:channel-status-change',
+  /** Message received from remote channel */
+  MESSAGE_RECEIVED: 'remote-control:message-received',
+  /** Confirmation request received (requires user action) */
+  CONFIRM_REQUEST: 'remote-control:confirm-request',
+  /** Confirmation response processed */
+  CONFIRM_RESPONSE: 'remote-control:confirm-response',
+} as const
 
 // ============ Type Definitions ============
 
@@ -121,6 +146,9 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
   /** List of registered channel names for cleanup */
   private readonly registeredChannels: string[] = []
 
+  /** Channel manager event unsubscribers for cleanup */
+  private readonly channelManagerUnsubscribers: Array<() => void> = []
+
   /**
    * Create a new RemoteControlHandlerImpl instance
    */
@@ -149,6 +177,122 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
   setStorage(storage: RemoteControlStorage): void {
     this.storage = storage
     this.logger.info('Storage service set')
+  }
+
+  /**
+   * Set up channel manager event listeners
+   *
+   * This method should be called after setChannelManager() to enable
+   * real-time event push to renderer process.
+   *
+   * Listens for:
+   * - channel_connected: Pushes channel status change to renderer
+   * - channel_disconnected: Pushes channel status change to renderer
+   * - message: Pushes received message to renderer
+   * - error: Pushes error status to renderer
+   * - confirm_request: Pushes confirmation request to renderer for UI display
+   * - confirm_response: Pushes confirmation response to renderer
+   */
+  setupChannelManagerEvents(): void {
+    if (!this.channelManager) {
+      this.logger.warn('Cannot setup channel manager events: channel manager not set')
+      return
+    }
+
+    this.logger.info('Setting up channel manager event listeners...')
+
+    // Clean up any existing listeners
+    this.channelManagerUnsubscribers.forEach((unsub) => unsub())
+    this.channelManagerUnsubscribers.length = 0
+
+    // Listen for channel connected event
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('channel_connected', (data: { channelId: string; userId?: string; nickname?: string }) => {
+        const event: ChannelStatusChangeEvent = {
+          channelId: data.channelId,
+          status: 'connected',
+          userId: data.userId,
+          nickname: data.nickname,
+        }
+        this.broadcastEvent(IPC_PUSH_CHANNELS.CHANNEL_STATUS_CHANGE, event)
+      })
+    )
+
+    // Listen for channel disconnected event
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('channel_disconnected', (data: { channelId: string }) => {
+        const event: ChannelStatusChangeEvent = {
+          channelId: data.channelId,
+          status: 'disconnected',
+        }
+        this.broadcastEvent(IPC_PUSH_CHANNELS.CHANNEL_STATUS_CHANGE, event)
+      })
+    )
+
+    // Listen for message event
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('message', (data: { channelId: string; message: unknown }) => {
+        const event: MessageReceivedEvent = {
+          channelId: data.channelId,
+          message: data.message as MessageReceivedEvent['message'],
+        }
+        this.broadcastEvent(IPC_PUSH_CHANNELS.MESSAGE_RECEIVED, event)
+      })
+    )
+
+    // Listen for error event
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('error', (data: { channelId: string; error: Error }) => {
+        this.broadcastEvent(IPC_PUSH_CHANNELS.STATUS_CHANGE, {
+          type: 'error',
+          channelId: data.channelId,
+          message: data.error.message,
+        })
+      })
+    )
+
+    // Listen for confirm_request events from adapters
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('confirm_request', (data: { channelId: string; confirmId: string; message: string; timestamp: string }) => {
+        this.logger.info(`Confirmation request received: ${data.confirmId}`)
+        const event: ConfirmRequestEvent = {
+          confirmId: data.confirmId,
+          message: data.message,
+          channelId: data.channelId,
+          timestamp: data.timestamp,
+        }
+        this.broadcastEvent(IPC_PUSH_CHANNELS.CONFIRM_REQUEST, event)
+      })
+    )
+
+    // Listen for confirm_response events from adapters
+    this.channelManagerUnsubscribers.push(
+      this.channelManager.on('confirm_response', (data: { channelId: string; confirmId: string; confirmed: boolean; timestamp: string }) => {
+        this.logger.info(`Confirmation response processed: ${data.confirmId} -> ${data.confirmed ? 'confirmed' : 'cancelled'}`)
+        const event: ConfirmResponseEvent = {
+          confirmId: data.confirmId,
+          confirmed: data.confirmed,
+          channelId: data.channelId,
+        }
+        this.broadcastEvent(IPC_PUSH_CHANNELS.CONFIRM_RESPONSE, event)
+      })
+    )
+
+    this.logger.info('Channel manager event listeners configured')
+  }
+
+  /**
+   * Broadcast an event to all renderer processes
+   *
+   * @param channel - IPC channel name
+   * @param data - Event data to send
+   */
+  private broadcastEvent<T>(channel: string, data: T): void {
+    const allWindows = BrowserWindow.getAllWindows()
+    for (const win of allWindows) {
+      win.webContents.send(channel, data)
+    }
+    this.logger.debug(`Broadcast event "${channel}" to ${allWindows.length} windows`)
   }
 
   /**
@@ -212,6 +356,11 @@ export class RemoteControlHandlerImpl implements RemoteControlHandler {
     }
 
     this.registeredChannels.length = 0
+
+    // Clean up channel manager event listeners
+    this.channelManagerUnsubscribers.forEach((unsub) => unsub())
+    this.channelManagerUnsubscribers.length = 0
+
     this.logger.info('All IPC handlers unregistered')
   }
 

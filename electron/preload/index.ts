@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type {
+  ChannelStatusChangeEvent,
+  MessageReceivedEvent,
+  ConfirmRequestEvent,
+  ConfirmResponseEvent,
+} from '../../src/shared/ipc/remote-control-channels'
 
 // Progress callback type for Claude Code execution
 type ProgressCallback = (data: { type: string; content: string; toolName?: string; toolInput?: Record<string, unknown> }) => void
@@ -422,6 +428,51 @@ const api = {
     /** Update remote control settings */
     updateSettings: (requireConfirm: boolean) =>
       ipcRenderer.invoke('remote-control:update-settings', { requireConfirm }),
+
+    /** Listen for overall remote control status changes */
+    onStatusChange: (callback: (status: unknown) => void): (() => void) => {
+      const listener = (_: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('remote-control:status-change', listener)
+      return () => ipcRenderer.removeListener('remote-control:status-change', listener)
+    },
+
+    /** Listen for individual channel status changes (connected/disconnected) */
+    onChannelStatusChange: (
+      callback: (event: ChannelStatusChangeEvent) => void
+    ): (() => void) => {
+      const listener = (_: unknown, data: unknown) =>
+        callback(data as ChannelStatusChangeEvent)
+      ipcRenderer.on('remote-control:channel-status-change', listener)
+      return () => ipcRenderer.removeListener('remote-control:channel-status-change', listener)
+    },
+
+    /** Listen for messages received from remote channels */
+    onMessage: (callback: (event: MessageReceivedEvent) => void): (() => void) => {
+      const listener = (_: unknown, data: unknown) =>
+        callback(data as MessageReceivedEvent)
+      ipcRenderer.on('remote-control:message-received', listener)
+      return () => ipcRenderer.removeListener('remote-control:message-received', listener)
+    },
+
+    /** Listen for confirmation requests (sensitive operations requiring user approval) */
+    onConfirmRequest: (
+      callback: (event: ConfirmRequestEvent) => void
+    ): (() => void) => {
+      const listener = (_: unknown, data: unknown) =>
+        callback(data as ConfirmRequestEvent)
+      ipcRenderer.on('remote-control:confirm-request', listener)
+      return () => ipcRenderer.removeListener('remote-control:confirm-request', listener)
+    },
+
+    /** Listen for confirmation responses (user approved or denied) */
+    onConfirmResponse: (
+      callback: (event: ConfirmResponseEvent) => void
+    ): (() => void) => {
+      const listener = (_: unknown, data: unknown) =>
+        callback(data as ConfirmResponseEvent)
+      ipcRenderer.on('remote-control:confirm-response', listener)
+      return () => ipcRenderer.removeListener('remote-control:confirm-response', listener)
+    },
   },
 }
 

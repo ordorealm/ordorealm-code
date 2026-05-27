@@ -31,6 +31,7 @@ interface ClaudeSessionOptions {
   baseUrl?: string
   model?: string
   apiType?: 'anthropic' | 'openai'
+  contextWindow?: number  // ★ 上下文窗口大小（tokens）
 }
 
 // Agent type enum (synced with src/renderer/src/types/agent.types.ts)

@@ -1138,6 +1138,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         model: provider.defaultModel,
         apiType: provider.apiType,
         envOverrides: provider.envOverrides,
+        contextWindow: provider.contextWindow,  // ★ 传递上下文窗口配置
       });
 
       if (!startResult.success) {

@@ -230,6 +230,8 @@ interface ClaudeSession {
     apiType?: 'anthropic' | 'openai'
     envOverrides?: Record<string, string>
   }
+  /** ★ 上下文窗口大小（tokens） */
+  contextWindow?: number
   /** ★ 是否有工具调用（用于判断空内容是否正常） */
   hasToolCalls?: boolean
   /** ★ 是否有 thinking 内容（用于判断空内容是否正常） */
@@ -460,7 +462,9 @@ async function getOrCreateSession(
   model?: string,
   envOverrides?: Record<string, string>,
   /** ★ 用于恢复会话上下文的 SDK session ID */
-  resumeSessionId?: string
+  resumeSessionId?: string,
+  /** ★ 上下文窗口大小（tokens） */
+  contextWindow?: number
 ): Promise<ClaudeSession> {
   // 检查是否已有活跃会话
   const existing = activeSessions.get(sessionId)
@@ -810,6 +814,7 @@ async function getOrCreateSession(
           apiType,
           envOverrides,
         },
+        contextWindow: contextWindow || 200000,  // ★ 上下文窗口，默认 200K
         hasToolCalls: false,
         hasThinking: false,
         mcpConfigSnapshot,  // ★ 保存 MCP 配置快照
@@ -1332,11 +1337,11 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           const usageData = msg.usage ? {
             inputTokens: msg.usage.input_tokens || 0,
             outputTokens: msg.usage.output_tokens || 0,
-            contextWindow: 200000, // 默认 200K，后续可从 model info 获取
+            contextWindow: session.contextWindow || 200000,  // ★ 使用会话配置的上下文窗口
           } : msg.totalTokens ? {
             inputTokens: msg.totalTokens,
             outputTokens: 0,
-            contextWindow: 200000,
+            contextWindow: session.contextWindow || 200000,  // ★ 使用会话配置的上下文窗口
           } : undefined
 
           console.log('[Claude SDK] Extracted usageData:', usageData)
@@ -1868,8 +1873,8 @@ function registerClaudeHandlers(): void {
   // ★ 启动会话（参考 SpectrAI 的 startSession）
   ipcMain.handle(
     'claude:startSession',
-    async (_event, options: Omit<ClaudeExecuteOptions, 'prompt'> & { sessionId: string; envOverrides?: Record<string, string> }): Promise<{ success: boolean; error?: string }> => {
-      const { sessionId, workingDirectory, apiKey, baseUrl, model, apiType = 'anthropic', envOverrides } = options
+    async (_event, options: Omit<ClaudeExecuteOptions, 'prompt'> & { sessionId: string; envOverrides?: Record<string, string>; contextWindow?: number }): Promise<{ success: boolean; error?: string }> => {
+      const { sessionId, workingDirectory, apiKey, baseUrl, model, apiType = 'anthropic', envOverrides, contextWindow } = options
 
       console.log('[Claude SDK] ===== claude:startSession called =====')
       console.log('[Claude SDK] Session ID:', sessionId)
@@ -1877,6 +1882,7 @@ function registerClaudeHandlers(): void {
       console.log('[Claude SDK] Received apiKey length:', apiKey?.length)
       console.log('[Claude SDK] Received model:', model)
       console.log('[Claude SDK] Received baseUrl:', baseUrl)
+      console.log('[Claude SDK] Received contextWindow:', contextWindow)
 
       // ★ 如果已有会话，获取保存的 providerSessionId 用于恢复上下文
       const existingSession = activeSessions.get(sessionId)
@@ -1892,7 +1898,7 @@ function registerClaudeHandlers(): void {
       }
 
       try {
-        await getOrCreateSession(sessionId, workingDirectory, apiKey, apiType, baseUrl, model, envOverrides, resumeSessionId)
+        await getOrCreateSession(sessionId, workingDirectory, apiKey, apiType, baseUrl, model, envOverrides, resumeSessionId, contextWindow)
         console.log('[Claude SDK] Session started:', sessionId)
         return { success: true }
       } catch (err: any) {

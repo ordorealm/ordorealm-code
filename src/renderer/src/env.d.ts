@@ -120,6 +120,7 @@ export interface ClaudeSessionOptions {
   model?: string
   apiType?: 'anthropic' | 'openai'
   envOverrides?: Record<string, string>
+  contextWindow?: number  // ★ 上下文窗口大小（tokens）
 }
 
 /** Claude Code execution result */

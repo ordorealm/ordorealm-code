@@ -246,27 +246,85 @@ export class WeClawSDKImpl implements WeClawSDK {
 
   /**
    * Check WeClaw service status via HTTP API
+   *
+   * WeClaw official API only has two endpoints:
+   * - GET /health - Returns "ok" if service is running
+   * - POST /api/send - Send messages
+   *
+   * We check login status by looking for credentials file.
+   *
    * @returns Service status information
    */
   async checkServiceStatus(): Promise<WeClawServiceStatus> {
     const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
+
+    // Step 1: Check if WeClaw service is running via /health endpoint
     try {
-      const response = await fetch(`http://${apiAddr}/api/status`, {
+      const response = await fetch(`http://${apiAddr}/health`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000), // 5 second timeout
       })
+
       if (response.ok) {
-        const data = await response.json()
-        return {
-          running: true,
-          loggedIn: data.logged_in ?? false,
-          userId: data.user_id,
+        const text = await response.text()
+        if (text.trim() === 'ok') {
+          this.logger.debugLog('WeClaw health check passed')
+
+          // Step 2: Check login status via credentials file
+          const credentials = this.loadCredentials()
+
+          return {
+            running: true,
+            loggedIn: !!credentials,
+            userId: credentials?.ilink_user_id,
+          }
         }
       }
     } catch (error) {
-      this.logger.debugLog('WeClaw service not running:', error)
+      this.logger.debugLog('WeClaw health check failed:', error)
     }
+
     return { running: false, loggedIn: false }
+  }
+
+  /**
+   * Load stored WeClaw credentials
+   * WeClaw stores credentials in ~/.weclaw/accounts/{id}.json
+   * @returns Credentials object or null if not found
+   * @private
+   */
+  private loadCredentials(): { ilink_user_id: string; bot_token: string } | null {
+    const os = require('os')
+    const path = require('path')
+    const fs = require('fs')
+
+    const homeDir = os.homedir()
+    const accountsDir = path.join(homeDir, '.weclaw', 'accounts')
+
+    if (!fs.existsSync(accountsDir)) {
+      return null
+    }
+
+    try {
+      const files = fs.readdirSync(accountsDir)
+      const jsonFile = files.find((f: string) => f.endsWith('.json'))
+
+      if (!jsonFile) {
+        return null
+      }
+
+      const filePath = path.join(accountsDir, jsonFile)
+      const content = fs.readFileSync(filePath, 'utf-8')
+      const data = JSON.parse(content)
+
+      return {
+        ilink_user_id: data.ilink_user_id,
+        bot_token: data.bot_token,
+      }
+    } catch (error) {
+      this.logger.debugLog('Failed to load credentials:', error)
+      return null
+    }
   }
 
   /**

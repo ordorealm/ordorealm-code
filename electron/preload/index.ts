@@ -1,14 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
-  ChannelStatusChangeEvent,
+  ConnectionChangeEvent,
   MessageReceivedEvent,
   ConfirmRequestEvent,
   ConfirmResponseEvent,
 } from '../../src/shared/ipc/remote-control-channels'
+import type { SwitchProjectEvent } from '../../src/shared/types/remote-control'
 
 // Progress callback type for Claude Code execution
-type ProgressCallback = (data: { type: string; content: string; toolName?: string; toolInput?: Record<string, unknown> }) => void
+// sessionId field is used to filter events by session (fixes session content mixing bug)
+type ProgressCallback = (data: { sessionId?: string; type: string; content: string; toolName?: string; toolInput?: Record<string, unknown>; toolUseId?: string; isError?: boolean }) => void
 
 // Claude execute options type
 interface ClaudeExecuteOptions {
@@ -68,6 +70,18 @@ interface SkillLibraryValidateParams {
 interface SkillLibraryActivateParams {
   id: string
   projectPath: string
+}
+
+/**
+ * Convert a thrown IPC error (e.g. "No handler registered") into a structured
+ * IpcResult so the renderer can handle it gracefully without crashing.
+ */
+function safeIpcError(err: Error): { success: false; error: { code: string; message: string } } {
+  console.error('[Preload] IPC invoke failed:', err.message)
+  return {
+    success: false,
+    error: { code: 'IPC_ERROR', message: err.message },
+  }
 }
 
 // Custom APIs for renderer
@@ -169,6 +183,14 @@ const api = {
     /** Answer AskUserQuestion tool (submit user's answers) */
     answerQuestion: (sessionId: string, answers: Record<string, string>): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('claude:answerQuestion', sessionId, answers),
+
+    /** Check if a session's SDK stream is still alive */
+    pingSession: (sessionId: string): Promise<{ alive: boolean; status: string; lastActivity: number }> =>
+      ipcRenderer.invoke('claude:pingSession', sessionId),
+
+    /** Send pong response to keepalive (bidirectional heartbeat) */
+    pong: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke('claude:pong', sessionId),
 
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (
@@ -409,44 +431,37 @@ const api = {
     },
   },
 
-  // Remote Control APIs
+  // Remote Control APIs (Single Account Mode)
+  //
+  // All invoke calls are wrapped with safeIpcInvoke to convert "No handler
+  // registered" errors into structured IpcResult responses. This prevents the
+  // renderer from crashing when the main process hasn't finished initializing.
   remoteControl: {
     /** Get remote control status */
-    getStatus: () => ipcRenderer.invoke('remote-control:get-status'),
+    getStatus: () =>
+      ipcRenderer.invoke('remote-control:get-status').catch(safeIpcError),
 
-    /** Connect a new channel and get QR code */
-    connect: (channelType: 'wechat' | 'wecom' | 'feishu') =>
-      ipcRenderer.invoke('remote-control:connect', { channelType }),
+    /** Connect and get QR code (or restore connection) */
+    connect: () =>
+      ipcRenderer.invoke('remote-control:connect').catch(safeIpcError),
 
-    /** Disconnect a channel */
-    disconnect: (channelId: string) =>
-      ipcRenderer.invoke('remote-control:disconnect', { channelId }),
-
-    /** List all connected channels */
-    listChannels: () => ipcRenderer.invoke('remote-control:list-channels'),
+    /** Disconnect */
+    disconnect: () =>
+      ipcRenderer.invoke('remote-control:disconnect').catch(safeIpcError),
 
     /** Update remote control settings */
     updateSettings: (settings: { enabled?: boolean; requireConfirm?: boolean }) =>
-      ipcRenderer.invoke('remote-control:update-settings', settings),
+      ipcRenderer.invoke('remote-control:update-settings', settings).catch(safeIpcError),
 
-    /** Listen for overall remote control status changes */
-    onStatusChange: (callback: (status: unknown) => void): (() => void) => {
-      const listener = (_: unknown, data: unknown) => callback(data)
-      ipcRenderer.on('remote-control:status-change', listener)
-      return () => ipcRenderer.removeListener('remote-control:status-change', listener)
-    },
-
-    /** Listen for individual channel status changes (connected/disconnected) */
-    onChannelStatusChange: (
-      callback: (event: ChannelStatusChangeEvent) => void
-    ): (() => void) => {
+    /** Listen for connection status changes */
+    onConnectionChange: (callback: (event: ConnectionChangeEvent) => void): (() => void) => {
       const listener = (_: unknown, data: unknown) =>
-        callback(data as ChannelStatusChangeEvent)
-      ipcRenderer.on('remote-control:channel-status-change', listener)
-      return () => ipcRenderer.removeListener('remote-control:channel-status-change', listener)
+        callback(data as ConnectionChangeEvent)
+      ipcRenderer.on('remote-control:connection-change', listener)
+      return () => ipcRenderer.removeListener('remote-control:connection-change', listener)
     },
 
-    /** Listen for messages received from remote channels */
+    /** Listen for messages received from remote */
     onMessage: (callback: (event: MessageReceivedEvent) => void): (() => void) => {
       const listener = (_: unknown, data: unknown) =>
         callback(data as MessageReceivedEvent)
@@ -454,24 +469,28 @@ const api = {
       return () => ipcRenderer.removeListener('remote-control:message-received', listener)
     },
 
-    /** Listen for confirmation requests (sensitive operations requiring user approval) */
-    onConfirmRequest: (
-      callback: (event: ConfirmRequestEvent) => void
-    ): (() => void) => {
+    /** Listen for confirmation requests */
+    onConfirmRequest: (callback: (event: ConfirmRequestEvent) => void): (() => void) => {
       const listener = (_: unknown, data: unknown) =>
         callback(data as ConfirmRequestEvent)
       ipcRenderer.on('remote-control:confirm-request', listener)
       return () => ipcRenderer.removeListener('remote-control:confirm-request', listener)
     },
 
-    /** Listen for confirmation responses (user approved or denied) */
-    onConfirmResponse: (
-      callback: (event: ConfirmResponseEvent) => void
-    ): (() => void) => {
+    /** Listen for confirmation responses */
+    onConfirmResponse: (callback: (event: ConfirmResponseEvent) => void): (() => void) => {
       const listener = (_: unknown, data: unknown) =>
         callback(data as ConfirmResponseEvent)
       ipcRenderer.on('remote-control:confirm-response', listener)
       return () => ipcRenderer.removeListener('remote-control:confirm-response', listener)
+    },
+
+    /** Listen for project switch requests from remote control */
+    onSwitchProject: (callback: (event: SwitchProjectEvent) => void): (() => void) => {
+      const listener = (_: unknown, data: unknown) =>
+        callback(data as SwitchProjectEvent)
+      ipcRenderer.on('remote-control:switch-project', listener)
+      return () => ipcRenderer.removeListener('remote-control:switch-project', listener)
     },
   },
 }

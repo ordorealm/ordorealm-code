@@ -185,12 +185,18 @@ type SetFunction = (
 
 let progressListenerCleanup: (() => void) | null = null;
 let currentProgressSessionId: string | null = null;
+/** ★ 当前活跃的进度回调引用，用于重连时重建监听器 */
+let currentProgressCallback: ((event: any) => void) | null = null;
 /** ★ 上次收到进度事件的时间，用于检测连接是否断开 */
 let lastProgressEventTime: number = 0;
 /** ★ 心跳检测定时器 */
 let heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
-/** ★ 心跳超时时间（毫秒）- 如果超过这个时间没有收到任何事件，认为连接断开 */
-const HEARTBEAT_TIMEOUT = 1800000; // 30分钟（复杂任务可能需要很长时间）
+/** ★ 自适应心跳超时（退火策略）：第 1 次 10 分钟，第 2 次 20 分钟，第 3 次起 30 分钟 */
+const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
+/** ★ 心跳超时计数（每次 sendMessage 重置为 0） */
+let heartbeatTimeoutCount = 0;
+/** ★ 连接恢复提示的定时器引用（用于清理） */
+let connectionNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * 设置进度事件监听器
@@ -199,6 +205,7 @@ const HEARTBEAT_TIMEOUT = 1800000; // 30分钟（复杂任务可能需要很长�
 function setupProgressListener(
   sessionId: string,
   onProgress: (event: {
+    sessionId?: string;
     type: string;
     content: string;
     toolName?: string;
@@ -259,6 +266,9 @@ function setupProgressListener(
         level: 'info' | 'warning' | 'error';
         title?: string;
       };
+      /** retrying (api_retry) */
+      retryCount?: number;
+      maxRetries?: number;
     };
     usageData?: {
       inputTokens: number;
@@ -280,14 +290,30 @@ function setupProgressListener(
   }
 
   currentProgressSessionId = sessionId;
+  currentProgressCallback = onProgress;
   lastProgressEventTime = Date.now();
+  heartbeatTimeoutCount = 0;
 
   // 设置新的监听器
   progressListenerCleanup = window.api.claude.onProgress((event) => {
     // 更新最后收到事件的时间
     lastProgressEventTime = Date.now();
-    // 只处理当前会话的事件
-    if (currentProgressSessionId !== sessionId) return;
+
+    // ★ 方案 A：按 event.sessionId 过滤（修复会话内容串扰问题）
+    // 主进程发送的所有 progress 事件都包含 sessionId 字段
+    // 如果 sessionId 不匹配，忽略该事件
+    if (event.sessionId && event.sessionId !== sessionId) {
+      console.log(`[SessionStore] Ignoring event for different session: ${event.sessionId} (current: ${sessionId})`);
+      return;
+    }
+
+    // 如果事件没有 sessionId 字段（旧版本兼容），也忽略
+    // 这确保只有当前会话的事件被处理
+    if (!event.sessionId) {
+      console.warn(`[SessionStore] Received event without sessionId, ignoring (current: ${sessionId})`);
+      return;
+    }
+
     onProgress(event);
   });
 
@@ -298,15 +324,23 @@ function setupProgressListener(
  * 清理进度事件监听器
  */
 function cleanupProgressListener(): void {
+  // ★ 确保所有待处理的批量工具消息已写入
+  immediateFlushToolBatch();
   if (progressListenerCleanup) {
     progressListenerCleanup();
     progressListenerCleanup = null;
     currentProgressSessionId = null;
+    currentProgressCallback = null;
   }
   // 清理心跳检测
   if (heartbeatCheckTimer) {
     clearInterval(heartbeatCheckTimer);
     heartbeatCheckTimer = null;
+  }
+  // 清理连接恢复提示定时器
+  if (connectionNoticeTimer) {
+    clearTimeout(connectionNoticeTimer);
+    connectionNoticeTimer = null;
   }
 }
 
@@ -330,59 +364,108 @@ function startHeartbeatCheck(
     const now = Date.now();
     const timeSinceLastEvent = now - lastProgressEventTime;
 
-    if (timeSinceLastEvent > HEARTBEAT_TIMEOUT) {
-      console.warn(`[SessionStore] Heartbeat timeout detected for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago`);
+    // ★ 自适应超时：根据超时次数选择退火时间
+    const currentTimeout = HEARTBEAT_TIMEOUTS[Math.min(heartbeatTimeoutCount, HEARTBEAT_TIMEOUTS.length - 1)];
 
-      // 清理心跳检测
-      if (heartbeatCheckTimer) {
-        clearInterval(heartbeatCheckTimer);
-        heartbeatCheckTimer = null;
+    if (timeSinceLastEvent > currentTimeout) {
+      heartbeatTimeoutCount++;
+      const timeoutMinutes = Math.round(currentTimeout / 60000);
+      console.warn(`[SessionStore] Heartbeat timeout #${heartbeatTimeoutCount} for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago (threshold: ${timeoutMinutes}min)`);
+
+      // ★ 前 2 次超时：先尝试重连（ping 后端确认存活状态）
+      if (heartbeatTimeoutCount < 3) {
+        (async () => {
+          try {
+            const pingResult = await window.api.claude.pingSession(sessionId);
+            if (pingResult.alive) {
+              // 后端流仍存活 → 重置时间戳（监听器仍活跃，无需重建），重启心跳
+              console.warn(`[SessionStore] Backend stream is alive (status: ${pingResult.status}), reconnecting...`);
+              lastProgressEventTime = Date.now();
+              // ★ 重启心跳检测（cleanupProgressListener 之后可能被调用过，这里显式重建）
+              startHeartbeatCheck(sessionId, assistantMessageId, set);
+              // ★ 设置 UI 提示（3 秒后自动清除）
+              if (connectionNoticeTimer) clearTimeout(connectionNoticeTimer);
+              set(state => {
+                const s = state.sessions[sessionId];
+                if (!s) return state;
+                return { sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: '连接已恢复' } } };
+              });
+              connectionNoticeTimer = setTimeout(() => {
+                connectionNoticeTimer = null;
+                set(state => {
+                  const s = state.sessions[sessionId];
+                  if (!s || s.connectionNotice !== '连接已恢复') return state;
+                  return { sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } } };
+                });
+              }, 3000);
+              return;
+            }
+            console.warn(`[SessionStore] Backend stream is dead (status: ${pingResult.status}), aborting...`);
+          } catch (err) {
+            console.warn('[SessionStore] pingSession failed:', err);
+          }
+          // ping 失败或后端已死 → 执行中止
+          performHeartbeatAbort(sessionId, assistantMessageId, set, timeoutMinutes);
+        })();
+        return;
       }
 
-      // ★ 调用主进程的 abort，通知 SDK 中断会话
-      // 使用 async IIFE 确保正确处理 Promise
-      (async () => {
-        try {
-          await window.api.claude.abort(sessionId);
-          console.log('[SessionStore] Session abort request sent successfully');
-        } catch (err) {
-          console.warn('[SessionStore] Failed to abort session:', err);
-          // ★ 即使 abort 失败，也要重置前端状态
-        }
-      })();
-
-      // 设置错误状态
-      immediateFlushBuffer(set, sessionId);
-      set(state => {
-        const existingSession = state.sessions[sessionId];
-        if (!existingSession) return state;
-
-        const updatedMessages = existingSession.messages.map(m =>
-          m.id === assistantMessageId
-            ? { ...m, isStreaming: false, isThinking: false, content: m.content + '\n\n⚠️ 连接超时（30分钟无响应），请检查后端服务是否正常。如需继续，可尝试重新发送消息。' }
-            : m
-        );
-
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...existingSession,
-              messages: updatedMessages,
-            },
-          },
-        };
-      });
-
-      // 结束思考计时器和活动状态
-      useActivityStore.getState().endThinking(sessionId);
-      useActivityStore.getState().endActivity(sessionId);
-      cleanupProgressListener();
+      // ★ 第 3 次及以上：放弃重连，直接中止
+      performHeartbeatAbort(sessionId, assistantMessageId, set, timeoutMinutes);
     } else {
-      // ★ 每次检查时输出日志，方便调试
       console.log(`[SessionStore] Heartbeat check for session: ${sessionId}, time since last event: ${Math.round(timeSinceLastEvent / 1000)}s`);
     }
-  }, 60000); // 每 60 秒检查一次（减少检查频率）
+  }, 60000);
+}
+
+/**
+ * 心跳超时后的中止处理（提取为独立函数）
+ */
+function performHeartbeatAbort(
+  sessionId: string,
+  assistantMessageId: string,
+  set: SetFunction,
+  timeoutMinutes: number
+): void {
+  if (heartbeatCheckTimer) {
+    clearInterval(heartbeatCheckTimer);
+    heartbeatCheckTimer = null;
+  }
+
+  (async () => {
+    try {
+      await window.api.claude.abort(sessionId);
+      console.log('[SessionStore] Session abort request sent successfully');
+    } catch (err) {
+      console.warn('[SessionStore] Failed to abort session:', err);
+    }
+  })();
+
+  immediateFlushBuffer(set, sessionId);
+  set(state => {
+    const existingSession = state.sessions[sessionId];
+    if (!existingSession) return state;
+
+    const updatedMessages = existingSession.messages.map(m =>
+      m.id === assistantMessageId
+        ? { ...m, isStreaming: false, isThinking: false, content: m.content + `\n\n⚠️ 连接超时（${timeoutMinutes}分钟无响应），请检查后端服务是否正常。如需继续，可尝试重新发送消息。` }
+        : m
+    );
+
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: {
+          ...existingSession,
+          messages: updatedMessages,
+        },
+      },
+    };
+  });
+
+  useActivityStore.getState().endThinking(sessionId);
+  useActivityStore.getState().endActivity(sessionId);
+  cleanupProgressListener();
 }
 
 /**
@@ -410,6 +493,100 @@ const streamingBuffer: StreamingBuffer = {
 
 /** Delay in ms before flushing buffered updates (use requestAnimationFrame-like timing) */
 const STREAM_FLUSH_DELAY = 16; // ~60fps
+
+// ── Tool message batch queue ──────────────────────────────────────────────────
+// Reduces React re-renders during long tool-heavy tasks (300+ tool calls):
+// instead of one set() per tool event, batch up to 500ms of tool messages
+// and apply them in a single state update.
+
+interface ToolBatchEntry {
+  message: Message
+}
+
+const toolBatch: {
+  queue: ToolBatchEntry[]
+  flushTimer: ReturnType<typeof setTimeout> | null
+  sessionId: string | null
+  setFn: SetFunction | null
+} = {
+  queue: [],
+  flushTimer: null,
+  sessionId: null,
+  setFn: null,
+}
+
+const TOOL_BATCH_DELAY = 500
+
+function flushToolBatch(): void {
+  if (toolBatch.queue.length === 0) return
+  const { queue, sessionId, setFn } = toolBatch
+  if (!sessionId || !setFn) {
+    toolBatch.queue = []
+    return
+  }
+  if (toolBatch.flushTimer) {
+    clearTimeout(toolBatch.flushTimer)
+    toolBatch.flushTimer = null
+  }
+
+  const batchMessages = queue.map((q) => q.message)
+  const batchIds = new Set(batchMessages.map((m) => m.id))
+  toolBatch.queue = []
+
+  setFn((state) => {
+    const existingSession = state.sessions[sessionId]
+    if (!existingSession) return state
+    // Deduplicate: skip messages whose ID already exists in state
+    const existingIds = new Set(existingSession.messages.map((m) => m.id))
+    const newMessages = batchMessages.filter((m) => !existingIds.has(m.id))
+    if (newMessages.length === 0) return state
+    const updatedMessages = trimMessages([...existingSession.messages, ...newMessages])
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...existingSession, messages: updatedMessages },
+      },
+    }
+  })
+}
+
+function enqueueToolMessage(message: Message, sessionId: string, setFn: SetFunction): void {
+  // Flush if switching sessions
+  if (toolBatch.sessionId !== sessionId && toolBatch.queue.length > 0) {
+    flushToolBatch()
+  }
+  toolBatch.sessionId = sessionId
+  toolBatch.setFn = setFn
+  toolBatch.queue.push({ message })
+
+  if (!toolBatch.flushTimer) {
+    toolBatch.flushTimer = setTimeout(flushToolBatch, TOOL_BATCH_DELAY)
+  }
+}
+
+/** Flush tool batch immediately (called before non-tool events like text/complete/error) */
+function immediateFlushToolBatch(): void {
+  if (toolBatch.flushTimer) {
+    clearTimeout(toolBatch.flushTimer)
+    toolBatch.flushTimer = null
+  }
+  flushToolBatch()
+}
+
+/** Look up a tool_use message from state AND pending batch queue */
+function findToolUseMessage(sessionId: string, toolUseId: string): Message | undefined {
+  // Check batch queue first (newest messages)
+  for (const entry of toolBatch.queue) {
+    if (entry.message.role === 'tool_use' && entry.message.toolUseId === toolUseId) {
+      return entry.message
+    }
+  }
+  // Fall back to state
+  const existingSession = useSessionStore.getState().sessions[sessionId]
+  return existingSession?.messages.find(
+    (m) => m.role === 'tool_use' && m.toolUseId === toolUseId
+  )
+}
 
 interface SessionActions {
   /** Create a new session for a project */
@@ -658,6 +835,9 @@ function bufferStreamingText(
  * @param sessionId Optional session ID to validate before flushing (prevents cross-session flush)
  */
 function immediateFlushBuffer(set: SetFunction, sessionId?: string): void {
+  // ★ Flush pending tool batch first (preserves message ordering)
+  immediateFlushToolBatch();
+
   // Guard: Only flush if session matches (when sessionId is provided)
   if (sessionId && streamingBuffer.sessionId !== sessionId) {
     console.warn(`[SessionStore] immediateFlushBuffer: session mismatch, expected ${streamingBuffer.sessionId}, got ${sessionId}. Skipping flush.`);
@@ -970,6 +1150,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
         console.log('[SessionStore] Progress event:', type, eventContent?.substring(0, 100));
 
+        // ★ keepalive 事件：回复 pong，仅刷新时间戳，不做任何 UI 更新
+        if (type === 'keepalive') {
+          window.api.claude.pong(sessionId).catch(() => {});
+          return;
+        }
+
         if (type === 'init' && initData) {
           // 保存 session init data (tools, mcpServers, etc.)
           set(state => {
@@ -1007,7 +1193,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             case 'retrying':
               useActivityStore.getState().startActivity(sessionId, {
                 type: 'status',
-                detail: 'API 重试中...',
+                detail: eventContent || `空内容重试中（第 ${statusData.retryCount || '?'}/${statusData.maxRetries || '?'} 次）...`,
                 timestamp: Date.now(),
               });
               break;
@@ -1159,6 +1345,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             metadata: { rateLimit: statusData?.rateLimit },
           });
         } else if (type === 'text') {
+          // ★ Flush pending tool batch before text (preserves message order)
+          immediateFlushToolBatch();
           // Use buffering to reduce re-renders during streaming
           bufferStreamingText(sessionId, assistantMessageId, eventContent, set);
           // Update activity: AI is responding
@@ -1274,36 +1462,19 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               toolInput: toolInput || {},
             };
 
-            // Add tool_use message as independent message in the messages array
-            // ★ Deduplication: Check if a tool_use message with this toolUseId already exists
-            // This prevents duplicates when both content_block_start and assistant message emit the same tool call
-            set(state => {
-              const existingSession = state.sessions[sessionId];
-              if (!existingSession) return state;
-
-              // Skip if a tool_use message with this toolUseId already exists
-              const existingToolUse = existingSession.messages.find(
-                m => m.role === 'tool_use' && m.toolUseId === toolUseId
-              );
-              if (existingToolUse) {
-                console.log('[SessionStore] Skipping duplicate tool_use message for toolUseId:', toolUseId);
-                return state;
-              }
-
-              const updatedMessages = trimMessages([...existingSession.messages, toolUseMessage]);
-
-              return {
-                sessions: {
-                  ...state.sessions,
-                  [sessionId]: {
-                    ...existingSession,
-                    messages: updatedMessages,
-                  },
-                },
-              };
-            });
-
-            console.log('[SessionStore] Created independent tool_use message:', toolUseId, toolName);
+            // ★ Batch: enqueue tool_use message for batched state update (reduces re-renders)
+            const existingSession = get().sessions[sessionId];
+            const existingToolUse = existingSession?.messages.find(
+              m => m.role === 'tool_use' && m.toolUseId === toolUseId
+            );
+            if (existingToolUse) {
+              console.log('[SessionStore] Skipping duplicate tool_use message for toolUseId:', toolUseId);
+            } else if (findToolUseMessage(sessionId, toolUseId)) {
+              console.log('[SessionStore] Skipping duplicate tool_use (in batch) for toolUseId:', toolUseId);
+            } else {
+              enqueueToolMessage(toolUseMessage, sessionId, set);
+              console.log('[SessionStore] Enqueued tool_use message:', toolUseId, toolName);
+            }
           }
         } else if (type === 'tool_result') {
           // ★ SpectrAI Architecture: Create independent ToolResultMessage
@@ -1312,50 +1483,29 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
           console.log('[SessionStore] Tool result received:', { toolUseId, isError, content: eventContent?.substring(0, 50) });
 
-          // ★ 先在 set 外部查找 toolName，用于后续活动状态更新
-          const existingSessionForLookup = get().sessions[sessionId];
+          // ★ 查找 toolName（检查 state 和批处理队列）
           let matchingToolName = toolName || 'unknown';
-          if (toolUseId && existingSessionForLookup) {
-            const toolUseMessage = existingSessionForLookup.messages.find(
-              m => m.role === 'tool_use' && m.toolUseId === toolUseId
-            );
-            if (toolUseMessage?.toolName) {
-              matchingToolName = toolUseMessage.toolName;
+          if (toolUseId) {
+            const foundMsg = findToolUseMessage(sessionId, toolUseId);
+            if (foundMsg?.toolName) {
+              matchingToolName = foundMsg.toolName;
             }
           }
 
-          // Add tool_result message as independent message in the messages array
-          set(state => {
-            const existingSession = state.sessions[sessionId];
-            if (!existingSession) return state;
-
-            // Create independent tool_result message (SpectrAI architecture)
-            const toolResultMessage: Message = {
-              id: uuidv4(),
-              role: 'tool_result',
-              content: eventContent || '',
-              timestamp: new Date().toISOString(),
-              sessionId,
-              toolUseId: toolUseId || '',
-              toolName: matchingToolName,
-              toolResult: eventContent || '',
-              isError,
-            };
-
-            const updatedMessages = trimMessages([...existingSession.messages, toolResultMessage]);
-
-            console.log('[SessionStore] Created independent tool_result message for toolUseId:', toolUseId);
-
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...existingSession,
-                  messages: updatedMessages,
-                },
-              },
-            };
-          });
+          // ★ Batch: enqueue tool_result for batched state update
+          const toolResultMessage: Message = {
+            id: uuidv4(),
+            role: 'tool_result',
+            content: eventContent || '',
+            timestamp: new Date().toISOString(),
+            sessionId,
+            toolUseId: toolUseId || '',
+            toolName: matchingToolName,
+            toolResult: eventContent || '',
+            isError,
+          };
+          enqueueToolMessage(toolResultMessage, sessionId, set);
+          console.log('[SessionStore] Enqueued tool_result message for toolUseId:', toolUseId);
 
           // ★ 不在这里调用 endActivity！
           // tool_result 只是某个工具的返回结果，父 Agent 可能还在继续执行
@@ -1367,7 +1517,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             timestamp: Date.now(),
           });
         } else if (type === 'error') {
-          // Flush any buffered text before handling error
+          // Flush any pending batches before handling error
+          immediateFlushToolBatch();
           immediateFlushBuffer(set, sessionId);
           // Handle error
           get().updateMessage(sessionId, assistantMessageId, {
@@ -1381,7 +1532,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // 清理进度监听器
           cleanupProgressListener();
         } else if (type === 'complete') {
-          // Flush any remaining buffered text before marking complete
+          // Flush any pending batches before marking complete
+          immediateFlushToolBatch();
           immediateFlushBuffer(set, sessionId);
           // Mark streaming as complete and thinking as finished
           get().updateMessage(sessionId, assistantMessageId, {

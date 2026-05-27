@@ -13,13 +13,13 @@ import { registerSkillLibraryHandlers } from './skill-library-handlers'
 import { initializeMCPIPC } from './mcp-ipc'
 import { getMCPConnector } from './mcp/connector'
 import { getMCPManager } from './mcp/manager'
-import { ChannelManager } from '../../src/main/services/channel-manager'
-import { RemoteControlStorage } from '../../src/main/services/remote-control-storage'
+import { getRemoteControlManager, initRemoteControlManager } from '../../src/main/services/remote-control-manager'
 import { createRemoteControlHandler } from '../../src/main/ipc/remote-control-handler'
 import {
   setIdeApiAdapter,
   type IdeApiAdapter,
 } from '../../src/main/agents/operation-executor'
+import { setMasterSessionConfig } from '../../src/main/agents/session-config'
 import type { ProjectInfo, MCPStatus, SkillGroup } from '../../src/main/agents/master-agent'
 
 // Check if running in development mode
@@ -27,10 +27,6 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 // Runtime manager instance (initialized on app ready)
 let runtimeManager: RuntimeManager | null = null
-
-// Remote control instances
-let channelManager: ChannelManager | null = null
-let remoteControlStorage: RemoteControlStorage | null = null
 
 /**
  * 检测 Agent CLI 安装状态
@@ -127,7 +123,9 @@ interface ClaudeExecuteOptions {
 
 // 进度事件类型
 interface ProgressEvent {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
+  /** 会话 ID，用于前端按会话过滤事件 */
+  sessionId?: string
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'keepalive'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>
@@ -238,10 +236,26 @@ interface ClaudeSession {
   hasThinking?: boolean
   /** ★ MCP 配置快照，用于检测变化并动态更新 */
   mcpConfigSnapshot?: Record<string, any>
+  /** ★ 最近一次发送的消息内容（用于空内容重试） */
+  lastPrompt?: string
+  /** ★ 空内容重试计数（每次 sendMessage 重置为 0） */
+  emptyOutputRetryCount?: number
+  /** ★ 上次收到前端 pong 的时间戳（用于双向心跳检测） */
+  lastPongTime?: number
 }
 
 // 活跃会话映射
 const activeSessions = new Map<string, ClaudeSession>()
+
+/** Global provider config cache — updated whenever a session is created.
+ *  Allows remote control to create sessions on demand without frontend involvement. */
+let globalProviderConfig: {
+  apiKey: string
+  apiType: 'anthropic' | 'openai'
+  baseUrl?: string
+  model?: string
+  envOverrides?: Record<string, string>
+} | null = null
 
 /**
  * 获取所有活跃会话
@@ -396,6 +410,7 @@ function createPermissionHandler(sessionId: string) {
         const mainWindow = BrowserWindow.getAllWindows()[0]
         if (mainWindow) {
           mainWindow.webContents.send('claude:progress', {
+            sessionId,
             type: 'tool_use',
             content: 'Tool: AskUserQuestion',
             toolName: 'AskUserQuestion',
@@ -412,6 +427,7 @@ function createPermissionHandler(sessionId: string) {
       const mainWindow = BrowserWindow.getAllWindows()[0]
       if (mainWindow) {
         mainWindow.webContents.send('claude:progress', {
+          sessionId,
           type: 'tool_use',
           content: 'Tool: ExitPlanMode',
           toolName: 'ExitPlanMode',
@@ -797,7 +813,22 @@ async function getOrCreateSession(
         hasToolCalls: false,
         hasThinking: false,
         mcpConfigSnapshot,  // ★ 保存 MCP 配置快照
+        lastPongTime: Date.now(),
       }
+
+      // Cache provider config globally for remote-control on-demand session creation
+      globalProviderConfig = { apiKey, apiType, baseUrl, model, envOverrides }
+
+      // Also update master AI session config so it can initialize on next attempt
+      try {
+        setMasterSessionConfig({
+          apiKey,
+          apiType: apiType || 'anthropic',
+          baseUrl,
+          model,
+          pathToClaudeCodeExecutable: resolveClaudeBinaryPath() || undefined,
+        })
+      } catch {}
 
       activeSessions.set(sessionId, session)
 
@@ -826,6 +857,29 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
   console.log(`[Claude SDK] Starting stream consumer for session: ${session.id}`)
 
+  // ★ Keepalive: 每 30 秒向渲染进程发送 keepalive，前端回复 pong
+  // 连续 3 次无 pong 回复（90s）则标记前端可能已断开
+  let lastStreamMessageTime = Date.now()
+  const keepaliveInterval = setInterval(() => {
+    if (session.abortController.signal.aborted) return
+    if (Date.now() - lastStreamMessageTime >= 30000) {
+      const win = BrowserWindow.getAllWindows()[0]
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('claude:progress', {
+          sessionId: session.id,
+          type: 'keepalive',
+          content: '',
+        } as ProgressEvent)
+      }
+      // 检查前端 pong 回复：超过 3 个 keepalive 周期无 pong 则告警
+      const lastPong = session.lastPongTime ?? session.lastActivity
+      const missedPongs = Math.floor((Date.now() - lastPong) / 30000)
+      if (missedPongs >= 3) {
+        console.warn(`[Claude SDK] Session ${session.id}: ${missedPongs} missed pongs — frontend may be disconnected`)
+      }
+    }
+  }, 30000)
+
   try {
     for await (const msg of session.sdkQuery) {
       // ★ 检查是否已被中断
@@ -833,6 +887,9 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
         console.log(`[Claude SDK] Stream aborted for session: ${session.id}`)
         break
       }
+
+      // ★ 更新最后收到消息的时间（用于 keepalive 抑制）
+      lastStreamMessageTime = Date.now()
 
       console.log(`[Claude SDK] Message type: ${msg.type}, subtype: ${msg.subtype}`)
 
@@ -851,6 +908,8 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             if (msg.session_id) {
               session.providerSessionId = msg.session_id
               console.log('[Claude SDK] Provider session ID:', msg.session_id)
+              // ★ 持久化到 session 文件，重启后可恢复会话上下文
+              persistProviderSessionId(session.id, msg.session_id)
             }
 
             // 发送 init 数据给渲染进程（包含 tools 和 mcpServers）
@@ -903,6 +962,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             fs.writeFile(join(app.getPath('userData'), 'sdk-tools-debug.json'), JSON.stringify(logData, null, 2)).catch(() => {})
 
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'init',
               content: `Model: ${msg.model || 'unknown'}`,
               initData: {
@@ -922,6 +982,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             console.log('[Claude SDK] API retry:', msg.reason || 'unknown')
             console.log('[Claude SDK] Full api_retry message:', JSON.stringify(msg, null, 2))
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: 'API 请求重试中...',
               statusData: {
@@ -933,6 +994,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // 通知前端状态变化
             console.log('[Claude SDK] Status:', msg.status || 'unknown')
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.message || `Status: ${msg.status || 'unknown'}`,
               statusData: {
@@ -943,6 +1005,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 子 Agent/任务开始
             console.log('[Claude SDK] Task started:', msg.task_id, msg.subagent_type, msg.description)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `启动子任务: ${msg.description || msg.subagent_type || 'unknown'}`,
               statusData: {
@@ -955,6 +1018,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 子 Agent/任务进度
             console.log('[Claude SDK] Task progress:', msg.task_id, msg.description, msg.usage)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.description || '子任务执行中...',
               statusData: {
@@ -968,6 +1032,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             console.log('[Claude SDK] Task updated:', msg.task_id, msg.patch?.status)
             // 发送所有任务状态更新（不只是 completed/failed）
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.patch?.status === 'completed'
                 ? '子任务完成'
@@ -985,6 +1050,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 会话状态变化（权威的轮次结束信号）
             console.log('[Claude SDK] Session state changed:', msg.state)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `会话状态: ${msg.state}`,
               statusData: {
@@ -996,6 +1062,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 权限被拒绝（自动拒绝，非交互式）
             console.log('[Claude SDK] Permission denied:', msg.tool_name, msg.reason)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `工具 ${msg.tool_name} 被拒绝: ${msg.reason || 'unknown'}`,
               statusData: {
@@ -1010,6 +1077,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 记忆召回
             console.log('[Claude SDK] Memory recall:', msg.mode, msg.memories?.length)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `召回 ${msg.memories?.length || 0} 条记忆`,
               statusData: {
@@ -1021,6 +1089,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 后台任务通知
             console.log('[Claude SDK] Task notification:', msg.task_id, msg.message)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.message || '后台任务通知',
               statusData: {
@@ -1032,6 +1101,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 通用通知
             console.log('[Claude SDK] Notification:', msg.level, msg.message)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.message || '通知',
               statusData: {
@@ -1046,6 +1116,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ MCP elicitation 完成
             console.log('[Claude SDK] Elicitation complete:', msg.mcp_server_name)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `MCP elicitation 完成: ${msg.mcp_server_name}`,
               statusData: {
@@ -1056,6 +1127,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 压缩边界（上下文压缩事件）
             console.log('[Claude SDK] Compact boundary:', msg.boundary_type)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: '上下文已压缩',
               statusData: {
@@ -1070,6 +1142,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 认证状态
             console.log('[Claude SDK] Auth status:', msg.status)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: `认证状态: ${msg.status}`,
               statusData: {
@@ -1080,6 +1153,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // ★ 提示建议
             console.log('[Claude SDK] Prompt suggestion:', msg.suggestions?.length)
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: '有可用的提示建议',
               statusData: {
@@ -1097,6 +1171,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           session.lastActivity = Date.now()
           console.log('[Claude SDK] Tool progress:', msg.tool_name, msg.tool_use_id, msg.elapsed_time_seconds)
           mainWindow.webContents.send('claude:progress', {
+            sessionId: session.id,
             type: 'status',
             content: `${msg.tool_name} 执行中... (${msg.elapsed_time_seconds}s)`,
             statusData: {
@@ -1115,6 +1190,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           // 如果有摘要内容，发送给前端
           if (msg.summary) {
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'status',
               content: msg.summary,
               statusData: {
@@ -1133,6 +1209,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             if (delta?.type === 'text_delta' && delta.text) {
               session.output += delta.text
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'text',
                 content: delta.text,
               } as ProgressEvent)
@@ -1140,6 +1217,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               // ★ 处理 thinking_delta，转发到前端（防止心跳超时）
               session.hasThinking = true
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'thinking',
                 content: delta.thinking,
               } as ProgressEvent)
@@ -1159,6 +1237,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               session.hasToolCalls = true
               session.lastActivity = Date.now()
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'tool_use',
                 content: `Tool: ${contentBlock.name}`,
                 toolName: contentBlock.name,
@@ -1178,6 +1257,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               if (!session.output.includes(text)) {
                 session.output += text
                 mainWindow.webContents.send('claude:progress', {
+                  sessionId: session.id,
                   type: 'text',
                   content: text,
                 } as ProgressEvent)
@@ -1187,6 +1267,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               session.hasThinking = true
               const thinkingText = block.thinking || ''
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'thinking',
                 content: thinkingText,
               } as ProgressEvent)
@@ -1194,6 +1275,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               // ★ 标记有工具调用
               session.hasToolCalls = true
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'tool_use',
                 content: `Tool: ${block.name}`,
                 toolName: block.name,
@@ -1210,6 +1292,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           for (const block of userContent) {
             if (block.type === 'tool_result') {
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'tool_result',
                 toolUseId: block.tool_use_id,
                 content: String(block.content || '').slice(0, 500),
@@ -1224,6 +1307,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             // parent_tool_use_id 关联到父 Agent 的 Agent 工具调用
             if (msg.parent_tool_use_id) {
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'tool_result',
                 toolUseId: msg.parent_tool_use_id,
                 content: String(msg.tool_use_result).slice(0, 500),
@@ -1270,23 +1354,34 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             if (!hasContent) {
               console.warn(`[Claude SDK] Empty output detected for session: ${session.id}`)
               console.warn('[Claude SDK] This may indicate SDK returned success without generating content')
-              mainWindow.webContents.send('claude:progress', {
-                type: 'error',
-                content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
-              } as ProgressEvent)
+              // ★ 自动重试：先尝试重建会话重新发送，重试耗尽才报错
+              const retried = await retryEmptyOutput(session, mainWindow)
+              if (!retried) {
+                mainWindow.webContents.send('claude:progress', {
+                  sessionId: session.id,
+                  type: 'error',
+                  content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
+                } as ProgressEvent)
+              }
+              // ★ 必须 return 退出 consumeSessionStream，避免 post-loop 代码重复触发
+              return
             } else {
               mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
                 type: 'complete',
                 content: session.output || '',
                 usageData,
               } as ProgressEvent)
             }
           } else {
+            // SDK 明确返回错误 → 直接通知前端，不重试
             const errorMsg = msg.result || 'Unknown error'
             mainWindow.webContents.send('claude:progress', {
+              sessionId: session.id,
               type: 'error',
               content: errorMsg,
             } as ProgressEvent)
+            return
           }
           break
 
@@ -1295,6 +1390,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
           session.lastActivity = Date.now()
           console.log('[Claude SDK] Rate limit event:', msg.tier, msg.rate_limit_info)
           mainWindow.webContents.send('claude:progress', {
+            sessionId: session.id,
             type: 'rate_limit',
             content: `速率限制: ${msg.tier || 'unknown'}`,
             statusData: {
@@ -1331,12 +1427,20 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
       const hasContent = session.output?.trim() || session.hasToolCalls || session.hasThinking
       if (!hasContent) {
         console.warn(`[Claude SDK] Stream ended with empty output for session: ${session.id}`)
-        mainWindow.webContents.send('claude:progress', {
-          type: 'error',
-          content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
-        } as ProgressEvent)
+        // ★ 自动重试：先尝试重建会话重新发送，重试耗尽才报错
+        const retried = await retryEmptyOutput(session, mainWindow)
+        if (!retried) {
+          mainWindow.webContents.send('claude:progress', {
+            sessionId: session.id,
+            type: 'error',
+            content: '⚠️ Agent 返回了空内容。可能是请求被中断或发生了内部错误，请重试。',
+          } as ProgressEvent)
+        }
+        // retry 已处理（重建 session + enqueue），直接返回避免重复触发
+        return
       } else {
         mainWindow.webContents.send('claude:progress', {
+          sessionId: session.id,
           type: 'complete',
           content: session.output || '',
         } as ProgressEvent)
@@ -1368,6 +1472,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
         session.status = 'idle'
         if (mainWindow) {
           mainWindow.webContents.send('claude:progress', {
+            sessionId: session.id,
             type: 'error',
             content: '会话已中断',
           } as ProgressEvent)
@@ -1390,10 +1495,115 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
       }
 
       mainWindow.webContents.send('claude:progress', {
+        sessionId: session.id,
         type: 'error',
         content: errorText,
       } as ProgressEvent)
     }
+  } finally {
+    clearInterval(keepaliveInterval)
+  }
+}
+
+/**
+ * ★ 空内容自动重试（指数退避：2s → 5s → 10s，最多 3 次）
+ *
+ * 当 SDK 返回 success 但没有产生任何输出内容时（可能是连接失败或 API 瞬态错误），
+ * 自动重建会话并重新发送消息，避免向用户展示不必要的错误。
+ *
+ * @returns true 表示已发起重试，false 表示重试次数耗尽
+ */
+async function retryEmptyOutput(
+  session: ClaudeSession,
+  mainWindow: BrowserWindow
+): Promise<boolean> {
+  const retryCount = (session.emptyOutputRetryCount || 0) + 1
+  session.emptyOutputRetryCount = retryCount
+
+  if (retryCount > 3) {
+    console.warn(`[Claude SDK] Empty output retry exhausted for session: ${session.id}`)
+    return false
+  }
+
+  const backoffMs = [2000, 5000, 10000][retryCount - 1]
+  console.log(`[Claude SDK] Empty output retry #${retryCount} for session: ${session.id}, waiting ${backoffMs}ms...`)
+
+  // 通知前端正在重试
+  mainWindow.webContents.send('claude:progress', {
+    sessionId: session.id,
+    type: 'status',
+    content: `Agent 返回空内容，正在重试（第 ${retryCount}/3 次）...`,
+    statusData: { status: 'retrying', retryCount, maxRetries: 3 },
+  } as ProgressEvent)
+
+  // 等待退避时间
+  await new Promise((resolve) => setTimeout(resolve, backoffMs))
+
+  // 保存重建所需的信息
+  const config = session.providerConfig
+  if (!config) {
+    console.warn('[Claude SDK] No providerConfig for retry')
+    return false
+  }
+
+  const lastPrompt = session.lastPrompt
+  if (!lastPrompt) {
+    console.warn('[Claude SDK] No lastPrompt for retry')
+    return false
+  }
+
+  const providerSessionId = session.providerSessionId
+
+  // ★ Abort 旧 session 的 abortController，确保旧 consumeSessionStream 尽快退出
+  // 避免新旧两个 keepalive 定时器同时运行
+  try { session.abortController.abort() } catch { /* ignore */ }
+
+  // 关闭旧的 sdkQuery
+  if (session.sdkQuery) {
+    try { session.sdkQuery.close() } catch { /* ignore */ }
+    session.sdkQuery = null
+  }
+
+  // 重置状态（getOrCreateSession 会检测到 null sdkQuery 并重建）
+  session.status = 'idle'
+
+  try {
+    // ★ 最后一次重试不恢复上下文（避免上下文损坏导致反复失败）
+    const resumeId = retryCount < 3 ? providerSessionId : undefined
+    if (retryCount >= 3) {
+      console.log('[Claude SDK] Last retry attempt, starting with fresh context (no resume)')
+    }
+
+    const newSession = await getOrCreateSession(
+      session.id,
+      session.workingDirectory,
+      config.apiKey,
+      config.apiType || 'anthropic',
+      config.baseUrl,
+      config.model,
+      config.envOverrides,
+      resumeId
+    )
+
+    // 将消息排入新的 stream
+    newSession.output = ''
+    newSession.hasToolCalls = false
+    newSession.hasThinking = false
+    newSession.status = 'running'
+    newSession.lastActivity = Date.now()
+    newSession.lastPrompt = lastPrompt
+    newSession.emptyOutputRetryCount = retryCount
+
+    newSession.inputStream.enqueue({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: lastPrompt }] },
+    })
+
+    console.log(`[Claude SDK] Retry #${retryCount} message enqueued for session: ${session.id}`)
+    return true
+  } catch (err) {
+    console.error(`[Claude SDK] Retry #${retryCount} failed:`, err)
+    return false
   }
 }
 
@@ -1413,6 +1623,7 @@ function handleSoftAbortCleanup(session: ClaudeSession): void {
   if (mainWindow) {
     // 发送 complete 事件让前端切换回可输入状态
     mainWindow.webContents.send('claude:progress', {
+      sessionId: session.id,
       type: 'complete',
       content: session.output,
     } as ProgressEvent)
@@ -1669,9 +1880,15 @@ function registerClaudeHandlers(): void {
 
       // ★ 如果已有会话，获取保存的 providerSessionId 用于恢复上下文
       const existingSession = activeSessions.get(sessionId)
-      const resumeSessionId = existingSession?.providerSessionId
-      if (resumeSessionId) {
-        console.log('[Claude SDK] Will resume with existing providerSessionId:', resumeSessionId)
+      let resumeSessionId: string | undefined = existingSession?.providerSessionId
+      if (!resumeSessionId) {
+        // ★ 从持久化 session 文件读取 providerSessionId（重启后 activeSessions 为空）
+        resumeSessionId = await loadProviderSessionIdFromFile(sessionId)
+        if (resumeSessionId) {
+          console.log('[Claude SDK] Will resume from persisted providerSessionId:', resumeSessionId)
+        }
+      } else {
+        console.log('[Claude SDK] Will resume with memory providerSessionId:', resumeSessionId)
       }
 
       try {
@@ -1717,7 +1934,10 @@ function registerClaudeHandlers(): void {
         }
 
         // ★ 获取保存的 providerSessionId 用于恢复上下文
-        const resumeSessionId = session.providerSessionId
+        let resumeSessionId: string | undefined = session.providerSessionId
+        if (!resumeSessionId) {
+          resumeSessionId = await loadProviderSessionIdFromFile(sessionId)
+        }
         if (resumeSessionId) {
           console.log('[Claude SDK] Will resume with providerSessionId:', resumeSessionId)
         }
@@ -1747,6 +1967,8 @@ function registerClaudeHandlers(): void {
       session.hasThinking = false
       session.status = 'running'
       session.lastActivity = Date.now()
+      session.lastPrompt = prompt
+      session.emptyOutputRetryCount = 0
 
       // ★ 通过 inputStream 向 SDK 推送用户消息
       session.inputStream.enqueue({
@@ -1780,6 +2002,7 @@ function registerClaudeHandlers(): void {
         // ★ 即使会话不是 running，也要通知前端重置状态（防止前端卡在 streaming）
         if (mainWindow) {
           mainWindow.webContents.send('claude:progress', {
+            sessionId,
             type: 'complete',
             content: session.output || '',
           } as ProgressEvent)
@@ -1828,6 +2051,7 @@ function registerClaudeHandlers(): void {
           session.isSoftAbort = false
           if (mainWindow) {
             mainWindow.webContents.send('claude:progress', {
+              sessionId,
               type: 'complete',
               content: session.output || '',
             } as ProgressEvent)
@@ -1840,6 +2064,7 @@ function registerClaudeHandlers(): void {
         session.isSoftAbort = false
         if (mainWindow) {
           mainWindow.webContents.send('claude:progress', {
+            sessionId,
             type: 'complete',
             content: session.output || '',
           } as ProgressEvent)
@@ -1847,6 +2072,33 @@ function registerClaudeHandlers(): void {
       }
 
       return { success: true }
+    }
+  )
+
+  // ★ 前端 pong 回执（双向心跳，响应 keepalive）
+  ipcMain.handle(
+    'claude:pong',
+    async (_event, sessionId: string) => {
+      const session = activeSessions.get(sessionId)
+      if (session) {
+        session.lastPongTime = Date.now()
+      }
+    }
+  )
+
+  // ★ 检查会话流是否存活（前端心跳超时时调用）
+  ipcMain.handle(
+    'claude:pingSession',
+    async (_event, sessionId: string): Promise<{ alive: boolean; status: string; lastActivity: number }> => {
+      const session = activeSessions.get(sessionId)
+      if (!session) {
+        return { alive: false, status: 'not_found', lastActivity: 0 }
+      }
+      return {
+        alive: session.sdkQuery !== null && session.status === 'running',
+        status: session.status,
+        lastActivity: session.lastActivity || 0,
+      }
     }
   )
 
@@ -1887,6 +2139,7 @@ function registerClaudeHandlers(): void {
       // ★ 通知前端重置状态（防止前端卡在 streaming）
       if (mainWindow && session.status === 'running') {
         mainWindow.webContents.send('claude:progress', {
+          sessionId,
           type: 'complete',
           content: session.output || '',
         } as ProgressEvent)
@@ -2167,105 +2420,295 @@ function registerGitHandlers(): void {
 }
 
 /**
+ * Persist providerSessionId to the session JSON file so it survives restarts.
+ * Called from consumeSessionStream when the SDK returns a session_id.
+ */
+async function persistProviderSessionId(sessionId: string, providerSessionId: string): Promise<void> {
+  try {
+    const sessionsDir = join(app.getPath('userData'), 'sessions')
+    const filePath = join(sessionsDir, `${sessionId}.json`)
+    let data: any = { version: '1.0.0', session: { id: sessionId }, updatedAt: new Date().toISOString() }
+    try {
+      const content = await fs.readFile(filePath, 'utf-8')
+      data = JSON.parse(content)
+    } catch { /* file doesn't exist yet, use default */ }
+    if (!data.session) data.session = { id: sessionId }
+    data.session.providerSessionId = providerSessionId
+    data.updatedAt = new Date().toISOString()
+    await fs.mkdir(sessionsDir, { recursive: true })
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+    console.log(`[Session Persist] Saved providerSessionId to ${sessionId}.json`)
+  } catch (err) {
+    console.warn('[Session Persist] Failed to save providerSessionId:', err)
+  }
+}
+
+/** Load providerSessionId from a specific persisted session file. */
+async function loadProviderSessionIdFromFile(sessionId: string): Promise<string | undefined> {
+  try {
+    const filePath = join(app.getPath('userData'), 'sessions', `${sessionId}.json`)
+    const content = await fs.readFile(filePath, 'utf-8')
+    const data = JSON.parse(content)
+    return data.session?.providerSessionId as string | undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Find persisted providerSessionId for a project by scanning session files. */
+async function loadProviderSessionIdForProject(projectId: string): Promise<string | undefined> {
+  try {
+    const sessionsDir = join(app.getPath('userData'), 'sessions')
+    const entries = await fs.readdir(sessionsDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      try {
+        const filePath = join(sessionsDir, entry.name)
+        const content = await fs.readFile(filePath, 'utf-8')
+        const data = JSON.parse(content)
+        // Match by projectId (frontend sessions) or by session.id (auto-created sessions)
+        if (data.session?.providerSessionId &&
+            (data.session.projectId === projectId || data.session.id === projectId)) {
+          console.log(`[Session Persist] Found providerSessionId for project ${projectId}: ${data.session.providerSessionId}`)
+          return data.session.providerSessionId as string
+        }
+      } catch { /* skip corrupted files */ }
+    }
+  } catch { /* sessions dir doesn't exist */ }
+  return undefined
+}
+
+/** Load provider config from persisted providers.json, falling back to global cache. */
+async function loadProviderConfig(): Promise<{
+  apiKey: string
+  apiType: 'anthropic' | 'openai'
+  baseUrl?: string
+  model?: string
+  envOverrides?: Record<string, string>
+} | null> {
+  if (globalProviderConfig) return globalProviderConfig
+  try {
+    const providersPath = join(app.getPath('userData'), 'providers.json')
+    const content = await fs.readFile(providersPath, 'utf-8')
+    const data = JSON.parse(content) as {
+      providers: Array<{
+        id: string
+        name: string
+        apiKey: string
+        apiType?: string
+        baseUrl?: string
+        defaultModel?: string
+        envOverrides?: Record<string, string>
+      }>
+      activeProviderId: string | null
+    }
+    const active = data.providers.find((p) => p.id === data.activeProviderId) || data.providers[0]
+    if (active?.apiKey) {
+      return {
+        apiKey: active.apiKey,
+        apiType: (active.apiType as 'anthropic' | 'openai') || 'anthropic',
+        baseUrl: active.baseUrl,
+        model: active.defaultModel,
+        envOverrides: active.envOverrides,
+      }
+    }
+  } catch { /* providers.json not available yet */ }
+  return null
+}
+
+/**
  * Create IDE API Adapter for remote control operations
  *
  * This adapter provides real IDE operations by connecting to the actual
  * session management, MCP connector, and other IDE functionality.
  */
 function createIdeApiAdapter(): IdeApiAdapter {
+  /** Per-session serialization locks to prevent concurrent sendMessage calls */
+  const sessionLocks = new Map<string, Promise<void>>()
+
+  // ── IDE project helpers ──────────────────────────────────────────────────
+
+  interface IdeProject {
+    id: string
+    name: string
+    path: string
+    createdAt: string
+    lastOpenedAt: string
+    isActive: boolean
+  }
+
+  interface ProjectsData {
+    projects: IdeProject[]
+    recentProjects: string[]
+    activeProjectId: string | null
+  }
+
+  function getProjectsPath(): string {
+    return join(app.getPath('userData'), 'projects.json')
+  }
+
+  async function loadIdeProjects(): Promise<ProjectsData> {
+    try {
+      const content = await fs.readFile(getProjectsPath(), 'utf-8')
+      return JSON.parse(content) as ProjectsData
+    } catch {
+      return { projects: [], recentProjects: [], activeProjectId: null }
+    }
+  }
+
+  /** Find active session(s) matching a project path */
+  function findSessionsByPath(projectPath: string): ClaudeSession[] {
+    const results: ClaudeSession[] = []
+    for (const session of activeSessions.values()) {
+      if (session.workingDirectory === projectPath) {
+        results.push(session)
+      }
+    }
+    return results
+  }
+
+  /** Resolve a project/session ID to a project entry and its sessions */
+  async function resolveProject(projectId: string): Promise<{
+    project: IdeProject | null
+    sessions: ClaudeSession[]
+  }> {
+    // Try IDE projects first (by ID)
+    const ideData = await loadIdeProjects()
+    const ideProject = ideData.projects.find((p) => p.id === projectId)
+    if (ideProject) {
+      return { project: ideProject, sessions: findSessionsByPath(ideProject.path) }
+    }
+    // Fallback: treat projectId as a session ID for backward compatibility
+    const session = activeSessions.get(projectId)
+    if (session) {
+      // Look up IDE project by working directory
+      const matchedProject = ideData.projects.find((p) => p.path === session.workingDirectory)
+      return { project: matchedProject || null, sessions: [session] }
+    }
+    // Check if projectId matches a project name
+    const namedProject = ideData.projects.find((p) => p.name === projectId)
+    if (namedProject) {
+      return { project: namedProject, sessions: findSessionsByPath(namedProject.path) }
+    }
+    return { project: null, sessions: [] }
+  }
+
   return {
     /**
-     * Get all running projects/sessions
+     * Get all IDE projects merged with active session status.
+     * Shows every project from the IDE, not just those with active SDK sessions.
      */
     async getProjects(): Promise<ProjectInfo[]> {
+      const ideData = await loadIdeProjects()
+      const seenPaths = new Set<string>()
       const projects: ProjectInfo[] = []
 
-      for (const [sessionId, session] of activeSessions) {
-        // Extract project name from working directory
-        const projectName = session.workingDirectory.split('/').pop() || session.workingDirectory
-
+      for (const p of ideData.projects) {
+        seenPaths.add(p.path)
+        const sessions = findSessionsByPath(p.path)
+        const activeSession = sessions.length > 0 ? sessions[sessions.length - 1] : null
         projects.push({
-          id: sessionId,
-          name: projectName,
-          status: session.status as 'running' | 'idle' | 'error',
-          currentTask: session.status === 'running' ? '执行中...' : undefined,
-          // Calculate progress if available (could be enhanced later)
-          progress: session.status === 'running' ? 50 : undefined,
-          lastActivity: new Date(session.lastActivity).toISOString(),
+          id: p.id,
+          name: p.name,
+          status: activeSession?.status as 'running' | 'idle' | 'error' ?? 'idle',
+          currentTask: activeSession?.status === 'running' ? '执行中...' : undefined,
+          progress: activeSession?.status === 'running' ? 50 : undefined,
+          lastActivity: activeSession
+            ? new Date(activeSession.lastActivity).toISOString()
+            : p.lastOpenedAt,
         })
+      }
+
+      // Include orphan sessions not matching any IDE project
+      for (const [sessionId, session] of activeSessions) {
+        if (!seenPaths.has(session.workingDirectory)) {
+          const projectName = session.workingDirectory.split('/').pop() || session.workingDirectory
+          projects.push({
+            id: sessionId,
+            name: projectName,
+            status: session.status as 'running' | 'idle' | 'error',
+            currentTask: session.status === 'running' ? '执行中...' : undefined,
+            progress: session.status === 'running' ? 50 : undefined,
+            lastActivity: new Date(session.lastActivity).toISOString(),
+          })
+        }
       }
 
       return projects
     },
 
     /**
-     * Get current active project ID
-     * Returns the most recently active session
+     * Get current active project ID from IDE state.
      */
     async getCurrentProject(): Promise<string | undefined> {
+      const ideData = await loadIdeProjects()
+      if (ideData.activeProjectId) return ideData.activeProjectId
+
+      // Fallback: most recently active session
       let mostRecentSession: string | undefined
       let mostRecentActivity = 0
-
       for (const [sessionId, session] of activeSessions) {
         if (session.lastActivity > mostRecentActivity) {
           mostRecentActivity = session.lastActivity
           mostRecentSession = sessionId
         }
       }
-
       return mostRecentSession
     },
 
     /**
-     * Switch to a specific project
-     * In the current architecture, this is primarily a UI concern
-     * The adapter just validates the session exists
+     * Switch to a specific project.
+     * Resolves project by ID, name, or session ID.
      */
     async switchProject(projectId: string): Promise<{ success: boolean; message: string }> {
-      const session = activeSessions.get(projectId)
-      if (!session) {
-        return {
-          success: false,
-          message: `项目会话 ${projectId} 不存在`,
-        }
+      const { project, sessions } = await resolveProject(projectId)
+      if (!project && sessions.length === 0) {
+        return { success: false, message: `项目 "${projectId}" 不存在` }
       }
 
-      // The actual switch is handled by the frontend
-      // This just validates and returns success
-      return {
-        success: true,
-        message: `已切换到项目: ${session.workingDirectory.split('/').pop()}`,
+      const projectName = project?.name
+        || sessions[0]?.workingDirectory.split('/').pop()
+        || projectId
+
+      // Notify the frontend to switch to this project
+      const windows = BrowserWindow.getAllWindows()
+      for (const win of windows) {
+        win.webContents.send('remote-control:switch-project', {
+          projectId: project?.id || projectId,
+          projectName,
+        })
       }
+
+      return { success: true, message: `已切换到项目: ${projectName}` }
     },
 
     /**
-     * Restart a project session
-     * This clears the session output and resets state
+     * Restart a project session.
+     * Resolves project by ID, name, or session ID.
      */
     async restartProject(projectId: string): Promise<{ success: boolean; message: string }> {
-      const session = activeSessions.get(projectId)
-      if (!session) {
-        return {
-          success: false,
-          message: `项目会话 ${projectId} 不存在`,
+      const { project, sessions } = await resolveProject(projectId)
+      const activeSession = sessions.length > 0 ? sessions[sessions.length - 1] : null
+
+      if (!activeSession) {
+        if (project) {
+          return { success: true, message: `项目 "${project.name}" 当前没有活跃会话，无需重启` }
         }
+        return { success: false, message: `项目 "${projectId}" 不存在` }
       }
 
       try {
-        // Clear session state
-        session.output = ''
-        session.hasToolCalls = false
-        session.hasThinking = false
-        session.status = 'idle'
-        session.lastActivity = Date.now()
+        activeSession.output = ''
+        activeSession.hasToolCalls = false
+        activeSession.hasThinking = false
+        activeSession.status = 'idle'
+        activeSession.lastActivity = Date.now()
 
-        // Note: We don't close the SDK query here, just reset the state
-        // The user can continue sending messages to the same session
+        const displayName = project?.name
+          || activeSession.workingDirectory.split('/').pop()
+          || projectId
 
-        return {
-          success: true,
-          message: `项目会话已重启: ${session.workingDirectory.split('/').pop()}`,
-        }
+        return { success: true, message: `项目会话已重启: ${displayName}` }
       } catch (err) {
         return {
           success: false,
@@ -2386,52 +2829,209 @@ function createIdeApiAdapter(): IdeApiAdapter {
         message: `已切换到技能组: ${skillGroupId}`,
       }
     },
+
+    /**
+     * Send a message to a project's AI agent and wait for the response.
+     *
+     * Enqueues the user message into the session's input stream and
+     * polls until the session returns to idle (or error), then returns
+     * the collected output.
+     */
+    async sendMessage(projectId: string, message: string): Promise<{ success: boolean; message: string }> {
+      // Resolve project ID (could be IDE project UUID, session UUID, or project name)
+      let session = activeSessions.get(projectId) ?? null
+      let resolvedProjectId = projectId
+
+      if (!session) {
+        const resolved = await resolveProject(projectId)
+        if (resolved.sessions.length > 0) {
+          session = resolved.sessions[resolved.sessions.length - 1]
+          resolvedProjectId = session.id
+        } else if (resolved.project) {
+          // Try to create a new session for this project using provider config
+          // from any existing active session, global cache, or persisted providers.json
+          const donorConfig = activeSessions.values().next().value
+            ? (activeSessions.values().next().value as ClaudeSession).providerConfig
+            : null
+          const cfg = donorConfig || globalProviderConfig || await loadProviderConfig()
+          if (cfg) {
+            try {
+              // ★ 从持久化文件读取 providerSessionId 以恢复会话上下文
+              const persistedSessionId = resolved.project
+                ? (await loadProviderSessionIdForProject(resolved.project.id))
+                : undefined
+              if (persistedSessionId) {
+                console.log('[sendMessage] Resuming persisted session for project:', resolved.project?.name)
+              }
+              session = await getOrCreateSession(
+                projectId,
+                resolved.project.path,
+                cfg.apiKey,
+                cfg.apiType || 'anthropic',
+                cfg.baseUrl,
+                cfg.model,
+                cfg.envOverrides,
+                persistedSessionId,  // ★ 传入持久化的 providerSessionId 以恢复上下文
+              )
+              resolvedProjectId = session.id
+            } catch (err) {
+              return {
+                success: false,
+                message: `无法为项目 "${resolved.project.name}" 创建 AI 会话: ${(err as Error).message}`,
+              }
+            }
+          } else {
+            return {
+              success: false,
+              message: `项目 "${resolved.project.name}" 还没有活跃的 AI 会话。请先在 IDE 中点击该项目开始对话。`,
+            }
+          }
+        } else {
+          return { success: false, message: `项目 "${projectId}" 不存在` }
+        }
+      }
+
+      // Serialize per-session
+      const previous = sessionLocks.get(resolvedProjectId) ?? Promise.resolve()
+      let resolveLock: () => void
+      const next = new Promise<void>((r) => { resolveLock = r })
+      sessionLocks.set(resolvedProjectId, next)
+
+      await previous
+
+      // Capture non-null session for closure use
+      const s = session
+
+      try {
+        // If sdkQuery is null and we have provider config, try to recreate
+        if (!s.sdkQuery) {
+          const config = s.providerConfig
+          if (!config) {
+            return { success: false, message: '无法恢复会话连接，请重启项目' }
+          }
+          try {
+            const recreated = await getOrCreateSession(
+              resolvedProjectId,
+              s.workingDirectory,
+              config.apiKey,
+              config.apiType || 'anthropic',
+              config.baseUrl,
+              config.model,
+              config.envOverrides,
+              s.providerSessionId,
+            )
+            // Update the outer reference if recreation succeeds
+            session = recreated
+          } catch (err) {
+            return { success: false, message: `恢复会话失败: ${(err as Error).message}` }
+          }
+        }
+
+        // Use the potentially recreated session
+        const activeSession = session || s
+
+        // Reset output for this turn
+        activeSession.output = ''
+        activeSession.hasToolCalls = false
+        activeSession.hasThinking = false
+        activeSession.status = 'running'
+        activeSession.lastActivity = Date.now()
+
+        // Enqueue the user message
+        activeSession.inputStream.enqueue({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: message }],
+          },
+        })
+
+        // Wait for the session to complete (max 5 minutes)
+        const chatTimeout = 300000
+        return new Promise((resolve) => {
+          const startTime = Date.now()
+
+          const check = setInterval(() => {
+            const elapsed = Date.now() - startTime
+
+            if (activeSession.status === 'idle') {
+              clearInterval(check)
+              resolve({
+                success: true,
+                message: activeSession.output || '(AI 未返回内容)',
+              })
+            } else if (activeSession.status === 'error') {
+              clearInterval(check)
+              resolve({
+                success: false,
+                message: 'AI Agent 处理出错',
+              })
+            } else if (elapsed > chatTimeout) {
+              clearInterval(check)
+              resolve({
+                success: false,
+                message: 'AI Agent 响应超时（5分钟）',
+              })
+            }
+          }, 1000)
+        })
+      } finally {
+        resolveLock!()
+      }
+    },
   }
 }
 
 /**
- * Initialize Remote Control IPC handlers
+ * Initialize Remote Control
  *
- * Creates and initializes ChannelManager, RemoteControlStorage, and
- * registers the RemoteControlHandler for IPC communication.
+ * Initializes the simplified single-account remote control manager.
  */
 async function initializeRemoteControl(): Promise<void> {
   console.log('[RemoteControl] Initializing...')
 
+  // Always register IPC handlers first so the renderer never gets
+  // "No handler registered", even if manager init fails later.
+  const handler = createRemoteControlHandler()
+  handler.register()
+  console.log('[RemoteControl] IPC handlers registered')
+
   try {
-    // Initialize storage
-    remoteControlStorage = new RemoteControlStorage()
-    await remoteControlStorage.initialize()
-    console.log('[RemoteControl] Storage initialized')
+    // Load provider config for the master AI session (before manager init,
+    // since restoreConnection() may try to create the AI session).
+    try {
+      const config = await loadProviderConfig()
+      if (config) {
+        setMasterSessionConfig({
+          apiKey: config.apiKey,
+          apiType: config.apiType || 'anthropic',
+          baseUrl: config.baseUrl,
+          model: config.model,
+          pathToClaudeCodeExecutable: resolveClaudeBinaryPath() || undefined,
+        })
+        console.log('[RemoteControl] Master session config set')
+      } else {
+        console.warn('[RemoteControl] No provider config available yet, master AI session deferred')
+      }
+    } catch (err) {
+      console.warn('[RemoteControl] Failed to load provider config for master session:', err)
+    }
 
-    // Initialize channel manager with autoConnect to restore previous connections
-    channelManager = new ChannelManager({
-      enableLogging: true,
-      autoConnect: true,  // Auto-restore connections on startup
-    })
-    await channelManager.initialize()
-    console.log('[RemoteControl] Channel manager initialized')
+    const manager = await initRemoteControlManager()
+    console.log('[RemoteControl] Manager initialized')
 
-    // Create and register IPC handler
-    const handler = createRemoteControlHandler()
-    handler.setChannelManager(channelManager)
-    handler.setStorage(remoteControlStorage)
-    handler.register()
-    // Set up event forwarding from channel manager to renderer
-    handler.setupChannelManagerEvents()
-    console.log('[RemoteControl] IPC handlers registered and events set up')
+    handler.setManager(manager)
+    handler.setupManagerEvents()
+    console.log('[RemoteControl] Manager events wired')
 
-    // Create and inject IDE API adapter for real IDE operations
-    const ideApiAdapter = createIdeApiAdapter()
-    setIdeApiAdapter(ideApiAdapter)
+    setIdeApiAdapter(createIdeApiAdapter())
     console.log('[RemoteControl] IDE API adapter injected')
 
     console.log('[RemoteControl] Initialization complete')
   } catch (err) {
-    console.error('[RemoteControl] Failed to initialize:', err)
-    // Reset instances on failure
-    channelManager = null
-    remoteControlStorage = null
+    console.error('[RemoteControl] Manager init failed:', err)
+    // Handlers are already registered — they'll return NOT_INITIALIZED
+    // to the renderer instead of "No handler registered"
   }
 }
 

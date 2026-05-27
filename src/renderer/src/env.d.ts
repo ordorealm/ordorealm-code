@@ -19,13 +19,15 @@ import type {
 import type { AgentType } from '@/types/agent.types'
 import type { SkillLibrary } from '@/types/skill-library.types'
 import type {
+  ConnectionStatus,
+  ConnectionInfo,
   RemoteControlStatus,
-  Channel,
-  ChannelType,
 } from '@shared/types/remote-control'
 
 /** Progress callback type for Claude Code execution (legacy) */
 export type ProgressCallback = (data: {
+  /** 会话 ID，用于前端按会话过滤事件（修复会话内容串扰问题） */
+  sessionId?: string
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
   content: string
   toolName?: string
@@ -86,6 +88,9 @@ export type ProgressCallback = (data: {
       level: 'info' | 'warning' | 'error'
       title?: string
     }
+    /** retrying (api_retry) */
+    retryCount?: number
+    maxRetries?: number
   }
   /** Token usage data from SDK result */
   usageData?: {
@@ -189,6 +194,10 @@ export interface Api {
     closeSession: (sessionId: string) => Promise<{ success: boolean }>
     /** Answer AskUserQuestion tool (submit user's answers) */
     answerQuestion: (sessionId: string, answers: Record<string, string>) => Promise<{ success: boolean; error?: string }>
+    /** Ping session to check if backend stream is alive */
+    pingSession: (sessionId: string) => Promise<{ alive: boolean; status: string; lastActivity: number }>
+    /** Respond to keepalive ping */
+    pong: (sessionId: string) => Promise<void>
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (options: ClaudeExecuteOptions, onProgress?: ProgressCallback) => Promise<ClaudeCodeResult>
     /** Listen for progress events (legacy, for backward compatibility) */
@@ -317,6 +326,7 @@ export interface Api {
         total: number
         enabled: number
         running: number
+        downloaded: number
         totalDownloadSize: number
         downloadedSize: number
       }
@@ -332,25 +342,19 @@ export interface Api {
     /** Get remote control status */
     getStatus: () => Promise<{
       success: boolean
-      data?: { status: RemoteControlStatus }
+      data?: RemoteControlStatus
       error?: { code: string; message: string }
     }>
-    /** Connect a new channel and get QR code */
-    connect: (channelType: ChannelType) => Promise<{
+    /** Connect and get QR code (or restore connection) */
+    connect: () => Promise<{
       success: boolean
-      data?: { qrCode: string; channelId: string }
+      data?: { qrCode: string; alreadyLoggedIn: boolean; userId?: string }
       error?: { code: string; message: string }
     }>
-    /** Disconnect a channel */
-    disconnect: (channelId: string) => Promise<{
+    /** Disconnect */
+    disconnect: () => Promise<{
       success: boolean
       data?: { success: boolean }
-      error?: { code: string; message: string }
-    }>
-    /** List all connected channels */
-    listChannels: () => Promise<{
-      success: boolean
-      data?: { channels: Channel[] }
       error?: { code: string; message: string }
     }>
     /** Update remote control settings */
@@ -359,6 +363,14 @@ export interface Api {
       data?: { success: boolean }
       error?: { code: string; message: string }
     }>
+    /** Listen for connection status changes */
+    onConnectionChange: (callback: (event: { status: ConnectionStatus; userId?: string; error?: string }) => void) => () => void
+    /** Listen for messages received from remote */
+    onMessage: (callback: (event: { userId: string; content: string; timestamp: string }) => void) => () => void
+    /** Listen for confirmation requests */
+    onConfirmRequest: (callback: (event: { confirmId: string; message: string; timestamp: string }) => void) => () => void
+    /** Listen for confirmation responses */
+    onConfirmResponse: (callback: (event: { confirmId: string; confirmed: boolean }) => void) => () => void
   }
 }
 

@@ -4,7 +4,8 @@
  * @module components/layout/Sidebar
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '@/stores/project-store';
 import { useSessionStore } from '@/stores/session-store';
 import { useActivityStore } from '@/stores/activity-store';
@@ -32,66 +33,17 @@ interface SidebarProps {
 type ProjectSessionStatus = 'idle' | 'running' | 'waiting' | 'none';
 
 /**
- * Session data for status check
- */
-interface SessionData {
-  projectId: string;
-  messages: Array<{ isStreaming?: boolean }>;
-  interactivePanel?: {
-    pendingPermission?: unknown;
-    pendingQuestion?: unknown;
-    pendingApproval?: unknown;
-  };
-}
-
-/**
- * Activity session data for status check
- */
-interface ActivitySessionData {
-  current?: { type: string } | null;
-  thinkingStartTime?: number | null;
-}
-
-/**
  * Get session status for a project
+ * ★ 修复：改为使用预计算的 sessionStatusMap，避免在渲染时遍历所有会话
  * @param projectId Project ID
- * @param sessions Session store sessions
- * @param activitySessions Activity store sessions
+ * @param sessionStatusMap Pre-computed session status map
  * @returns Project session status
  */
 function getProjectSessionStatus(
   projectId: string,
-  sessions: Record<string, SessionData>,
-  activitySessions: Record<string, ActivitySessionData>
+  sessionStatusMap: Map<string, ProjectSessionStatus>
 ): ProjectSessionStatus {
-  // Find session for this project
-  const sessionEntry = Object.entries(sessions).find(([_, s]) => s.projectId === projectId);
-
-  // No session or no messages = idle (red)
-  if (!sessionEntry || sessionEntry[1].messages.length === 0) {
-    return 'none';
-  }
-
-  const [sessionId, session] = sessionEntry;
-
-  // Check if waiting for user input (yellow)
-  const interactivePanel = session.interactivePanel;
-  if (interactivePanel?.pendingPermission || interactivePanel?.pendingQuestion || interactivePanel?.pendingApproval) {
-    return 'waiting';
-  }
-
-  // Check if running (green) - streaming or has activity
-  const isStreaming = session.messages.some(m => m.isStreaming);
-  const activity = activitySessions[sessionId];
-  const hasActivity = activity?.current !== null && activity?.current !== undefined;
-  const hasThinking = activity?.thinkingStartTime !== null && activity?.thinkingStartTime !== undefined;
-
-  if (isStreaming || hasActivity || hasThinking) {
-    return 'running';
-  }
-
-  // Default: idle (red)
-  return 'idle';
+  return sessionStatusMap.get(projectId) || 'none';
 }
 
 /**
@@ -101,12 +53,80 @@ function getProjectSessionStatus(
  */
 export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, onSwitchToFileTab }: SidebarProps): JSX.Element {
   const { projects, activeProjectId, openProject, deleteProject } = useProjectStore();
-  const sessions = useSessionStore(state => state.sessions);
-  const activitySessions = useActivityStore(state => state.sessions);
   const { restartSession, resetSession } = useSessionStore();
   const gitInitialize = useGitStore(state => state.initialize);
   const gitClear = useGitStore(state => state.clear);
   const fileTreeRefresh = useFileTreeStore(state => state.refresh);
+
+  // ★ 修复：订阅 projectSessionIndex 以支持响应式更新
+  const projectSessionIndex = useSessionStore(state => state.projectSessionIndex);
+
+  // ★ 修复：使用 useShallow 和 useMemo 优化订阅，避免整对象订阅导致频繁重渲染
+  // 只订阅必要的状态，并计算每个项目的会话状态
+  const sessionStatusMap = useSessionStore(
+    useShallow(state => {
+      const statusMap = new Map<string, ProjectSessionStatus>();
+
+      // 遍历所有会话，计算每个项目的状态
+      for (const [sessionId, session] of Object.entries(state.sessions)) {
+        const projectId = session.projectId;
+        const messages = session.messages || [];
+        const interactivePanel = session.interactivePanel;
+
+        // 确定状态
+        let status: ProjectSessionStatus = 'idle';
+
+        if (messages.length === 0) {
+          status = 'none';
+        } else if (interactivePanel?.pendingPermission || interactivePanel?.pendingQuestion || interactivePanel?.pendingApproval) {
+          status = 'waiting';
+        } else if (messages.some(m => m.isStreaming)) {
+          status = 'running';
+        }
+
+        statusMap.set(projectId, status);
+      }
+
+      return statusMap;
+    })
+  );
+
+  // ★ 修复：单独订阅 activity store，使用 useShallow 减少重渲染
+  const activityStatusMap = useActivityStore(
+    useShallow(state => {
+      const statusMap = new Map<string, { hasActivity: boolean; hasThinking: boolean }>();
+
+      for (const [sessionId, activity] of Object.entries(state.sessions)) {
+        statusMap.set(sessionId, {
+          hasActivity: activity.current !== null && activity.current !== undefined,
+          hasThinking: activity.thinkingStartTime !== null && activity.thinkingStartTime !== undefined,
+        });
+      }
+
+      return statusMap;
+    })
+  );
+
+  // ★ 修复：合并 session 和 activity 状态，计算最终的项目状态
+  // 使用订阅的 projectSessionIndex 而非 getState() 以保证响应式
+  const finalStatusMap = useMemo(() => {
+    const finalMap = new Map<string, ProjectSessionStatus>();
+
+    for (const [projectId, status] of sessionStatusMap) {
+      const sessionId = projectSessionIndex.get(projectId);
+      const activityStatus = sessionId ? activityStatusMap.get(sessionId) : null;
+
+      // 如果有活动状态且是 running，则保持 running
+      if (status === 'running' || activityStatus?.hasActivity || activityStatus?.hasThinking) {
+        finalMap.set(projectId, 'running');
+      } else {
+        finalMap.set(projectId, status);
+      }
+    }
+
+    return finalMap;
+  }, [sessionStatusMap, activityStatusMap, projectSessionIndex]);
+
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isFileTreeRefreshing, setIsFileTreeRefreshing] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -262,11 +282,11 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
 
   /**
    * Get session ID for a project
+   * ★ 修复：使用 projectSessionIndex 而非遍历 sessions
    */
   const getSessionIdForProject = useCallback((projectId: string): string | null => {
-    const sessionEntry = Object.entries(sessions).find(([_, s]) => s.projectId === projectId);
-    return sessionEntry ? sessionEntry[0] : null;
-  }, [sessions]);
+    return useSessionStore.getState().projectSessionIndex.get(projectId) || null;
+  }, []);
 
   /**
    * Handle session restart menu click
@@ -433,7 +453,8 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
           ) : (
             <div className="py-1">
               {projects.map((project) => {
-                  const status = getProjectSessionStatus(project.id, sessions, activitySessions);
+                  // ★ 修复：使用预计算的 finalStatusMap，避免每次渲染时遍历所有会话
+                  const status = getProjectSessionStatus(project.id, finalStatusMap);
                   return (
                     <div
                       key={project.id}
@@ -457,12 +478,12 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
                           w-2 h-2 rounded-full flex-shrink-0
                           ${status === 'running' ? 'bg-accent-green animate-pulse' : ''}
                           ${status === 'waiting' ? 'bg-accent-yellow' : ''}
-                          ${status === 'idle' ? 'bg-accent-red' : ''}
-                          ${status === 'none' ? 'bg-accent-red' : ''}
+                          ${status === 'idle' || status === 'none' ? 'bg-text-muted' : ''}
                         `}
                         title={
                           status === 'running' ? 'Agent 运行中' :
                           status === 'waiting' ? '等待用户输入' :
+                          status === 'idle' ? '会话空闲' :
                           '无会话或未启动'
                         }
                       />

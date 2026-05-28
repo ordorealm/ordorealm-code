@@ -326,10 +326,11 @@ function setupProgressListener(
 
 /**
  * 清理进度事件监听器
+ * ★ 修复：清理所有会话的缓冲区
  */
 function cleanupProgressListener(): void {
   // ★ 确保所有待处理的批量工具消息已写入
-  immediateFlushToolBatch();
+  immediateFlushAllToolBatches();
   if (progressListenerCleanup) {
     progressListenerCleanup();
     progressListenerCleanup = null;
@@ -527,7 +528,7 @@ function performHeartbeatAbort(
     }
   })();
 
-  immediateFlushBuffer(set, sessionId);
+  immediateFlushBufferForSession(sessionId, set);
   set(state => {
     const existingSession = state.sessions[sessionId];
     if (!existingSession) return state;
@@ -569,13 +570,35 @@ interface StreamingBuffer {
   sessionId: string | null;
 }
 
-/** Global streaming buffer instance */
-const streamingBuffer: StreamingBuffer = {
-  pendingText: '',
-  flushTimer: null,
-  messageId: null,
-  sessionId: null,
-};
+/**
+ * ★ 修复：使用 Map 结构支持多会话并发
+ * 每个会话独立缓冲区，避免竞态条件
+ */
+const streamingBuffers = new Map<string, StreamingBuffer>();
+
+/** Get or create buffer for a session */
+function getStreamingBuffer(sessionId: string): StreamingBuffer {
+  let buffer = streamingBuffers.get(sessionId);
+  if (!buffer) {
+    buffer = {
+      pendingText: '',
+      flushTimer: null,
+      messageId: null,
+      sessionId: sessionId,
+    };
+    streamingBuffers.set(sessionId, buffer);
+  }
+  return buffer;
+}
+
+/** Clean up buffer for a session (call when session ends) */
+function cleanupStreamingBuffer(sessionId: string): void {
+  const buffer = streamingBuffers.get(sessionId);
+  if (buffer?.flushTimer) {
+    clearTimeout(buffer.flushTimer);
+  }
+  streamingBuffers.delete(sessionId);
+}
 
 /** Delay in ms before flushing buffered updates (use requestAnimationFrame-like timing) */
 const STREAM_FLUSH_DELAY = 16; // ~60fps
@@ -584,94 +607,117 @@ const STREAM_FLUSH_DELAY = 16; // ~60fps
 // Reduces React re-renders during long tool-heavy tasks (300+ tool calls):
 // instead of one set() per tool event, batch up to 500ms of tool messages
 // and apply them in a single state update.
+// ★ 修复：使用 Map 结构支持多会话并发
 
 interface ToolBatchEntry {
   message: Message
 }
 
-const toolBatch: {
+interface ToolBatchState {
   queue: ToolBatchEntry[]
   flushTimer: ReturnType<typeof setTimeout> | null
-  sessionId: string | null
   setFn: SetFunction | null
-} = {
-  queue: [],
-  flushTimer: null,
-  sessionId: null,
-  setFn: null,
+}
+
+const toolBatches = new Map<string, ToolBatchState>();
+
+/** Get or create tool batch for a session */
+function getToolBatch(sessionId: string): ToolBatchState {
+  let batch = toolBatches.get(sessionId);
+  if (!batch) {
+    batch = {
+      queue: [],
+      flushTimer: null,
+      setFn: null,
+    };
+    toolBatches.set(sessionId, batch);
+  }
+  return batch;
+}
+
+/** Clean up tool batch for a session */
+function cleanupToolBatch(sessionId: string): void {
+  const batch = toolBatches.get(sessionId);
+  if (batch?.flushTimer) {
+    clearTimeout(batch.flushTimer);
+  }
+  toolBatches.delete(sessionId);
 }
 
 const TOOL_BATCH_DELAY = 500
 
-function flushToolBatch(): void {
-  if (toolBatch.queue.length === 0) return
-  const { queue, sessionId, setFn } = toolBatch
-  if (!sessionId || !setFn) {
-    toolBatch.queue = []
-    return
+function flushToolBatchForSession(sessionId: string): void {
+  const batch = toolBatches.get(sessionId);
+  if (!batch || batch.queue.length === 0) return;
+
+  const { queue, setFn } = batch;
+  if (!setFn) {
+    batch.queue = [];
+    return;
   }
-  if (toolBatch.flushTimer) {
-    clearTimeout(toolBatch.flushTimer)
-    toolBatch.flushTimer = null
+  if (batch.flushTimer) {
+    clearTimeout(batch.flushTimer);
+    batch.flushTimer = null;
   }
 
-  const batchMessages = queue.map((q) => q.message)
-  const batchIds = new Set(batchMessages.map((m) => m.id))
-  toolBatch.queue = []
+  const batchMessages = queue.map((q) => q.message);
+  batch.queue = [];
 
   setFn((state) => {
-    const existingSession = state.sessions[sessionId]
-    if (!existingSession) return state
+    const existingSession = state.sessions[sessionId];
+    if (!existingSession) return state;
     // Deduplicate: skip messages whose ID already exists in state
-    const existingIds = new Set(existingSession.messages.map((m) => m.id))
-    const newMessages = batchMessages.filter((m) => !existingIds.has(m.id))
-    if (newMessages.length === 0) return state
-    const updatedMessages = trimMessages([...existingSession.messages, ...newMessages])
+    const existingIds = new Set(existingSession.messages.map((m) => m.id));
+    const newMessages = batchMessages.filter((m) => !existingIds.has(m.id));
+    if (newMessages.length === 0) return state;
+    const updatedMessages = trimMessages([...existingSession.messages, ...newMessages]);
     return {
       sessions: {
         ...state.sessions,
         [sessionId]: { ...existingSession, messages: updatedMessages },
       },
-    }
-  })
+    };
+  });
 }
 
 function enqueueToolMessage(message: Message, sessionId: string, setFn: SetFunction): void {
-  // Flush if switching sessions
-  if (toolBatch.sessionId !== sessionId && toolBatch.queue.length > 0) {
-    flushToolBatch()
-  }
-  toolBatch.sessionId = sessionId
-  toolBatch.setFn = setFn
-  toolBatch.queue.push({ message })
+  const batch = getToolBatch(sessionId);
+  batch.setFn = setFn;
+  batch.queue.push({ message });
 
-  if (!toolBatch.flushTimer) {
-    toolBatch.flushTimer = setTimeout(flushToolBatch, TOOL_BATCH_DELAY)
+  if (!batch.flushTimer) {
+    batch.flushTimer = setTimeout(() => flushToolBatchForSession(sessionId), TOOL_BATCH_DELAY);
   }
 }
 
-/** Flush tool batch immediately (called before non-tool events like text/complete/error) */
-function immediateFlushToolBatch(): void {
-  if (toolBatch.flushTimer) {
-    clearTimeout(toolBatch.flushTimer)
-    toolBatch.flushTimer = null
+/** Flush tool batch immediately for a specific session (called before non-tool events like text/complete/error) */
+function immediateFlushToolBatchForSession(sessionId: string): void {
+  flushToolBatchForSession(sessionId);
+}
+
+/** Flush all tool batches immediately (called during cleanup) */
+function immediateFlushAllToolBatches(): void {
+  for (const sessionId of toolBatches.keys()) {
+    flushToolBatchForSession(sessionId);
   }
-  flushToolBatch()
 }
 
 /** Look up a tool_use message from state AND pending batch queue */
 function findToolUseMessage(sessionId: string, toolUseId: string): Message | undefined {
   // Check batch queue first (newest messages)
-  for (const entry of toolBatch.queue) {
-    if (entry.message.role === 'tool_use' && entry.message.toolUseId === toolUseId) {
-      return entry.message
+  const batch = toolBatches.get(sessionId);
+  if (batch) {
+    for (const entry of batch.queue) {
+      if (entry.message.role === 'tool_use' && entry.message.toolUseId === toolUseId) {
+        return entry.message;
+      }
     }
   }
   // Fall back to state
-  const existingSession = useSessionStore.getState().sessions[sessionId]
+  const existingSession = useSessionStore.getState().sessions[sessionId];
   return existingSession?.messages.find(
     (m) => m.role === 'tool_use' && m.toolUseId === toolUseId
-  )
+  );
 }
 
 interface SessionActions {
@@ -827,20 +873,22 @@ function trimMessages(messages: Message[]): Message[] {
 /**
  * Flush the streaming buffer and apply accumulated text to the message
  * This is the actual state update that triggers re-render
+ * ★ 修复：支持多会话，按 sessionId 获取对应缓冲区
+ * @param sessionId Session ID
  * @param set Zustand set function
  */
-function flushStreamingBuffer(set: SetFunction): void {
-  if (!streamingBuffer.messageId || !streamingBuffer.sessionId || !streamingBuffer.pendingText) {
+function flushStreamingBufferForSession(sessionId: string, set: SetFunction): void {
+  const buffer = streamingBuffers.get(sessionId);
+  if (!buffer || !buffer.messageId || !buffer.pendingText) {
     return;
   }
 
-  const sessionId = streamingBuffer.sessionId;
-  const messageId = streamingBuffer.messageId;
-  const textToAdd = streamingBuffer.pendingText;
+  const messageId = buffer.messageId;
+  const textToAdd = buffer.pendingText;
 
   // Clear buffer before updating to prevent duplicate flushes
-  streamingBuffer.pendingText = '';
-  streamingBuffer.flushTimer = null;
+  buffer.pendingText = '';
+  buffer.flushTimer = null;
 
   // Apply accumulated text in a single state update
   set(state => {
@@ -872,6 +920,7 @@ function flushStreamingBuffer(set: SetFunction): void {
 /**
  * Buffer streaming text and schedule a flush
  * Multiple chunks within the flush delay are merged into a single update
+ * ★ 修复：使用 Map 结构，每个会话独立缓冲区
  * @param sessionId Session ID
  * @param messageId Message ID
  * @param text Text chunk to buffer
@@ -883,61 +932,70 @@ function bufferStreamingText(
   text: string,
   set: SetFunction
 ): void {
-  // Initialize buffer for new message if needed
-  if (streamingBuffer.messageId !== messageId) {
-    // Flush any previous buffer first (only if same session to avoid cross-session pollution)
-    if (streamingBuffer.flushTimer !== null && streamingBuffer.sessionId === sessionId) {
-      clearTimeout(streamingBuffer.flushTimer);
-      flushStreamingBuffer(set);
-    }
-    streamingBuffer.messageId = messageId;
-    streamingBuffer.sessionId = sessionId;
-    streamingBuffer.pendingText = '';
-    streamingBuffer.flushTimer = null;
-  }
+  const buffer = getStreamingBuffer(sessionId);
 
-  // Guard: Only accumulate text if this is the current session's buffer
-  // This prevents race conditions when multiple sessions stream simultaneously
-  if (streamingBuffer.sessionId !== sessionId) {
-    console.warn(`[SessionStore] Buffer race condition detected: expected session ${streamingBuffer.sessionId}, got ${sessionId}. Skipping.`);
-    return;
+  // Initialize buffer for new message if needed
+  if (buffer.messageId !== messageId) {
+    // Flush any previous buffer for this session
+    if (buffer.flushTimer !== null) {
+      clearTimeout(buffer.flushTimer);
+      flushStreamingBufferForSession(sessionId, set);
+    }
+    buffer.messageId = messageId;
+    buffer.pendingText = '';
+    buffer.flushTimer = null;
   }
 
   // Accumulate text in buffer
-  streamingBuffer.pendingText += text;
+  buffer.pendingText += text;
 
   // Schedule flush if not already scheduled
-  if (streamingBuffer.flushTimer === null) {
-    streamingBuffer.flushTimer = window.setTimeout(() => {
-      flushStreamingBuffer(set);
+  if (buffer.flushTimer === null) {
+    buffer.flushTimer = window.setTimeout(() => {
+      flushStreamingBufferForSession(sessionId, set);
     }, STREAM_FLUSH_DELAY);
   }
 }
 
 /**
- * Immediately flush the buffer and reset streaming state
+ * Immediately flush the buffer for a specific session
  * Called on complete or error events
+ * @param sessionId Session ID
  * @param set Zustand set function
- * @param sessionId Optional session ID to validate before flushing (prevents cross-session flush)
  */
-function immediateFlushBuffer(set: SetFunction, sessionId?: string): void {
+function immediateFlushBufferForSession(sessionId: string, set: SetFunction): void {
   // ★ Flush pending tool batch first (preserves message ordering)
-  immediateFlushToolBatch();
+  immediateFlushToolBatchForSession(sessionId);
 
-  // Guard: Only flush if session matches (when sessionId is provided)
-  if (sessionId && streamingBuffer.sessionId !== sessionId) {
-    console.warn(`[SessionStore] immediateFlushBuffer: session mismatch, expected ${streamingBuffer.sessionId}, got ${sessionId}. Skipping flush.`);
-    streamingBuffer.messageId = null;
-    streamingBuffer.sessionId = null;
-    return;
-  }
+  const buffer = streamingBuffers.get(sessionId);
+  if (!buffer) return;
 
-  if (streamingBuffer.flushTimer !== null) {
-    clearTimeout(streamingBuffer.flushTimer);
+  if (buffer.flushTimer !== null) {
+    clearTimeout(buffer.flushTimer);
   }
-  flushStreamingBuffer(set);
-  streamingBuffer.messageId = null;
-  streamingBuffer.sessionId = null;
+  flushStreamingBufferForSession(sessionId, set);
+
+  // Reset buffer state
+  buffer.messageId = null;
+  buffer.pendingText = '';
+}
+
+/**
+ * Immediately flush all buffers (called during cleanup)
+ * @param set Zustand set function
+ */
+function immediateFlushAllBuffers(set: SetFunction): void {
+  // Flush all tool batches first
+  immediateFlushAllToolBatches();
+
+  // Flush all streaming buffers
+  for (const sessionId of streamingBuffers.keys()) {
+    const buffer = streamingBuffers.get(sessionId);
+    if (buffer?.flushTimer) {
+      clearTimeout(buffer.flushTimer);
+    }
+    flushStreamingBufferForSession(sessionId, set);
+  }
 }
 
 export const useSessionStore = create<SessionState & SessionActions>((set, get) => ({
@@ -1433,7 +1491,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           });
         } else if (type === 'text') {
           // ★ Flush pending tool batch before text (preserves message order)
-          immediateFlushToolBatch();
+          immediateFlushToolBatchForSession(sessionId);
           // Use buffering to reduce re-renders during streaming
           bufferStreamingText(sessionId, assistantMessageId, eventContent, set);
           // Update activity: AI is responding
@@ -1605,8 +1663,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           });
         } else if (type === 'error') {
           // Flush any pending batches before handling error
-          immediateFlushToolBatch();
-          immediateFlushBuffer(set, sessionId);
+          immediateFlushToolBatchForSession(sessionId);
+          immediateFlushBufferForSession(sessionId, set);
           // Handle error
           get().updateMessage(sessionId, assistantMessageId, {
             content: `Error: ${eventContent}`,
@@ -1620,8 +1678,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           cleanupProgressListener();
         } else if (type === 'complete') {
           // Flush any pending batches before marking complete
-          immediateFlushToolBatch();
-          immediateFlushBuffer(set, sessionId);
+          immediateFlushToolBatchForSession(sessionId);
+          immediateFlushBufferForSession(sessionId, set);
 
           // ★ 会话结束时再刷新一次上下文使用量，确保最终值准确
           // 使用 void 显式忽略 Promise，因为回调函数不返回 Promise
@@ -1717,7 +1775,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
     } catch (error) {
       // Flush any remaining buffered text before showing error
-      immediateFlushBuffer(set, sessionId);
+      immediateFlushBufferForSession(sessionId, set);
       // End thinking timer and clear activity
       useActivityStore.getState().endThinking(sessionId);
       useActivityStore.getState().endActivity(sessionId);
@@ -2133,6 +2191,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     // 清理进度监听器
     cleanupProgressListener();
 
+    // ★ 清理该会话的缓冲区
+    cleanupStreamingBuffer(sessionId);
+    cleanupToolBatch(sessionId);
+
     // 通知主进程关闭会话
     try {
       await window.api.claude.closeSession(sessionId);
@@ -2378,24 +2440,9 @@ ${result.content}`;
         }
       }
 
-      // 5. 重置 token 使用量（压缩后会减少）
-      set(state => {
-        const existingSession = state.sessions[sessionId];
-        if (!existingSession || !existingSession.tokenUsage) return state;
-
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...existingSession,
-              tokenUsage: {
-                ...existingSession.tokenUsage,
-                inputTokens: Math.floor(existingSession.tokenUsage.inputTokens * 0.3), // 估算压缩后剩余 30%
-              },
-            },
-          },
-        };
-      });
+      // 5. 刷新上下文使用量（获取真实值而非估算）
+      await refreshContextUsage(sessionId, set);
+      console.log(`[SessionStore] Context usage refreshed after compact for session: ${sessionId}`);
 
     } catch (error) {
       console.error('[SessionStore] Failed to trigger compact:', error);

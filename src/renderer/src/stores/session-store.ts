@@ -63,7 +63,7 @@ interface ConversationRound {
  * @returns Array of conversation rounds
  */
 function identifyRounds(messages: Message[]): ConversationRound[] {
-  if (messages.length === 0) return [];
+  if (!messages || messages.length === 0) return [];
 
   const rounds: ConversationRound[] = [];
   let currentRoundStart = 0;
@@ -108,6 +108,8 @@ function identifyRounds(messages: Message[]): ConversationRound[] {
  * @returns Trimmed message array
  */
 function trimMessagesByRounds(messages: Message[]): Message[] {
+  if (!messages || messages.length === 0) return [];
+
   const rounds = identifyRounds(messages);
 
   if (rounds.length <= MAX_ROUNDS) {
@@ -130,6 +132,8 @@ function trimMessagesByRounds(messages: Message[]): Message[] {
  * @returns Messages for the most recent N rounds
  */
 function getRecentRounds(messages: Message[], numRounds: number): Message[] {
+  if (!messages || messages.length === 0) return [];
+
   const rounds = identifyRounds(messages);
 
   if (rounds.length <= numRounds) {
@@ -150,7 +154,8 @@ function getRecentRounds(messages: Message[], numRounds: number): Message[] {
  * @returns Messages to prepend (in chronological order)
  */
 function getOlderRounds(allMessages: Message[], currentMessages: Message[], numRounds: number): Message[] {
-  if (allMessages.length === 0) return [];
+  if (!allMessages || allMessages.length === 0) return [];
+  if (!currentMessages) currentMessages = [];
 
   // Get IDs of messages already in memory
   const currentIds = new Set(currentMessages.map(m => m.id));
@@ -181,26 +186,30 @@ type SetFunction = (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 进度事件监听器（参考 SpectrAI 的 sessionStore 模式）
+// ★ 修复：使用 Map 支持多会话并发，每个会话独立监听器
 // ─────────────────────────────────────────────────────────────────────────────
 
-let progressListenerCleanup: (() => void) | null = null;
-let currentProgressSessionId: string | null = null;
-/** ★ 当前活跃的进度回调引用，用于重连时重建监听器 */
-let currentProgressCallback: ((event: any) => void) | null = null;
-/** ★ 上次收到进度事件的时间，用于检测连接是否断开 */
-let lastProgressEventTime: number = 0;
-/** ★ 心跳检测定时器 */
-let heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
-/** ★ 自适应心跳超时（退火策略）：第 1 次 10 分钟，第 2 次 20 分钟，第 3 次起 30 分钟 */
-const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
-/** ★ 心跳超时计数（每次 sendMessage 重置为 0） */
-let heartbeatTimeoutCount = 0;
+/** 进度监听器信息 */
+interface ProgressListenerInfo {
+  cleanup: () => void;
+  callback: (event: any) => void;
+  lastEventTime: number;
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  heartbeatTimeoutCount: number;
+}
+
+/** ★ 多会话进度监听器 Map */
+const progressListeners = new Map<string, ProgressListenerInfo>();
+
 /** ★ 连接恢复提示的定时器引用（用于清理） */
 let connectionNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 /** ★ 上下文使用量刷新定时器（每 5 秒刷新） */
 let contextUsageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 /** ★ 当前正在刷新上下文的会话 ID */
 let contextUsageSessionId: string | null = null;
+
+/** ★ 自适应心跳超时（退火策略）：第 1 次 10 分钟，第 2 次 20 分钟，第 3 次起 30 分钟 */
+const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
 
 /**
  * 设置进度事件监听器
@@ -281,38 +290,36 @@ function setupProgressListener(
     };
   }) => void
 ): void {
-  // 清理旧的监听器
-  if (progressListenerCleanup) {
-    progressListenerCleanup();
-    progressListenerCleanup = null;
+  // ★ 修复：清理该会话的旧监听器（不影响其他会话）
+  const existing = progressListeners.get(sessionId);
+  if (existing) {
+    existing.cleanup();
+    if (existing.heartbeatTimer) {
+      clearInterval(existing.heartbeatTimer);
+    }
   }
 
-  // 清理旧的心跳检测
-  if (heartbeatCheckTimer) {
-    clearInterval(heartbeatCheckTimer);
-    heartbeatCheckTimer = null;
-  }
-
-  currentProgressSessionId = sessionId;
-  currentProgressCallback = onProgress;
-  lastProgressEventTime = Date.now();
-  heartbeatTimeoutCount = 0;
+  // ★ 创建新的监听器
+  const listenerInfo: ProgressListenerInfo = {
+    cleanup: () => {},
+    callback: onProgress,
+    lastEventTime: Date.now(),
+    heartbeatTimer: null,
+    heartbeatTimeoutCount: 0,
+  };
 
   // 设置新的监听器
-  progressListenerCleanup = window.api.claude.onProgress((event) => {
+  const cleanup = window.api.claude.onProgress((event) => {
     // 更新最后收到事件的时间
-    lastProgressEventTime = Date.now();
+    listenerInfo.lastEventTime = Date.now();
 
-    // ★ 方案 A：按 event.sessionId 过滤（修复会话内容串扰问题）
-    // 主进程发送的所有 progress 事件都包含 sessionId 字段
-    // 如果 sessionId 不匹配，忽略该事件
+    // ★ 按 event.sessionId 过滤，只处理当前会话的事件
     if (event.sessionId && event.sessionId !== sessionId) {
       console.log(`[SessionStore] Ignoring event for different session: ${event.sessionId} (current: ${sessionId})`);
       return;
     }
 
-    // 如果事件没有 sessionId 字段（旧版本兼容），也忽略
-    // 这确保只有当前会话的事件被处理
+    // 如果事件没有 sessionId 字段，也忽略
     if (!event.sessionId) {
       console.warn(`[SessionStore] Received event without sessionId, ignoring (current: ${sessionId})`);
       return;
@@ -321,27 +328,51 @@ function setupProgressListener(
     onProgress(event);
   });
 
-  console.log(`[SessionStore] Progress listener setup for session: ${sessionId}`);
+  listenerInfo.cleanup = cleanup;
+  progressListeners.set(sessionId, listenerInfo);
+
+  console.log(`[SessionStore] Progress listener setup for session: ${sessionId} (total listeners: ${progressListeners.size})`);
 }
 
 /**
- * 清理进度事件监听器
- * ★ 修复：清理所有会话的缓冲区
+ * ★ 修复：清理指定会话的进度监听器
+ * @param sessionId 会话 ID
+ */
+function cleanupProgressListenerForSession(sessionId: string): void {
+  // ★ 确保该会话的待处理批量工具消息已写入
+  immediateFlushToolBatchForSession(sessionId);
+
+  const listenerInfo = progressListeners.get(sessionId);
+  if (listenerInfo) {
+    listenerInfo.cleanup();
+    if (listenerInfo.heartbeatTimer) {
+      clearInterval(listenerInfo.heartbeatTimer);
+    }
+    progressListeners.delete(sessionId);
+    console.log(`[SessionStore] Progress listener cleaned up for session: ${sessionId} (remaining: ${progressListeners.size})`);
+  }
+
+  // 清理该会话的缓冲区
+  cleanupStreamingBuffer(sessionId);
+  cleanupToolBatch(sessionId);
+}
+
+/**
+ * 清理所有进度事件监听器
+ * ★ 修复：清理所有会话的监听器和缓冲区
  */
 function cleanupProgressListener(): void {
   // ★ 确保所有待处理的批量工具消息已写入
   immediateFlushAllToolBatches();
-  if (progressListenerCleanup) {
-    progressListenerCleanup();
-    progressListenerCleanup = null;
-    currentProgressSessionId = null;
-    currentProgressCallback = null;
+
+  // 清理所有监听器
+  for (const [sessionId, listenerInfo] of progressListeners) {
+    listenerInfo.cleanup();
+    if (listenerInfo.heartbeatTimer) {
+      clearInterval(listenerInfo.heartbeatTimer);
+    }
   }
-  // 清理心跳检测
-  if (heartbeatCheckTimer) {
-    clearInterval(heartbeatCheckTimer);
-    heartbeatCheckTimer = null;
-  }
+  progressListeners.clear();
   // 清理连接恢复提示定时器
   if (connectionNoticeTimer) {
     clearTimeout(connectionNoticeTimer);
@@ -442,33 +473,40 @@ function startHeartbeatCheck(
   assistantMessageId: string,
   set: SetFunction
 ): void {
-  // 清理旧的定时器
-  if (heartbeatCheckTimer) {
-    clearInterval(heartbeatCheckTimer);
+  // ★ 获取该会话的监听器信息
+  const listenerInfo = progressListeners.get(sessionId);
+  if (!listenerInfo) {
+    console.warn(`[SessionStore] No listener found for session: ${sessionId}, skipping heartbeat check`);
+    return;
   }
 
-  heartbeatCheckTimer = setInterval(() => {
+  // 清理该会话的旧心跳定时器
+  if (listenerInfo.heartbeatTimer) {
+    clearInterval(listenerInfo.heartbeatTimer);
+  }
+
+  listenerInfo.heartbeatTimer = setInterval(() => {
     const now = Date.now();
-    const timeSinceLastEvent = now - lastProgressEventTime;
+    const timeSinceLastEvent = now - listenerInfo.lastEventTime;
 
     // ★ 自适应超时：根据超时次数选择退火时间
-    const currentTimeout = HEARTBEAT_TIMEOUTS[Math.min(heartbeatTimeoutCount, HEARTBEAT_TIMEOUTS.length - 1)];
+    const currentTimeout = HEARTBEAT_TIMEOUTS[Math.min(listenerInfo.heartbeatTimeoutCount, HEARTBEAT_TIMEOUTS.length - 1)];
 
     if (timeSinceLastEvent > currentTimeout) {
-      heartbeatTimeoutCount++;
+      listenerInfo.heartbeatTimeoutCount++;
       const timeoutMinutes = Math.round(currentTimeout / 60000);
-      console.warn(`[SessionStore] Heartbeat timeout #${heartbeatTimeoutCount} for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago (threshold: ${timeoutMinutes}min)`);
+      console.warn(`[SessionStore] Heartbeat timeout #${listenerInfo.heartbeatTimeoutCount} for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago (threshold: ${timeoutMinutes}min)`);
 
       // ★ 前 2 次超时：先尝试重连（ping 后端确认存活状态）
-      if (heartbeatTimeoutCount < 3) {
+      if (listenerInfo.heartbeatTimeoutCount < 3) {
         (async () => {
           try {
             const pingResult = await window.api.claude.pingSession(sessionId);
             if (pingResult.alive) {
-              // 后端流仍存活 → 重置时间戳（监听器仍活跃，无需重建），重启心跳
+              // 后端流仍存活 → 重置时间戳，重启心跳
               console.warn(`[SessionStore] Backend stream is alive (status: ${pingResult.status}), reconnecting...`);
-              lastProgressEventTime = Date.now();
-              // ★ 重启心跳检测（cleanupProgressListener 之后可能被调用过，这里显式重建）
+              listenerInfo.lastEventTime = Date.now();
+              // ★ 重启心跳检测
               startHeartbeatCheck(sessionId, assistantMessageId, set);
               // ★ 设置 UI 提示（3 秒后自动清除）
               if (connectionNoticeTimer) clearTimeout(connectionNoticeTimer);
@@ -514,9 +552,11 @@ function performHeartbeatAbort(
   set: SetFunction,
   timeoutMinutes: number
 ): void {
-  if (heartbeatCheckTimer) {
-    clearInterval(heartbeatCheckTimer);
-    heartbeatCheckTimer = null;
+  // ★ 清理该会话的心跳定时器
+  const listenerInfo = progressListeners.get(sessionId);
+  if (listenerInfo?.heartbeatTimer) {
+    clearInterval(listenerInfo.heartbeatTimer);
+    listenerInfo.heartbeatTimer = null;
   }
 
   (async () => {
@@ -1307,12 +1347,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             const existingSession = state.sessions[sessionId];
             if (!existingSession) return state;
 
-            // 从 Provider 获取 contextWindow
-            const providerContextWindow = provider.contextWindow || 200000;
-            console.log('[SessionStore] Provider contextWindow:', providerContextWindow);
-
-            // 始终更新 contextWindow（用户可能修改了 Provider 配置）
-            const currentUsage = existingSession.tokenUsage || { inputTokens: 0, outputTokens: 0, contextWindow: providerContextWindow };
+            // ★ 不再使用 Provider 配置的 contextWindow
+            // contextWindow 由 SDK 的 getContextUsage() 返回的真实模型上下文窗口决定
+            // 这样可以准确反映模型的真实限制，而不是用户配置的值
+            const currentUsage = existingSession.tokenUsage || { inputTokens: 0, outputTokens: 0, contextWindow: 200000 };
 
             return {
               sessions: {
@@ -1320,11 +1358,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 [sessionId]: {
                   ...existingSession,
                   initData,
-                  // 更新 tokenUsage，使用 Provider 配置的 contextWindow
-                  tokenUsage: {
-                    ...currentUsage,
-                    contextWindow: providerContextWindow,
-                  },
+                  // ★ 保留现有 tokenUsage，不覆盖 contextWindow
+                  // contextWindow 由 refreshContextUsage() 从 SDK 获取真实值
+                  tokenUsage: currentUsage,
                 },
               },
             };

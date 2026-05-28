@@ -5,7 +5,6 @@
  */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '@/stores/project-store';
 import { useSessionStore } from '@/stores/session-store';
 import { useActivityStore } from '@/stores/activity-store';
@@ -41,9 +40,9 @@ type ProjectSessionStatus = 'idle' | 'running' | 'waiting' | 'none';
  */
 function getProjectSessionStatus(
   projectId: string,
-  sessionStatusMap: Map<string, ProjectSessionStatus>
+  sessionStatusMap: Record<string, ProjectSessionStatus>
 ): ProjectSessionStatus {
-  return sessionStatusMap.get(projectId) || 'none';
+  return sessionStatusMap[projectId] || 'none';
 }
 
 /**
@@ -58,74 +57,48 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
   const gitClear = useGitStore(state => state.clear);
   const fileTreeRefresh = useFileTreeStore(state => state.refresh);
 
-  // ★ 修复：订阅 projectSessionIndex 以支持响应式更新
+  // ★ 修复：使用直接选择器订阅，确保状态更新能正确触发组件重渲染
+  // 之前使用 useShallow 导致 activity store 更新不及时，状态指示器不显示绿色
+  const sessions = useSessionStore(state => state.sessions);
   const projectSessionIndex = useSessionStore(state => state.projectSessionIndex);
+  const activitySessions = useActivityStore(state => state.sessions);
 
-  // ★ 修复：使用 useShallow 和 useMemo 优化订阅，避免整对象订阅导致频繁重渲染
-  // 只订阅必要的状态，并计算每个项目的会话状态
-  const sessionStatusMap = useSessionStore(
-    useShallow(state => {
-      const statusMap = new Map<string, ProjectSessionStatus>();
-
-      // 遍历所有会话，计算每个项目的状态
-      for (const [sessionId, session] of Object.entries(state.sessions)) {
-        const projectId = session.projectId;
-        const messages = session.messages || [];
-        const interactivePanel = session.interactivePanel;
-
-        // 确定状态
-        let status: ProjectSessionStatus = 'idle';
-
-        if (messages.length === 0) {
-          status = 'none';
-        } else if (interactivePanel?.pendingPermission || interactivePanel?.pendingQuestion || interactivePanel?.pendingApproval) {
-          status = 'waiting';
-        } else if (messages.some(m => m.isStreaming)) {
-          status = 'running';
-        }
-
-        statusMap.set(projectId, status);
-      }
-
-      return statusMap;
-    })
-  );
-
-  // ★ 修复：单独订阅 activity store，使用 useShallow 减少重渲染
-  const activityStatusMap = useActivityStore(
-    useShallow(state => {
-      const statusMap = new Map<string, { hasActivity: boolean; hasThinking: boolean }>();
-
-      for (const [sessionId, activity] of Object.entries(state.sessions)) {
-        statusMap.set(sessionId, {
-          hasActivity: activity.current !== null && activity.current !== undefined,
-          hasThinking: activity.thinkingStartTime !== null && activity.thinkingStartTime !== undefined,
-        });
-      }
-
-      return statusMap;
-    })
-  );
-
-  // ★ 修复：合并 session 和 activity 状态，计算最终的项目状态
-  // 使用订阅的 projectSessionIndex 而非 getState() 以保证响应式
+  // ★ 在 useMemo 中计算状态映射，只有依赖变化时才重新计算
   const finalStatusMap = useMemo(() => {
-    const finalMap = new Map<string, ProjectSessionStatus>();
+    const statusMap: Record<string, ProjectSessionStatus> = {};
 
-    for (const [projectId, status] of sessionStatusMap) {
-      const sessionId = projectSessionIndex.get(projectId);
-      const activityStatus = sessionId ? activityStatusMap.get(sessionId) : null;
+    // 遍历所有会话，计算每个项目的状态
+    for (const [sessionId, session] of Object.entries(sessions)) {
+      const projectId = session.projectId;
+      const messages = session.messages || [];
+      const interactivePanel = session.interactivePanel;
 
-      // 如果有活动状态且是 running，则保持 running
-      if (status === 'running' || activityStatus?.hasActivity || activityStatus?.hasThinking) {
-        finalMap.set(projectId, 'running');
-      } else {
-        finalMap.set(projectId, status);
+      // 确定状态
+      let status: ProjectSessionStatus = 'idle';
+
+      if (messages.length === 0) {
+        status = 'none';
+      } else if (interactivePanel?.pendingPermission || interactivePanel?.pendingQuestion || interactivePanel?.pendingApproval) {
+        status = 'waiting';
+      } else if (messages.some(m => m.isStreaming)) {
+        status = 'running';
+      }
+
+      // 检查活动状态
+      const activity = activitySessions[sessionId];
+      const hasActivity = activity?.current !== null && activity?.current !== undefined;
+      const hasThinking = activity?.thinkingStartTime !== null && activity?.thinkingStartTime !== undefined;
+
+      // 如果有活动状态，标记为 running（不覆盖已有的 running 状态）
+      if (status === 'running' || hasActivity || hasThinking) {
+        statusMap[projectId] = 'running';
+      } else if (statusMap[projectId] !== 'running') {
+        statusMap[projectId] = status;
       }
     }
 
-    return finalMap;
-  }, [sessionStatusMap, activityStatusMap, projectSessionIndex]);
+    return statusMap;
+  }, [sessions, activitySessions]);
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isFileTreeRefreshing, setIsFileTreeRefreshing] = useState(false);

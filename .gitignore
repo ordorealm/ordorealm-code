@@ -5,6 +5,7 @@ node_modules/
 out/
 dist/
 release/
+build/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
@@ -34,13 +35,21 @@ coverage/
 *.tmp
 *.temp
 
-# pnpm lock (use package-lock.json instead)
-# pnpm-lock.yaml
+# pnpm files (project uses npm)
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.pnpm-approvals.json
 
-# Superspec temporary files
-.superspec/state.json.tmp
-.superspec/.needs-review
-.superspec/.timeout
+# Claude Code development tool config
+.claude/
+
+# Superspec development workflow files
+.superspec/
+DEV-PLAN.md
+Product-Spec.md
+
+# Playwright test temp files
+.playwright-mcp/
 
 # Runtime binaries (downloaded via npm run download-runtime)
 # Keep directory structure but ignore binaries

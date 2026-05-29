@@ -108,7 +108,8 @@ export function createTokenCountProxy(targetBaseUrl: string): Promise<{ port: nu
       const upstream = httpModule.request({
         hostname: targetUrl.hostname,
         port: targetUrl.port || (isHttps ? 443 : 80),
-        path: urlPath,
+        // ★ 拼接 baseUrl 的 pathname 前缀（如 /anthropic、/coding/anthropic）
+        path: targetUrl.pathname.replace(/\/$/, '') + urlPath,
         method: req.method,
         headers: { ...req.headers, host: targetUrl.hostname },
         agent,

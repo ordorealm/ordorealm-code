@@ -64,12 +64,15 @@ export function createTokenCountProxy(targetBaseUrl: string): Promise<{ port: nu
     }
 
     const urlPath = req.url || '/'
-    const isMessages = req.method === 'POST' && urlPath.startsWith('/v1/messages') && !urlPath.includes('/count_tokens')
-
     // ★ 白名单规则：
     // 1. POST /v1/messages（不含 count_tokens）→ 放行到上游
-    // 2. 其余所有请求 → 本地处理，不穿透
-    if (!isMessages) {
+    // 2. GET /v1/models → 放行到上游（模型验证）
+    // 3. 其余请求 → 本地处理，不穿透
+    const isMessages = req.method === 'POST' && urlPath.startsWith('/v1/messages') && !urlPath.includes('/count_tokens')
+    const isModels = req.method === 'GET' && urlPath.startsWith('/v1/models')
+    const shouldPassThrough = isMessages || isModels
+
+    if (!shouldPassThrough) {
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {

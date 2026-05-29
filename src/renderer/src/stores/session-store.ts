@@ -2627,6 +2627,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           console.warn('[SessionStore] ⚠️ Compact ineffective, still at', newPercentage.toFixed(1), '%');
         } else {
           console.log('[SessionStore] ✅ Compact effective, reduced to', newPercentage.toFixed(1), '%');
+          // ★ 压缩成功，重置 autoCompacted 标志，允许后续再次触发自动压缩
+          get().setAutoCompacted(sessionId, false);
         }
       }
 

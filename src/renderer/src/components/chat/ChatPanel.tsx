@@ -342,6 +342,15 @@ export function ChatPanel(): JSX.Element {
   }, []);
 
   /**
+   * Handle draft change - save input draft when switching sessions/tabs
+   */
+  const handleDraftChange = useCallback((draft: string) => {
+    if (sessionId) {
+      updateInputDraft(sessionId, draft);
+    }
+  }, [sessionId, updateInputDraft]);
+
+  /**
    * Handle permission response
    */
   const handlePermissionResponse = useCallback(async (allowed: boolean) => {
@@ -588,11 +597,7 @@ export function ChatPanel(): JSX.Element {
         placeholder="输入消息..."
         sessionId={sessionId}
         draft={session?.inputDraft}
-        onDraftChange={(draft) => {
-          if (sessionId) {
-            updateInputDraft(sessionId, draft);
-          }
-        }}
+        onDraftChange={handleDraftChange}
       />
     </div>
   );

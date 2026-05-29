@@ -13,6 +13,36 @@ function bodyHash(body: string): string {
   return crypto.createHash('sha256').update(body).digest('hex')
 }
 
+/**
+ * 基于字符类型的加权 token 估算
+ * - ASCII（英文、数字、符号）：约 4 字符/token
+ * - 中日韩字符（CJK）：约 1.5 字符/token
+ * - 其他 Unicode（表情、符号等）：约 2 字符/token
+ */
+function estimateTokens(text: string): number {
+  let tokens = 0
+  for (const char of text) {
+    const code = char.charCodeAt(0)
+    if (code < 128) {
+      // ASCII（英文、数字、符号）
+      tokens += 0.25
+    } else if (code >= 0x4e00 && code <= 0x9fff) {
+      // CJK 统一汉字
+      tokens += 0.67
+    } else if (
+      (code >= 0x3040 && code <= 0x30ff) || // 日文假名
+      (code >= 0xac00 && code <= 0xd7af)    // 韩文
+    ) {
+      // 日文/韩文
+      tokens += 0.67
+    } else {
+      // 其他 Unicode（表情、特殊符号等）
+      tokens += 0.5
+    }
+  }
+  return Math.max(1, Math.round(tokens))
+}
+
 export function createTokenCountProxy(targetBaseUrl: string): Promise<{ port: number; url: string }> {
   const targetUrl = new URL(targetBaseUrl)
   const isHttps = targetUrl.protocol === 'https:'
@@ -48,7 +78,7 @@ export function createTokenCountProxy(targetBaseUrl: string): Promise<{ port: nu
         if (urlPath.includes('/count_tokens')) {
           const hash = bodyHash(body)
           const cached = CACHE.get(hash)
-          const estimated = Math.max(1, Math.round(body.length / 2.5))
+          const estimated = estimateTokens(body)
           let tokens = estimated
           if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
             console.log(`[Proxy] CACHE_HIT | tokens=${cached.input_tokens} | body=${body.length}B`)

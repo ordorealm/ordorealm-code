@@ -122,6 +122,7 @@ export function ChatPanel(): JSX.Element {
     respondToApproval,
     clearInteractivePanel,
     prependMessages,
+    updateInputDraft,
   } = useSessionStore();
   const sessionId = session?.id;
 
@@ -585,6 +586,13 @@ export function ChatPanel(): JSX.Element {
         isStreaming={isStreaming}
         onSend={handleSend}
         placeholder="输入消息..."
+        sessionId={sessionId}
+        draft={session?.inputDraft}
+        onDraftChange={(draft) => {
+          if (sessionId) {
+            updateInputDraft(sessionId, draft);
+          }
+        }}
       />
     </div>
   );

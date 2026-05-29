@@ -1,6 +1,7 @@
 /**
  * Chat Input Component
  * Input area with send button and keyboard shortcuts
+ * Supports draft saving when switching sessions/tabs
  * @module components/chat/ChatInput
  */
 
@@ -34,6 +35,12 @@ interface ChatInputProps {
   placeholder?: string;
   /** Whether the input is disabled */
   disabled?: boolean;
+  /** Current session ID for draft saving/restoring */
+  sessionId?: string;
+  /** Draft value from parent (to restore when switching sessions) */
+  draft?: string;
+  /** Callback to save draft to store */
+  onDraftChange?: (draft: string) => void;
 }
 
 /** Maximum input length */
@@ -43,6 +50,7 @@ const MAX_INPUT_LENGTH = 10000;
  * ChatInput component
  * Multi-line text input with send button and Enter-to-send shortcut
  * Exposes insertText/focus methods via ref for external control
+ * Supports draft saving when switching sessions/tabs
  */
 export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
   function ChatInput({
@@ -52,10 +60,41 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
     onValueChange,
     placeholder = '输入消息...',
     disabled = false,
+    sessionId,
+    draft,
+    onDraftChange,
   }, ref) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isComposingRef = useRef(false);
+  // Track if we're restoring from draft to avoid saving it back
+  const isRestoringRef = useRef(false);
+
+  /**
+   * Restore draft when sessionId changes or on mount
+   */
+  useEffect(() => {
+    if (draft !== undefined && draft !== value) {
+      isRestoringRef.current = true;
+      setValue(draft);
+      // Reset the flag after state update
+      requestAnimationFrame(() => {
+        isRestoringRef.current = false;
+      });
+    }
+  }, [sessionId, draft]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Save draft to store when value changes
+   */
+  useEffect(() => {
+    // Skip if restoring from draft (avoid save-restore loop)
+    if (isRestoringRef.current) return;
+    // Skip if no callback provided
+    if (!onDraftChange) return;
+
+    onDraftChange(value);
+  }, [value, onDraftChange]);
 
   /**
    * Expose imperative methods for parent components

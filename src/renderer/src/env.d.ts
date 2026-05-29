@@ -197,6 +197,8 @@ export interface Api {
     answerQuestion: (sessionId: string, answers: Record<string, string>) => Promise<{ success: boolean; error?: string }>
     /** Ping session to check if backend stream is alive */
     pingSession: (sessionId: string) => Promise<{ alive: boolean; status: string; lastActivity: number }>
+    /** Heartbeat timeout recovery - rebuild session and resend message */
+    retryHeartbeat: (sessionId: string) => Promise<{ success: boolean; error?: string; retryCount?: number }>
     /** Respond to keepalive ping */
     pong: (sessionId: string) => Promise<void>
     /** Get real-time context usage (accumulated tokens + accurate contextWindow) */

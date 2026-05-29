@@ -259,6 +259,8 @@ interface ClaudeSession {
   emptyOutputRetryCount?: number
   /** ★ SDK 错误重试计数（每次 sendMessage 重置为 0） */
   errorRetryCount?: number
+  /** ★ 心跳超时重试计数（每次心跳超时递增，重连成功后重置） */
+  heartbeatRetryCount?: number
   /** ★ 上次收到前端 pong 的时间戳（用于双向心跳检测） */
   lastPongTime?: number
 }
@@ -2181,6 +2183,91 @@ function registerClaudeHandlers(): void {
         alive: session.sdkQuery !== null && session.status === 'running',
         status: session.status,
         lastActivity: session.lastActivity || 0,
+      }
+    }
+  )
+
+  // ★ 心跳超时后重建会话（参考 retryEmptyOutput 逻辑）
+  ipcMain.handle(
+    'claude:retryHeartbeat',
+    async (_event, sessionId: string): Promise<{ success: boolean; error?: string; retryCount?: number }> => {
+      const session = activeSessions.get(sessionId)
+      if (!session) {
+        return { success: false, error: 'Session not found' }
+      }
+
+      const retryCount = (session.heartbeatRetryCount || 0) + 1
+      session.heartbeatRetryCount = retryCount
+
+      if (retryCount > 3) {
+        console.warn(`[Claude SDK] Heartbeat retry exhausted for session: ${sessionId}`)
+        return { success: false, error: 'Max retries exceeded', retryCount }
+      }
+
+      // 指数退避：2s → 5s → 10s
+      const backoffMs = [2000, 5000, 10000][retryCount - 1]
+      console.log(`[Claude SDK] Heartbeat retry #${retryCount} for session: ${sessionId}, waiting ${backoffMs}ms...`)
+      await new Promise(resolve => setTimeout(resolve, backoffMs))
+
+      const config = session.providerConfig
+      const lastPrompt = session.lastPrompt
+
+      if (!config) {
+        console.warn('[Claude SDK] No providerConfig for heartbeat retry')
+        return { success: false, error: 'Missing providerConfig', retryCount }
+      }
+
+      if (!lastPrompt) {
+        console.warn('[Claude SDK] No lastPrompt for heartbeat retry')
+        return { success: false, error: 'Missing lastPrompt', retryCount }
+      }
+
+      try {
+        // ★ Abort 旧 session
+        try { session.abortController.abort() } catch { /* ignore */ }
+        if (session.sdkQuery) {
+          try { session.sdkQuery.close() } catch { /* ignore */ }
+          session.sdkQuery = null
+        }
+
+        // ★ 最后一次重试不恢复上下文（避免损坏上下文导致反复失败）
+        const resumeId = retryCount < 3 ? session.providerSessionId : undefined
+        if (retryCount >= 3) {
+          console.log('[Claude SDK] Last heartbeat retry attempt, starting with fresh context (no resume)')
+        }
+
+        // ★ 重建会话
+        const newSession = await getOrCreateSession(
+          session.id,
+          session.workingDirectory,
+          config.apiKey,
+          config.apiType || 'anthropic',
+          config.baseUrl,
+          config.model,
+          config.envOverrides,
+          resumeId
+        )
+
+        // ★ 重新发送消息
+        newSession.output = ''
+        newSession.hasToolCalls = false
+        newSession.hasThinking = false
+        newSession.status = 'running'
+        newSession.lastActivity = Date.now()
+        newSession.lastPrompt = lastPrompt
+        newSession.heartbeatRetryCount = 0  // ★ 重连成功后重置计数
+
+        newSession.inputStream.enqueue({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text: lastPrompt }] },
+        })
+
+        console.log(`[Claude SDK] Heartbeat retry #${retryCount} success for session: ${sessionId}`)
+        return { success: true, retryCount }
+
+      } catch (err) {
+        console.error(`[Claude SDK] Heartbeat retry #${retryCount} failed:`, err)
+        return { success: false, error: String(err), retryCount }
       }
     }
   )

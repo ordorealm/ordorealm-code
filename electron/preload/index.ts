@@ -189,6 +189,10 @@ const api = {
     pingSession: (sessionId: string): Promise<{ alive: boolean; status: string; lastActivity: number }> =>
       ipcRenderer.invoke('claude:pingSession', sessionId),
 
+    /** Heartbeat timeout recovery - rebuild session and resend message */
+    retryHeartbeat: (sessionId: string): Promise<{ success: boolean; error?: string; retryCount?: number }> =>
+      ipcRenderer.invoke('claude:retryHeartbeat', sessionId),
+
     /** Send pong response to keepalive (bidirectional heartbeat) */
     pong: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke('claude:pong', sessionId),

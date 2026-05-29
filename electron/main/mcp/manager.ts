@@ -650,17 +650,21 @@ export class MCPManager implements MCPManagerInterface {
       0
     )
 
-    const downloadedSize = Array.from(this.instances.values())
+    const downloadedInstances = Array.from(this.instances.values())
       .filter(i => i.downloadStatus === 'ready')
-      .reduce((sum, i) => {
-        const def = this.registry.getById(i.id)
-        return sum + (def?.downloadSize || 0)
-      }, 0)
+
+    const downloaded = downloadedInstances.length
+
+    const downloadedSize = downloadedInstances.reduce((sum, i) => {
+      const def = this.registry.getById(i.id)
+      return sum + (def?.downloadSize || 0)
+    }, 0)
 
     return {
       total: definitions.length,
       enabled: this.config.enabledMCPs.length,
       running: runningCount,
+      downloaded,
       totalDownloadSize,
       downloadedSize
     }

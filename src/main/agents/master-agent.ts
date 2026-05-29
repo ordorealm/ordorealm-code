@@ -13,7 +13,7 @@
  */
 
 // Import shared permission configuration
-import { PERMISSIONS, type PermissionConfig } from '../../shared/types/remote-control'
+import { PERMISSIONS, type PermissionConfig, type OperationResult } from '../../shared/types/remote-control'
 import { CommandParser, createCommandParser, type ParsedCommand, type ExtendedCommandType } from './command-parser'
 import {
   permissionController,
@@ -27,6 +27,7 @@ import {
   type OperationExecutor,
   type ConfirmHandler,
 } from './operation-executor'
+import { MasterAgentSession } from './master-agent-session'
 import { generateId } from '../utils/encryption'
 import {
   OPERATIONS_REQUIRING_CONFIRMATION,
@@ -109,24 +110,8 @@ export interface AgentContext {
   sessionId: string
 }
 
-// ============ Operation Result ============
-
-/**
- * Result of an operation execution
- * Contains success status, message, and optional confirmation requirements
- */
-export interface OperationResult {
-  /** Whether the operation succeeded */
-  success: boolean
-  /** Human-readable result message */
-  message: string
-  /** Whether this operation requires user confirmation */
-  requiresConfirm?: boolean
-  /** Confirmation request ID (if requiresConfirm is true) */
-  confirmId?: string
-  /** Optional operation result data */
-  data?: unknown
-}
+// Re-export shared OperationResult for convenience
+export type { OperationResult } from '../../shared/types/remote-control'
 
 /**
  * Internal confirmation request data
@@ -176,7 +161,7 @@ export interface MasterAgent {
    * // Returns: "当前有 3 个项目会话运行中..."
    * ```
    */
-  handleMessage(message: string, context: AgentContext): Promise<string>
+  handleMessage(message: string, context: AgentContext): Promise<OperationResult>
 
   /**
    * Check if an operation is permitted for remote execution
@@ -216,6 +201,25 @@ export interface MasterAgent {
   executeOperation(operation: string, params: Record<string, unknown>): Promise<OperationResult>
 
   /**
+   * Update the parser context with known entity names for fuzzy matching
+   *
+   * @param options - Entity name lists
+   */
+  updateParserContext(options: {
+    projectNames?: string[]
+    mcpNames?: string[]
+    skillgroupNames?: string[]
+  }): void
+
+  /**
+   * Parse a message into a structured command without executing it.
+   *
+   * Returns the parsed command type so callers can decide whether
+   * to route as a command or as a chat message.
+   */
+  parseMessage(message: string): ParsedCommand
+
+  /**
    * Get pending confirmation requests
    *
    * Returns all confirmation requests that are awaiting user response.
@@ -234,6 +238,27 @@ export interface MasterAgent {
    * @returns Promise resolving to operation result
    */
   processConfirmation(confirmId: string, confirmed: boolean): Promise<OperationResult>
+
+  /**
+   * Initialize the AI-powered session for natural language understanding.
+   *
+   * When active, unrecognised messages are routed to the AI session instead
+   * of being forwarded to the project agent. The AI session receives IDE
+   * state context before each message and responds conversationally.
+   *
+   * Falls back gracefully to CommandParser if initialization fails.
+   */
+  initializeSession(): Promise<void>
+
+  /**
+   * Destroy the AI session and free resources.
+   */
+  destroySession(): Promise<void>
+
+  /**
+   * Check whether the AI session is active.
+   */
+  isSessionActive(): boolean
 }
 
 // Re-export constants for convenience
@@ -293,6 +318,7 @@ class MasterAgentImpl implements MasterAgent {
   private executor: OperationExecutor
   private pendingConfirmations: Map<string, PendingConfirmation> = new Map()
   private confirmHandler: ConfirmHandler | null = null
+  private aiSession: MasterAgentSession | null = null
 
   /**
    * Create a new MasterAgent instance
@@ -324,26 +350,42 @@ class MasterAgentImpl implements MasterAgent {
    * @param context - Agent execution context
    * @returns Response message for the user
    */
-  async handleMessage(message: string, context: AgentContext): Promise<string> {
+  async handleMessage(message: string, context: AgentContext): Promise<OperationResult> {
     try {
       // Step 1: Parse the message
       const parsedCommand = this.parser.parse(message)
 
-      // Step 2: Handle unknown commands
+      // Step 2: Treat unrecognized messages as natural language — route to AI session
+      // if available, otherwise fall back to forwarding to the project agent.
       if (parsedCommand.type === 'unknown') {
-        return this.getHelpResponse(message)
+        if (this.aiSession) {
+          const contextText = this.buildContextForAI(context)
+          const prompt = `${contextText}\n[用户消息]\n${message}`
+          try {
+            const reply = await this.aiSession.sendMessage(prompt)
+            return { success: true, message: reply }
+          } catch (err) {
+            console.error('[MasterAgent] AI session error:', err)
+          }
+        }
+        return await this.executor.execute({
+          type: 'chat',
+          raw: message,
+          params: { message },
+          requiresConfirm: false,
+        }, context)
       }
 
       // Step 3: Execute via operation executor (includes permission check)
-      const result = await this.executor.execute(parsedCommand, context)
-
-      // Step 4: Return the result message
-      return result.message
+      return await this.executor.execute(parsedCommand, context)
     } catch (error) {
       // Handle unexpected errors
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
       console.error('[MasterAgent] Error handling message:', errorMessage)
-      return `❌ 处理消息时发生错误: ${errorMessage}`
+      return {
+        success: false,
+        message: `❌ 处理消息时发生错误: ${errorMessage}`,
+      }
     }
   }
 
@@ -483,6 +525,13 @@ class MasterAgentImpl implements MasterAgent {
   }
 
   /**
+   * Parse a message into a structured command without executing it.
+   */
+  parseMessage(message: string): ParsedCommand {
+    return this.parser.parse(message)
+  }
+
+  /**
    * Update the parser with known entity names for fuzzy matching
    *
    * @param options - Entity name lists
@@ -521,7 +570,96 @@ class MasterAgentImpl implements MasterAgent {
     return this.parser.getHelpText()
   }
 
+  /**
+   * Initialize the AI-powered session.
+   *
+   * Creates a MasterAgentSession that handles natural-language messages
+   * with IDE state context injection. Fails silently — callers can check
+   * isSessionActive() to decide routing.
+   */
+  async initializeSession(): Promise<void> {
+    if (this.aiSession) return
+
+    try {
+      this.aiSession = new MasterAgentSession()
+      await this.aiSession.initialize()
+      console.log('[MasterAgent] AI session initialized')
+    } catch (err) {
+      console.error('[MasterAgent] Failed to initialize AI session:', err)
+      this.aiSession = null
+    }
+  }
+
+  /**
+   * Destroy the AI session and free resources.
+   */
+  async destroySession(): Promise<void> {
+    if (this.aiSession) {
+      await this.aiSession.destroy()
+      this.aiSession = null
+      console.log('[MasterAgent] AI session destroyed')
+    }
+  }
+
+  /**
+   * Check whether the AI session is active.
+   */
+  isSessionActive(): boolean {
+    return this.aiSession !== null
+  }
+
   // ============ Private Methods ============
+
+  /**
+   * Build a context text to inject before each AI message.
+   *
+   * Provides the AI with the current IDE state so it can answer questions
+   * about projects, MCPs, and skill groups without needing tool access.
+   */
+  private buildContextForAI(context: AgentContext): string {
+    const lines: string[] = ['[当前IDE状态]']
+
+    // Projects
+    if (context.projects.length > 0) {
+      lines.push('项目列表:')
+      for (const p of context.projects) {
+        const marker = p.id === context.currentProject ? '▶️ ' : '   '
+        const statusLabel = p.status === 'running' ? '运行中' : p.status === 'error' ? '错误' : '空闲'
+        const taskInfo = p.currentTask ? ` — ${p.currentTask}` : ''
+        lines.push(`  ${marker}${p.name} (${statusLabel})${taskInfo}`)
+      }
+    } else {
+      lines.push('项目列表: (无)')
+    }
+
+    // Current project
+    if (context.currentProject) {
+      const current = context.projects.find((p) => p.id === context.currentProject)
+      if (current) {
+        lines.push(`当前项目: ${current.name}`)
+      }
+    }
+
+    // MCPs
+    if (context.mcpStatus.length > 0) {
+      lines.push('MCP工具:')
+      for (const m of context.mcpStatus) {
+        const statusLabel = m.status === 'running' ? '运行中' : m.status === 'error' ? '错误' : '已停止'
+        lines.push(`  - ${m.name} (${statusLabel})`)
+      }
+    }
+
+    // Skill groups
+    if (context.skillgroups.length > 0) {
+      lines.push('技能组:')
+      for (const s of context.skillgroups) {
+        const activeLabel = s.isActive ? ' [当前]' : ''
+        lines.push(`  - ${s.name}${activeLabel}`)
+      }
+    }
+
+    return lines.join('\n')
+  }
 
   /**
    * Handle confirmation request from executor

@@ -645,13 +645,25 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     };
   }, [session?.tokenUsage]);
 
-  // Auto-compact when > 70%
+  // ★ 自动压缩去重：每个会话只自动触发一次，百分比降至 70% 以下时重置
+  const autoCompactedRef = useRef(false);
   useEffect(() => {
-    if (percentage > 70 && session?.tokenUsage) {
+    autoCompactedRef.current = false;
+  }, [sessionId]);
+
+  const isStreaming = session?.messages?.some(m => m.isStreaming) ?? false;
+
+  // Auto-compact when > 90%
+  useEffect(() => {
+    if (percentage > 90 && session?.tokenUsage && !autoCompactedRef.current && !isStreaming) {
+      autoCompactedRef.current = true;
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
       triggerCompact(sessionId);
     }
-  }, [percentage, sessionId, session?.tokenUsage, triggerCompact]);
+    if (percentage < 70) {
+      autoCompactedRef.current = false;
+    }
+  }, [percentage, sessionId, session?.tokenUsage, triggerCompact, isStreaming]);
 
   // Handle click to show confirmation
   const handleClick = useCallback(() => {

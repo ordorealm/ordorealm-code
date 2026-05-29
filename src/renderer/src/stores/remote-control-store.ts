@@ -1,297 +1,304 @@
 /**
  * Remote Control Store
- * @module stores/remote-control-store
  *
- * 管理远程控制的状态、通道连接和设置
+ * 简化为单账号模式的状态管理。
+ *
+ * @module stores/remote-control-store
  */
 
 import { create } from 'zustand'
 import type {
   RemoteControlSettings,
-  Channel,
-  ChannelType,
-  ChannelStatus,
+  ConnectionStatus,
+  ConnectionInfo,
   RemoteControlStatus,
-  RemoteControlApi
+  ConnectionChangeEvent,
+  MessageReceivedEvent,
+  ConfirmRequestEvent,
+  ConfirmResponseEvent,
+  SwitchProjectEvent,
 } from '../../../shared/types/remote-control'
-import { REMOTE_CONTROL_CONSTRAINTS } from '../../../shared/types/remote-control'
-import { getRemoteControlClient } from '../services/remote-control-client'
 
-/**
- * 远程控制 Store 状态
- */
+// ============ Types ============
+
 interface RemoteControlState {
-  /** 远程控制设置 */
+  /** Settings */
   settings: RemoteControlSettings
-  /** 是否正在加载 */
+  /** Loading state */
   isLoading: boolean
-  /** 错误信息 */
+  /** Error message */
   error: string | null
-  /** 是否已初始化 */
+  /** Initialized */
   initialized: boolean
-  /** 正在连接的通道 ID */
-  connectingChannelId: string | null
-  /** 扫码倒计时（秒） */
-  scanCountdown: number
-  /** 事件监听清理函数 */
+  /** Connecting state */
+  isConnecting: boolean
+  /** Event cleanup functions */
   cleanupFns: Array<() => void>
 }
 
-/**
- * 远程控制 Store 操作
- */
 interface RemoteControlActions {
-  /** 加载设置 */
+  /** Load settings */
   loadSettings: () => Promise<void>
-  /** 更新设置 */
+  /** Update settings */
   updateSettings: (partial: Partial<RemoteControlSettings>) => Promise<void>
-  /** 启用远程控制 */
+  /** Enable remote control */
   enable: () => Promise<void>
-  /** 禁用远程控制 */
+  /** Disable remote control */
   disable: () => Promise<void>
-  /** 连接通道 */
-  connectChannel: (channelType: ChannelType) => Promise<{ qrCode: string; channelId: string }>
-  /** 断开通道 */
-  disconnectChannel: (channelId: string) => Promise<void>
-  /** 刷新状态 */
+  /** Connect */
+  connect: () => Promise<{ qrCode: string; alreadyLoggedIn: boolean; userId?: string }>
+  /** Disconnect */
+  disconnect: () => Promise<void>
+  /** Refresh */
   refresh: () => Promise<void>
-  /** 设置加载状态 */
+  /** Set loading */
   setLoading: (loading: boolean) => void
-  /** 设置错误 */
+  /** Set error */
   setError: (error: string | null) => void
-  /** 设置扫码倒计时 */
-  setScanCountdown: (seconds: number) => void
-  /** 更新通道状态（内部使用） */
-  updateChannel: (channelId: string, updates: Partial<Channel>) => void
-  /** 初始化 */
+  /** Initialize */
   initialize: () => void
-  /** 清理 */
+  /** Cleanup */
   cleanup: () => void
 }
 
-/**
- * 默认远程控制设置
- */
+// ============ Defaults ============
+
 const DEFAULT_SETTINGS: RemoteControlSettings = {
   enabled: false,
   requireConfirm: true,
-  channels: []
+  connection: null,
 }
 
-/**
- * 检查远程控制 API 是否可用
- */
-function isRemoteControlApiAvailable(): boolean {
+// ============ API Helpers ============
+
+function isApiAvailable(): boolean {
   const win = window as unknown as { api?: { remoteControl?: unknown } }
-  const available = typeof window !== 'undefined' &&
-    win.api !== undefined &&
-    win.api.remoteControl !== undefined
-  if (!available) {
-    console.warn('[Remote Control Store] window.api.remoteControl 不可用，使用默认值')
-  }
-  return available
+  return typeof window !== 'undefined' && win.api?.remoteControl !== undefined
 }
 
-/**
- * 获取远程控制 API
- */
-function getRemoteControlApi(): RemoteControlApi | null {
-  if (!isRemoteControlApiAvailable()) {
-    return null
-  }
+function getApi() {
+  if (!isApiAvailable()) return null
   return (window as unknown as { api: { remoteControl: RemoteControlApi } }).api.remoteControl
 }
 
-/**
- * 远程控制 Store
- */
+interface RemoteControlApi {
+  getStatus(): Promise<{
+    success: boolean
+    data?: RemoteControlStatus
+    error?: { code: string; message: string }
+  }>
+  connect(): Promise<{
+    success: boolean
+    data?: { qrCode: string; alreadyLoggedIn: boolean; userId?: string }
+    error?: { code: string; message: string }
+  }>
+  disconnect(): Promise<{
+    success: boolean
+    data?: { success: boolean }
+    error?: { code: string; message: string }
+  }>
+  updateSettings(request: { enabled?: boolean; requireConfirm?: boolean }): Promise<{
+    success: boolean
+    data?: { success: boolean }
+    error?: { code: string; message: string }
+  }>
+  onConnectionChange?(callback: (event: ConnectionChangeEvent) => void): () => void
+  onMessage?(callback: (event: MessageReceivedEvent) => void): () => void
+  onConfirmRequest?(callback: (event: ConfirmRequestEvent) => void): () => void
+  onConfirmResponse?(callback: (event: ConfirmResponseEvent) => void): () => void
+  onSwitchProject?(callback: (event: SwitchProjectEvent) => void): () => void
+}
+
+// ============ Store ============
+
 export const useRemoteControlStore = create<RemoteControlState & RemoteControlActions>((set, get) => ({
-  // 初始状态
+  // Initial state
   settings: DEFAULT_SETTINGS,
   isLoading: false,
   error: null,
   initialized: false,
-  connectingChannelId: null,
-  scanCountdown: 0,
+  isConnecting: false,
   cleanupFns: [],
 
-  // 操作
-  /**
-   * 加载远程控制设置
-   */
+  // Actions
+
   loadSettings: async () => {
-    if (!isRemoteControlApiAvailable()) {
+    if (!isApiAvailable()) {
       set({ settings: DEFAULT_SETTINGS })
       return
     }
 
     try {
-      const client = getRemoteControlClient()
-      const response = await client.getStatus()
-      // response.status 包含 RemoteControlStatus
-      // 添加防御性检查：确保 response 和 status 都存在
-      if (!response || !response.status) {
-        console.warn('[Remote Control Store] getStatus 返回空响应，使用默认设置')
+      const api = getApi()!
+      const response = await api.getStatus()
+
+      // IPC returns { success: true, data: <RemoteControlStatus> }
+      const status = response?.data
+      if (!status) {
+        console.warn('[RemoteControlStore] Empty status response')
         set({ settings: DEFAULT_SETTINGS })
         return
       }
-      const status = response.status
       set({
         settings: {
           enabled: status.enabled ?? false,
           requireConfirm: status.requireConfirm ?? true,
-          channels: (status.channels ?? []).map((c: { id: string; type: ChannelType; status: ChannelStatus; connectedAt: string | null }) => ({
-            id: c.id,
-            type: c.type,
-            status: c.status,
-            connectedAt: c.connectedAt,
-            authToken: '' // authToken 不从状态获取
-          }))
-        }
+          connection: status.connection ?? null,
+        },
       })
-      console.log('[Remote Control Store] 设置加载成功')
+
+      console.log('[RemoteControlStore] Settings loaded:', {
+        enabled: status.enabled,
+        connected: status.connected,
+      })
     } catch (err) {
-      console.error('[Remote Control Store] 加载设置失败:', err)
+      console.error('[RemoteControlStore] Failed to load settings:', err)
       set({ error: String(err), settings: DEFAULT_SETTINGS })
     }
   },
 
-  /**
-   * 更新远程控制设置
-   * @param partial - 部分设置更新
-   */
-  updateSettings: async (partial: Partial<RemoteControlSettings>) => {
-    if (!isRemoteControlApiAvailable()) {
-      // 优雅降级：直接更新本地状态
-      set(state => ({
-        settings: { ...state.settings, ...partial }
+  updateSettings: async (partial) => {
+    if (!isApiAvailable()) {
+      set((state) => ({
+        settings: { ...state.settings, ...partial },
       }))
-      console.log('[Remote Control Store] 本地更新设置（API 不可用）')
       return
     }
 
     try {
-      const client = getRemoteControlClient()
-      // 传递所有设置字段到后端
-      await client.updateSettings({
+      const api = getApi()!
+      const response = await api.updateSettings({
         enabled: partial.enabled,
-        requireConfirm: partial.requireConfirm
+        requireConfirm: partial.requireConfirm,
       })
-      set(state => ({
-        settings: { ...state.settings, ...partial }
+
+      // Handler returns IpcResult<{success: boolean}> — check the wrapper
+      if (response && (response as any).success === false) {
+        const errMsg = (response as any).error?.message || 'Update settings failed'
+        console.error('[RemoteControlStore] Update settings rejected:', errMsg)
+        set({ error: errMsg })
+        return
+      }
+
+      set((state) => ({
+        settings: { ...state.settings, ...partial },
       }))
-      console.log('[Remote Control Store] 设置更新成功')
+
+      console.log('[RemoteControlStore] Settings updated')
     } catch (err) {
-      console.error('[Remote Control Store] 更新设置失败:', err)
+      console.error('[RemoteControlStore] Failed to update settings:', err)
       set({ error: String(err) })
       throw err
     }
   },
 
-  /**
-   * 启用远程控制
-   */
   enable: async () => {
     const { updateSettings } = get()
     await updateSettings({ enabled: true })
-    console.log('[Remote Control Store] 远程控制已启用')
+    console.log('[RemoteControlStore] Enabled')
   },
 
-  /**
-   * 禁用远程控制
-   */
   disable: async () => {
     const { updateSettings } = get()
     await updateSettings({ enabled: false })
-    console.log('[Remote Control Store] 远程控制已禁用')
+    console.log('[RemoteControlStore] Disabled')
   },
 
-  /**
-   * 连接远程控制通道
-   * @param channelType - 通道类型
-   * @returns Promise resolving to QR code and channel ID
-   */
-  connectChannel: async (channelType: ChannelType) => {
-    if (!isRemoteControlApiAvailable()) {
-      throw new Error('远程控制 API 不可用')
-    }
-
-    // 检查通道数量限制
-    const { settings } = get()
-    if (settings.channels.length >= REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS) {
-      throw new Error(`已达到最大通道数量限制（${REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS}）`)
+  connect: async () => {
+    if (!isApiAvailable()) {
+      throw new Error('API not available')
     }
 
     try {
-      set({ connectingChannelId: 'pending', scanCountdown: 60 })
-      console.log(`[Remote Control Store] 开始连接 ${channelType} 通道`)
+      set({ isConnecting: true })
+      console.log('[RemoteControlStore] Connecting...')
 
-      const client = getRemoteControlClient()
-      const result = await client.connect(channelType)
+      const api = getApi()!
+      const response = await api.connect()
 
-      // 添加新通道到列表
-      const newChannel: Channel = {
-        id: result.channelId,
-        type: channelType,
-        status: 'pending',
-        connectedAt: null,
-        authToken: ''
+      // Check for error response
+      if (!response.success || !response.data) {
+        const errorMsg = response.error?.message || 'Connection failed'
+        console.error('[RemoteControlStore] Connection failed:', errorMsg)
+        set({ isConnecting: false, error: errorMsg })
+        throw new Error(errorMsg)
       }
 
-      set(state => ({
-        connectingChannelId: result.channelId,
-        settings: {
-          ...state.settings,
-          channels: [...state.settings.channels, newChannel]
-        }
-      }))
+      const result = response.data
 
-      console.log(`[Remote Control Store] 通道 ${result.channelId} 连接中，等待扫码`)
+      if (result.alreadyLoggedIn) {
+        console.log('[RemoteControlStore] Already logged in:', result.userId)
+        // Update connection state
+        set((state) => ({
+          isConnecting: false,
+          settings: {
+            ...state.settings,
+            connection: {
+              status: 'connected',
+              userId: result.userId ?? null,
+              nickname: null,
+              connectedAt: new Date().toISOString(),
+              error: null,
+            },
+          },
+        }))
+      } else {
+        console.log('[RemoteControlStore] QR code generated — connection pending')
+        set({ isConnecting: false })
+      }
+
       return result
     } catch (err) {
-      console.error(`[Remote Control Store] 连接 ${channelType} 通道失败:`, err)
-      set({ connectingChannelId: null, scanCountdown: 0, error: String(err) })
+      console.error('[RemoteControlStore] Connection failed:', err)
+      set({ isConnecting: false, error: String(err) })
       throw err
     }
   },
 
-  /**
-   * 断开远程控制通道
-   * @param channelId - 通道 ID
-   */
-  disconnectChannel: async (channelId: string) => {
-    if (!isRemoteControlApiAvailable()) {
-      // 优雅降级：直接从本地状态移除
-      set(state => ({
+  disconnect: async () => {
+    if (!isApiAvailable()) {
+      set((state) => ({
         settings: {
           ...state.settings,
-          channels: state.settings.channels.filter(c => c.id !== channelId)
-        }
+          connection: null,
+        },
       }))
-      console.log(`[Remote Control Store] 本地移除通道 ${channelId}（API 不可用）`)
       return
     }
 
     try {
-      const client = getRemoteControlClient()
-      await client.disconnect(channelId)
-      set(state => ({
+      const api = getApi()!
+      const response = await api.disconnect()
+
+      // Handler returns IpcResult<{success: boolean}> — check the wrapper
+      if (response && (response as any).success === false) {
+        const errMsg = (response as any).error?.message || 'Disconnect failed'
+        console.error('[RemoteControlStore] Disconnect rejected:', errMsg)
+        set({ error: errMsg })
+        return
+      }
+
+      set((state) => ({
         settings: {
           ...state.settings,
-          channels: state.settings.channels.filter(c => c.id !== channelId)
-        }
+          connection: {
+            status: 'disconnected',
+            userId: state.settings.connection?.userId ?? null,
+            nickname: state.settings.connection?.nickname ?? null,
+            connectedAt: null,
+            error: null,
+          },
+        },
       }))
-      console.log(`[Remote Control Store] 通道 ${channelId} 已断开`)
+
+      console.log('[RemoteControlStore] Disconnected')
     } catch (err) {
-      console.error(`[Remote Control Store] 断开通道 ${channelId} 失败:`, err)
+      console.error('[RemoteControlStore] Disconnect failed:', err)
       set({ error: String(err) })
       throw err
     }
   },
 
-  /**
-   * 刷新远程控制状态
-   */
   refresh: async () => {
     const { loadSettings } = get()
     set({ isLoading: true, error: null })
@@ -305,205 +312,136 @@ export const useRemoteControlStore = create<RemoteControlState & RemoteControlAc
     }
   },
 
-  /**
-   * 设置加载状态
-   * @param loading - 是否正在加载
-   */
-  setLoading: (loading: boolean) => set({ isLoading: loading }),
+  setLoading: (loading) => set({ isLoading: loading }),
 
-  /**
-   * 设置错误信息
-   * @param error - 错误信息
-   */
-  setError: (error: string | null) => set({ error }),
+  setError: (error) => set({ error }),
 
-  /**
-   * 设置扫码倒计时
-   * @param seconds - 倒计时秒数
-   */
-  setScanCountdown: (seconds: number) => set({ scanCountdown: seconds }),
-
-  /**
-   * 更新通道状态（内部使用）
-   * @param channelId - 通道 ID
-   * @param updates - 通道更新内容
-   */
-  updateChannel: (channelId: string, updates: Partial<Channel>) => {
-    set(state => ({
-      settings: {
-        ...state.settings,
-        channels: state.settings.channels.map(c =>
-          c.id === channelId ? { ...c, ...updates } : c
-        )
-      }
-    }))
-  },
-
-  /**
-   * 初始化 Store（设置事件监听）
-   */
-  initialize: () => {
+  initialize: async () => {
     const state = get()
     if (state.initialized) return
 
     const cleanupFns: Array<() => void> = []
-    const api = getRemoteControlApi()
+    const api = getApi()
 
-    if (api) {
-      // 设置状态变更监听
-      if (api.onStatusChange) {
-        cleanupFns.push(
-          api.onStatusChange((status: RemoteControlStatus) => {
-            set(state => ({
-              settings: {
-                ...state.settings,
-                enabled: status.enabled,
-                requireConfirm: status.requireConfirm,
-                channels: (status.channels ?? []).map(c => ({
-                  id: c.id,
-                  type: c.type,
-                  status: c.status,
-                  connectedAt: c.connectedAt,
-                  authToken: state.settings.channels.find(ch => ch.id === c.id)?.authToken || ''
-                }))
-              }
-            }))
-          })
-        )
-      }
+    if (api?.onConnectionChange) {
+      cleanupFns.push(
+        api.onConnectionChange((event) => {
+          console.log('[RemoteControlStore] Connection changed:', event.status)
 
-      // 设置通道状态变更监听
-      if (api.onChannelStatusChange) {
-        cleanupFns.push(
-          api.onChannelStatusChange((event: { channelId: string; status: ChannelStatus }) => {
-            const { updateChannel, setScanCountdown } = get()
-            updateChannel(event.channelId, { status: event.status })
-
-            // 如果通道已连接，清除扫码倒计时
-            if (event.status === 'connected') {
-              setScanCountdown(0)
-              console.log(`[Remote Control Store] 通道 ${event.channelId} 已连接`)
-            }
-          })
-        )
-      }
+          set((state) => ({
+            settings: {
+              ...state.settings,
+              connection: {
+                status: event.status,
+                userId: event.userId ?? state.settings.connection?.userId ?? null,
+                nickname: event.nickname ?? state.settings.connection?.nickname ?? null,
+                connectedAt: event.status === 'connected' ? new Date().toISOString() : null,
+                error: event.error ?? null,
+              },
+            },
+            isConnecting: event.status === 'pending',
+          }))
+        })
+      )
     }
 
-    // 初始加载
-    get().loadSettings()
+    if (api?.onMessage) {
+      cleanupFns.push(
+        api.onMessage((event) => {
+          console.log('[RemoteControlStore] Message received:', event.content?.substring(0, 50))
+          // Messages are handled by the store consumer (e.g., chat UI)
+        })
+      )
+    }
 
-    set({
-      initialized: true,
-      cleanupFns
-    })
+    if (api?.onConfirmRequest) {
+      cleanupFns.push(
+        api.onConfirmRequest((event) => {
+          console.log('[RemoteControlStore] Confirm request:', event.confirmId)
+        })
+      )
+    }
 
-    console.log('[Remote Control Store] 已初始化')
+    if (api?.onConfirmResponse) {
+      cleanupFns.push(
+        api.onConfirmResponse((event) => {
+          console.log('[RemoteControlStore] Confirm response:', event.confirmId, event.confirmed)
+        })
+      )
+    }
+
+    if (api?.onSwitchProject) {
+      cleanupFns.push(
+        api.onSwitchProject((event) => {
+          console.log('[RemoteControlStore] Switch project requested:', event.projectName)
+          // The actual switch is handled by the UI layer listening to store changes
+        })
+      )
+    }
+
+    // Initial load — await so settings are ready before initialized flag is set
+    try {
+      await get().loadSettings()
+    } catch (err) {
+      console.error('[RemoteControlStore] Initial load failed:', err)
+    }
+
+    set({ initialized: true, cleanupFns })
+    console.log('[RemoteControlStore] Initialized')
   },
 
-  /**
-   * 清理事件监听
-   */
   cleanup: () => {
     const { cleanupFns } = get()
-    cleanupFns.forEach(fn => fn())
+    cleanupFns.forEach((fn) => fn())
     set({
       initialized: false,
       cleanupFns: [],
-      connectingChannelId: null,
-      scanCountdown: 0
-    })
-    console.log('[Remote Control Store] 已清理')
-  }
+      isConnecting: false,
+          })
+    console.log('[RemoteControlStore] Cleaned up')
+  },
 }))
 
-// ============ 辅助函数 ============
+// ============ Helpers ============
 
 /**
- * 获取通道状态显示名称
- * @param status - 通道状态
- * @returns 状态显示名称
+ * Get connection status display name
  */
-export function getChannelStatusName(status: ChannelStatus): string {
-  const names: Record<ChannelStatus, string> = {
+export function getConnectionStatusName(status: ConnectionStatus): string {
+  const names: Record<ConnectionStatus, string> = {
     connected: '已连接',
-    disconnected: '已断开',
-    pending: '等待连接'
+    disconnected: '未连接',
+    pending: '连接中',
+    error: '连接错误',
   }
   return names[status]
 }
 
 /**
- * 获取通道类型显示名称
- * @param type - 通道类型
- * @returns 类型显示名称
+ * Check if connected
  */
-export function getChannelTypeName(type: ChannelType): string {
-  const names: Record<ChannelType, string> = {
-    wechat: '微信 ClawBot',
-    wecom: '企业微信',
-    feishu: '飞书'
-  }
-  return names[type]
-}
-
-/**
- * 获取已连接通道数量
- * @returns 已连接通道数量
- */
-export function getConnectedChannelCount(): number {
+export function isConnected(): boolean {
   const { settings } = useRemoteControlStore.getState()
-  return (settings?.channels ?? []).filter(c => c.status === 'connected').length
+  return settings.connection?.status === 'connected'
 }
 
 /**
- * 检查是否可以添加更多通道
- * @returns 是否可以添加更多通道
- */
-export function canAddMoreChannels(): boolean {
-  const { settings } = useRemoteControlStore.getState()
-  return (settings?.channels ?? []).length < REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS
-}
-
-/**
- * 获取远程控制设置
- * @returns 远程控制设置
- */
-export function getRemoteControlSettings(): RemoteControlSettings {
-  return useRemoteControlStore.getState().settings
-}
-
-/**
- * 检查远程控制是否已启用
- * @returns 是否已启用
+ * Check if remote control is enabled
  */
 export function isRemoteControlEnabled(): boolean {
   return useRemoteControlStore.getState().settings.enabled
 }
 
 /**
- * 获取指定通道
- * @param channelId - 通道 ID
- * @returns 通道信息或 undefined
+ * Get current connection info
  */
-export function getChannel(channelId: string): Channel | undefined {
-  return (useRemoteControlStore.getState().settings?.channels ?? []).find(c => c.id === channelId)
+export function getConnection(): ConnectionInfo | null {
+  return useRemoteControlStore.getState().settings.connection
 }
 
 /**
- * 检查通道是否已连接
- * @param channelId - 通道 ID
- * @returns 是否已连接
+ * Get settings
  */
-export function isChannelConnected(channelId: string): boolean {
-  const channel = getChannel(channelId)
-  return channel?.status === 'connected'
-}
-
-/**
- * 获取所有已连接的通道
- * @returns 已连接通道列表
- */
-export function getConnectedChannels(): Channel[] {
-  const { settings } = useRemoteControlStore.getState()
-  return (settings?.channels ?? []).filter(c => c.status === 'connected')
+export function getRemoteControlSettings(): RemoteControlSettings {
+  return useRemoteControlStore.getState().settings
 }

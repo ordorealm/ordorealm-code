@@ -770,7 +770,6 @@ export class MCPDownloader implements MCPDownloaderInterface {
           }
 
           console.log(`[MCP Downloader] 安装 Playwright Chromium 到 ${installDir}`)
-          console.log(`[MCP Downloader] node_modules/.bin: ${nodeModulesBin}`)
           onProgress?.(10, dep.name, 'downloading')
 
           // 定时更新进度
@@ -781,6 +780,25 @@ export class MCPDownloader implements MCPDownloaderInterface {
               onProgress?.(progress, dep.name, 'downloading')
             }
           }, 3000) // 每3秒增加3%
+
+          // ★ 国内镜像兼容：npmmirror 只同步到 playwright-core 1.48.0 左右的 Chromium
+          // 先降级 playwright-core 到可用版本，安装浏览器后再恢复
+          let savedPlaywrightCoreVersion = ''
+          const playwrightCorePkgPath = path.join(installDir, 'node_modules', 'playwright-core', 'package.json')
+          if (shouldUseCNMirror() && fs.existsSync(playwrightCorePkgPath)) {
+            try {
+              const pkgData = JSON.parse(fs.readFileSync(playwrightCorePkgPath, 'utf-8'))
+              savedPlaywrightCoreVersion = pkgData.version
+              console.log(`[MCP Downloader] 当前 playwright-core: ${savedPlaywrightCoreVersion}，降级到 1.48.0 以兼容国内镜像`)
+              await execAsync('npm install playwright-core@1.48.0 --no-save', {
+                cwd: installDir,
+                timeout: 60000,
+                maxBuffer: 1024 * 1024 * 10
+              })
+            } catch (e) {
+              console.warn(`[MCP Downloader] playwright-core 降级失败，使用当前版本:`, e)
+            }
+          }
 
           // 使用 node_modules/.bin/playwright 或 npx 运行
           // 方案1: 直接使用 playwright-core 的 CLI（因为 @playwright/mcp 依赖 playwright-core）
@@ -818,6 +836,20 @@ export class MCPDownloader implements MCPDownloaderInterface {
 
           onProgress?.(100, dep.name, 'ready')
           console.log(`[MCP Downloader] Playwright Chromium 安装完成`)
+
+          // ★ 恢复 playwright-core 到原版本
+          if (savedPlaywrightCoreVersion && shouldUseCNMirror()) {
+            try {
+              console.log(`[MCP Downloader] 恢复 playwright-core 到 ${savedPlaywrightCoreVersion}`)
+              await execAsync(`npm install playwright-core@${savedPlaywrightCoreVersion} --no-save`, {
+                cwd: installDir,
+                timeout: 60000,
+                maxBuffer: 1024 * 1024 * 10
+              })
+            } catch (e) {
+              console.warn(`[MCP Downloader] playwright-core 版本恢复失败:`, e)
+            }
+          }
         } catch (err) {
           console.error(`[MCP Downloader] 下载运行时依赖失败:`, err)
           throw new Error(`下载运行时依赖失败: ${err}`)

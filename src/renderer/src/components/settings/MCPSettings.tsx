@@ -31,6 +31,8 @@ function MCPCard({
   const { start, stop, download, enable, disable } = useMCPStore()
 
   const isRunning = instance?.status === 'running'
+  const isStarting = instance?.status === 'starting'
+  const isStopping = instance?.status === 'stopping'
   const isDownloaded = instance?.downloadStatus === 'ready'
   const isDownloading = instance?.downloadStatus === 'downloading'
   // 从 stats.enabled 判断是否启用（enabled MCP 数量 > 0 且该 MCP 未被停止/禁用）
@@ -173,21 +175,21 @@ function MCPCard({
 
         {isDownloaded && (
           <>
-            {isRunning ? (
+            {isRunning || isStarting ? (
               <button
                 onClick={handleStop}
-                disabled={isOperating}
+                disabled={isStopping}
                 className="px-3 py-1.5 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {isOperating ? '停止中...' : '停止'}
+                {isStopping ? '停止中...' : '停止'}
               </button>
             ) : (
               <button
                 onClick={handleStart}
-                disabled={isOperating}
+                disabled={isStarting}
                 className="px-3 py-1.5 text-xs bg-accent-green/20 text-accent-green rounded hover:bg-accent-green/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {isOperating ? '启动中...' : '启动'}
+                {isStarting ? '启动中...' : '启动'}
               </button>
             )}
           </>
@@ -244,7 +246,8 @@ export function MCPSettings(): JSX.Element {
         <button
           onClick={() => refresh()}
           disabled={isLoading}
-          className="p-2 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors disabled:opacity-50"
+          className="p-1 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors disabled:opacity-50"
+          title="刷新 MCP 状态"
         >
           <svg
             className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`}
@@ -252,12 +255,21 @@ export function MCPSettings(): JSX.Element {
             stroke="currentColor"
             viewBox="0 0 24 24"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.4 4.582M9 20l-1-1m0 0l1-1m-1 1h5m4-14v5h-.582m0 0a8.001 8.001 0 0115.356 2M15 20l1-1m0 0l-1 1m1-1h-5"
-            />
+            {isLoading ? (
+              // Loading spinner
+              <>
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </>
+            ) : (
+              // Refresh icon
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 00 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            )}
           </svg>
         </button>
       </div>
@@ -268,7 +280,7 @@ export function MCPSettings(): JSX.Element {
           共 <span className="text-text-primary font-medium">{stats.total}</span> 个
         </span>
         <span className="text-text-muted">
-          已下载 <span className="text-accent-indigo font-medium">{stats.downloadedSize}</span>
+          已下载 <span className="text-accent-indigo font-medium">{stats.downloaded}</span> 个
         </span>
         <span className="text-text-muted">
           运行中 <span className="text-accent-green font-medium">{stats.running}</span> 个

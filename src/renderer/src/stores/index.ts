@@ -41,13 +41,9 @@ export type {
 } from './mcp-store';
 export {
   useRemoteControlStore,
-  getChannelStatusName,
-  getChannelTypeName,
-  getConnectedChannelCount,
-  canAddMoreChannels,
+  getConnectionStatusName,
+  isConnected,
+  getConnection,
   getRemoteControlSettings,
   isRemoteControlEnabled,
-  getChannel,
-  isChannelConnected,
-  getConnectedChannels,
 } from './remote-control-store';

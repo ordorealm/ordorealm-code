@@ -111,6 +111,7 @@ export interface MCPStats {
   total: number
   enabled: number
   running: number
+  downloaded: number
   totalDownloadSize: number
   downloadedSize: number
 }
@@ -240,6 +241,7 @@ export const useMCPStore = create<MCPState & MCPActions>((set, get) => ({
     total: 0,
     enabled: 0,
     running: 0,
+    downloaded: 0,
     totalDownloadSize: 0,
     downloadedSize: 0
   },

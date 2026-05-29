@@ -16,11 +16,12 @@ import type { SkillLibrary, AgentType } from '@/types';
 
 /**
  * Agent group configuration for display
+ * Note: codex and opencode are currently disabled
  */
 const AGENT_GROUPS: { type: AgentType; label: string; order: number }[] = [
   { type: 'claude-code', label: 'Claude Code', order: 1 },
-  { type: 'codex', label: 'Codex', order: 2 },
-  { type: 'opencode', label: 'OpenCode', order: 3 },
+  // { type: 'codex', label: 'Codex', order: 2 },
+  // { type: 'opencode', label: 'OpenCode', order: 3 },
 ];
 
 /**

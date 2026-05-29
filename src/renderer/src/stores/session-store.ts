@@ -201,12 +201,13 @@ interface ProgressListenerInfo {
 /** ★ 多会话进度监听器 Map */
 const progressListeners = new Map<string, ProgressListenerInfo>();
 
-/** ★ 连接恢复提示的定时器引用（用于清理） */
-let connectionNoticeTimer: ReturnType<typeof setTimeout> | null = null;
-/** ★ 上下文使用量刷新定时器（每 5 秒刷新） */
-let contextUsageRefreshTimer: ReturnType<typeof setInterval> | null = null;
-/** ★ 当前正在刷新上下文的会话 ID */
-let contextUsageSessionId: string | null = null;
+/** ★ 多会话发送代数计数器（防止并发发送导致 Promise/Listener 泄漏） */
+const sendGenerations = new Map<string, number>();
+
+/** ★ 连接恢复提示的定时器（per-session，多会话并发隔离） */
+const connectionNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** ★ 上下文使用量刷新定时器（per-session，多会话并发隔离） */
+const contextUsageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** ★ 自适应心跳超时（退火策略）：第 1 次 10 分钟，第 2 次 20 分钟，第 3 次起 30 分钟 */
 const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
@@ -290,7 +291,7 @@ function setupProgressListener(
     };
   }) => void
 ): void {
-  // ★ 修复：清理该会话的旧监听器（不影响其他会话）
+  // ★ 清理该会话的旧监听器（不影响其他会话）
   const existing = progressListeners.get(sessionId);
   if (existing) {
     existing.cleanup();
@@ -298,6 +299,9 @@ function setupProgressListener(
       clearInterval(existing.heartbeatTimer);
     }
   }
+
+  // ★ 使用一个共享的活跃标记对象，确保 cleanup 可以可靠地禁用回调
+  const activeRef = { active: true };
 
   // ★ 创建新的监听器
   const listenerInfo: ProgressListenerInfo = {
@@ -310,28 +314,37 @@ function setupProgressListener(
 
   // 设置新的监听器
   const cleanup = window.api.claude.onProgress((event) => {
+    // ★ 检查监听器是否已被 cleanup（activeRef 是可靠的双重保险）
+    if (!activeRef.active) {
+      console.log(`[TRACE-AI] [FRONTEND] Progress event IGNORED (listener cleaned up) | sessionId=${sessionId}`);
+      return;
+    }
     // 更新最后收到事件的时间
     listenerInfo.lastEventTime = Date.now();
 
     // ★ 按 event.sessionId 过滤，只处理当前会话的事件
     if (event.sessionId && event.sessionId !== sessionId) {
-      console.log(`[SessionStore] Ignoring event for different session: ${event.sessionId} (current: ${sessionId})`);
       return;
     }
 
     // 如果事件没有 sessionId 字段，也忽略
     if (!event.sessionId) {
-      console.warn(`[SessionStore] Received event without sessionId, ignoring (current: ${sessionId})`);
       return;
     }
 
     onProgress(event);
   });
 
-  listenerInfo.cleanup = cleanup;
+  // ★ 包装 cleanup 以确保 activeRef 也被标记为 false
+  const wrappedCleanup = () => {
+    activeRef.active = false;
+    cleanup();
+  };
+
+  listenerInfo.cleanup = wrappedCleanup;
   progressListeners.set(sessionId, listenerInfo);
 
-  console.log(`[SessionStore] Progress listener setup for session: ${sessionId} (total listeners: ${progressListeners.size})`);
+  console.log(`[TRACE-AI] [FRONTEND] Progress listener SETUP | sessionId=${sessionId} | total=${progressListeners.size}`);
 }
 
 /**
@@ -339,6 +352,7 @@ function setupProgressListener(
  * @param sessionId 会话 ID
  */
 function cleanupProgressListenerForSession(sessionId: string): void {
+  console.log(`[TRACE-AI] [FRONTEND] cleanupProgressListenerForSession CALLED | sessionId=${sessionId} | timestamp=${Date.now()} | stack=${new Error().stack?.split('\n')[2]?.trim()}`);
   // ★ 确保该会话的待处理批量工具消息已写入
   immediateFlushToolBatchForSession(sessionId);
 
@@ -355,33 +369,17 @@ function cleanupProgressListenerForSession(sessionId: string): void {
   // 清理该会话的缓冲区
   cleanupStreamingBuffer(sessionId);
   cleanupToolBatch(sessionId);
-}
 
-/**
- * 清理所有进度事件监听器
- * ★ 修复：清理所有会话的监听器和缓冲区
- */
-function cleanupProgressListener(): void {
-  // ★ 确保所有待处理的批量工具消息已写入
-  immediateFlushAllToolBatches();
-
-  // 清理所有监听器
-  for (const [sessionId, listenerInfo] of progressListeners) {
-    listenerInfo.cleanup();
-    if (listenerInfo.heartbeatTimer) {
-      clearInterval(listenerInfo.heartbeatTimer);
-    }
+  // ★ 清理该会话的 per-session 定时器
+  const noticeTimer = connectionNoticeTimers.get(sessionId);
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    connectionNoticeTimers.delete(sessionId);
   }
-  progressListeners.clear();
-  // 清理连接恢复提示定时器
-  if (connectionNoticeTimer) {
-    clearTimeout(connectionNoticeTimer);
-    connectionNoticeTimer = null;
-  }
-  // ★ 清理上下文使用量刷新定时器
-  stopContextUsageRefresh();
+  stopContextUsageRefresh(sessionId);
+  // 注意：sendGenerations 不在此清理 — 由 sendMessage finally 块负责
+  // 若在此删除，正常 complete 流中的 sendGenerations 检查会失败，导致跳过 save
 }
-
 /**
  * ★ 启动上下文使用量定时刷新（每 5 秒）
  * 在模型执行期间调用 SDK 的 getContextUsage 获取准确的使用量
@@ -389,30 +387,51 @@ function cleanupProgressListener(): void {
  * @param set Zustand set 函数
  */
 function startContextUsageRefresh(sessionId: string, set: SetFunction): void {
-  // 清理旧的定时器
-  stopContextUsageRefresh();
+  // ★ 清理该会话的旧定时器（不影响其他会话）
+  const existing = contextUsageTimers.get(sessionId);
+  if (existing) {
+    clearTimeout(existing);
+    contextUsageTimers.delete(sessionId);
+  }
 
-  contextUsageSessionId = sessionId;
   console.log(`[SessionStore] Starting context usage refresh for session: ${sessionId}`);
 
   // 立即刷新一次
   refreshContextUsage(sessionId, set);
 
-  // 每 5 秒刷新一次
-  contextUsageRefreshTimer = setInterval(() => {
-    refreshContextUsage(sessionId, set);
-  }, 5000);
+  // 每 5 秒刷新一次，使用 setTimeout 链式调用避免并发
+  const scheduleNext = () => {
+    const timer = setTimeout(async () => {
+      // 检查定时器是否已被清理
+      if (contextUsageTimers.get(sessionId) !== timer) return;
+      await refreshContextUsage(sessionId, set);
+      // 上一次完成后才调度下一次
+      if (contextUsageTimers.get(sessionId) === timer) {
+        scheduleNext();
+      }
+    }, 5000);
+    contextUsageTimers.set(sessionId, timer);
+  };
+  scheduleNext();
 }
 
 /**
  * ★ 停止上下文使用量刷新
+ * @param sessionId 可选：停止指定会话；不传则停止全部
  */
-function stopContextUsageRefresh(): void {
-  if (contextUsageRefreshTimer) {
-    clearInterval(contextUsageRefreshTimer);
-    contextUsageRefreshTimer = null;
+function stopContextUsageRefresh(sessionId?: string): void {
+  if (sessionId) {
+    const timer = contextUsageTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      contextUsageTimers.delete(sessionId);
+    }
+  } else {
+    for (const timer of contextUsageTimers.values()) {
+      clearTimeout(timer);
+    }
+    contextUsageTimers.clear();
   }
-  contextUsageSessionId = null;
 }
 
 /**
@@ -422,6 +441,7 @@ function stopContextUsageRefresh(): void {
  */
 async function refreshContextUsage(sessionId: string, set: SetFunction): Promise<void> {
   try {
+    console.log(`[TRACE-AI] [FRONTEND] refreshContextUsage CALLING getContextUsage IPC | sessionId=${sessionId} | timestamp=${Date.now()}`);
     const result = await window.api.claude.getContextUsage(sessionId);
 
     if (!result.success || !result.data) {
@@ -508,21 +528,23 @@ function startHeartbeatCheck(
               listenerInfo.lastEventTime = Date.now();
               // ★ 重启心跳检测
               startHeartbeatCheck(sessionId, assistantMessageId, set);
-              // ★ 设置 UI 提示（3 秒后自动清除）
-              if (connectionNoticeTimer) clearTimeout(connectionNoticeTimer);
+              // ★ 设置 UI 提示（3 秒后自动清除）- per-session timer
+              const prevTimer = connectionNoticeTimers.get(sessionId);
+              if (prevTimer) clearTimeout(prevTimer);
               set(state => {
                 const s = state.sessions[sessionId];
                 if (!s) return state;
                 return { sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: '连接已恢复' } } };
               });
-              connectionNoticeTimer = setTimeout(() => {
-                connectionNoticeTimer = null;
+              const noticeTimer = setTimeout(() => {
+                connectionNoticeTimers.delete(sessionId);
                 set(state => {
                   const s = state.sessions[sessionId];
                   if (!s || s.connectionNotice !== '连接已恢复') return state;
                   return { sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } } };
                 });
               }, 3000);
+              connectionNoticeTimers.set(sessionId, noticeTimer);
               return;
             }
             console.warn(`[SessionStore] Backend stream is dead (status: ${pingResult.status}), aborting...`);
@@ -592,7 +614,8 @@ function performHeartbeatAbort(
 
   useActivityStore.getState().endThinking(sessionId);
   useActivityStore.getState().endActivity(sessionId);
-  cleanupProgressListener();
+  // ★ 修复：只清理该会话的监听器
+  cleanupProgressListenerForSession(sessionId);
 }
 
 /**
@@ -1200,7 +1223,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
-    console.log('[SessionStore] sendMessage called:', { sessionId, content: content.substring(0, 50) });
+    // ★ 生成追踪 ID
+    const traceId = `${sessionId.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    console.log(`[TRACE-AI] ========================================`);
+    console.log(`[TRACE-AI] [FRONTEND] sendMessage ENTRY | traceId=${traceId} | content="${content.substring(0, 50)}"`);
+    console.log(`[TRACE-AI] ========================================`);
+
+    // ★ 并发防护：递增代数，旧 send 检测到代数不匹配后会自行退出
+    const sendGen = (sendGenerations.get(sessionId) || 0) + 1;
+    sendGenerations.set(sessionId, sendGen);
 
     // Create user message
     const userMessage: Message = {
@@ -1301,6 +1332,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       });
 
       // ★ Step 1: 启动会话（创建持久的 SDK query）
+      console.log(`[TRACE-AI] [FRONTEND] Calling startSession | traceId=${traceId}`);
       console.log('[SessionStore] Starting session...');
 
       // 获取 API Key（明文存储，直接使用）
@@ -1498,6 +1530,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               useActivityStore.getState().startActivity(sessionId, {
                 type: 'status',
                 detail: '上下文已压缩',
+                timestamp: Date.now(),
+              });
+              break;
+
+            case 'api_retry':
+              // ★ SDK 错误自动重试
+              useActivityStore.getState().startActivity(sessionId, {
+                type: 'status',
+                detail: eventContent || `SDK 错误，自动重试中...`,
                 timestamp: Date.now(),
               });
               break;
@@ -1710,8 +1751,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // ★ 重要：结束思考计时器和活动状态
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
-          // 清理进度监听器
-          cleanupProgressListener();
+          // ★ 修复：只清理该会话的监听器
+          cleanupProgressListenerForSession(sessionId);
         } else if (type === 'complete') {
           // Flush any pending batches before marking complete
           immediateFlushToolBatchForSession(sessionId);
@@ -1729,11 +1770,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // End thinking timer and clear activity
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
-          // ★ 重要：清理进度监听器和心跳定时器
-          cleanupProgressListener();
+          // ★ 修复：只清理该会话的监听器和心跳定时器
+          cleanupProgressListenerForSession(sessionId);
 
           // ★ 更新 token 使用量
-          // 注意：contextWindow 已由定时刷新的 getContextUsage 更新，这里只更新增量 tokens
           console.log('[SessionStore] Complete event received, usageData:', usageData);
           if (usageData) {
             console.log('[SessionStore] Updating token usage with:', usageData);
@@ -1741,18 +1781,16 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               const existingSession = state.sessions[sessionId];
               if (!existingSession) return state;
 
-              // 获取当前使用量
               const currentUsage = existingSession.tokenUsage || { inputTokens: 0, outputTokens: 0, contextWindow: 200000 };
 
-              // ★ 方案 B：contextWindow 优先使用 SDK 返回值（如果有）
-              // 如果 usageData.contextWindow 存在，说明是模型真实值
-              // 否则保持现有值（已由 getContextUsage 刷新）
+              // ★ contextWindow：优先使用 SDK 返回的模型真实值
               const newContextWindow = usageData.contextWindow || currentUsage.contextWindow;
 
               const newUsage = {
-                // ★ inputTokens 使用 getContextUsage 的累积值，这里只加增量
-                // 注意：usageData.inputTokens 是单次请求的值
-                inputTokens: currentUsage.inputTokens + usageData.inputTokens,
+                // ★ inputTokens 由 refreshContextUsage 维护（SDK 累积值，即真实值）
+                // 这里不追加，避免与 refreshContextUsage 竞态导致重复累加 >100%
+                inputTokens: currentUsage.inputTokens,
+                // ★ outputTokens：getContextUsage 不返回 outputTokens，这里手动累加
                 outputTokens: currentUsage.outputTokens + usageData.outputTokens,
                 contextWindow: newContextWindow,
               };
@@ -1776,6 +1814,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       });
 
       // ★ Step 3: 发送消息
+      console.log(`[TRACE-AI] [FRONTEND] Calling claude.sendMessage IPC | traceId=${traceId}`);
       console.log('[SessionStore] Sending message...');
       const sendResult = await window.api.claude.sendMessage(sessionId, content);
 
@@ -1788,13 +1827,19 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       // ★ 启动心跳检测
       startHeartbeatCheck(sessionId, assistantMessageId, set);
 
-      // ★ 启动上下文使用量刷新（每 5 秒）
+      // ★ 启动上下文使用量刷新（每 5 秒），支持自动压缩检测
       startContextUsageRefresh(sessionId, set);
 
       // ★ Step 4: 等待完成（通过进度事件监听器处理）
       // 使用轮询检查 isStreaming 状态
       await new Promise<void>((resolve) => {
         const checkInterval = setInterval(() => {
+          // ★ 并发防护：检查是否被新的 sendMessage 取代
+          if (sendGenerations.get(sessionId) !== sendGen) {
+            clearInterval(checkInterval);
+            resolve();
+            return;
+          }
           const currentSession = get().sessions[sessionId];
           const msg = currentSession?.messages.find(m => m.id === assistantMessageId);
           if (msg && !msg.isStreaming) {
@@ -1803,6 +1848,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           }
         }, 100);
       });
+
+      // ★ 并发防护：如果被取代，跳过保存，直接退出（finally 清理）
+      if (sendGenerations.get(sessionId) !== sendGen) {
+        console.log(`[SessionStore] Send superseded for session: ${sessionId}`);
+        return;
+      }
 
       console.log(`[SessionStore] Message sent and response received for session: ${sessionId}`);
 
@@ -1823,8 +1874,11 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       });
       console.error('[SessionStore] Failed to send message:', error);
     } finally {
-      // 清理进度监听器
-      cleanupProgressListener();
+      // ★ 并发防护：仅当仍是当前代时才清理，避免误删新 send 的监听器
+      if (sendGenerations.get(sessionId) === sendGen) {
+        sendGenerations.delete(sessionId);
+        cleanupProgressListenerForSession(sessionId);
+      }
     }
   },
 
@@ -2224,12 +2278,27 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   closeSession: async (sessionId) => {
     console.log(`[SessionStore] Closing session: ${sessionId}`);
 
-    // 清理进度监听器
-    cleanupProgressListener();
+    // ★ 修复：先将所有 streaming 消息标记为完成，解锁 sendMessage 轮询 Promise
+    set(state => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      const hasStreaming = session.messages.some(m => m.isStreaming);
+      if (!hasStreaming) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            messages: session.messages.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+            ),
+          },
+        },
+      };
+    });
 
-    // ★ 清理该会话的缓冲区
-    cleanupStreamingBuffer(sessionId);
-    cleanupToolBatch(sessionId);
+    // ★ 修复：只清理该会话的监听器和缓冲区，不影响其他会话
+    cleanupProgressListenerForSession(sessionId);
 
     // 通知主进程关闭会话
     try {
@@ -2316,6 +2385,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    console.log(`[TRACE-AI] [FRONTEND] respondToPermission calling claude.sendMessage | sessionId=${sessionId} | allowed=${allowed}`);
     console.log('[SessionStore] Responding to permission:', allowed);
 
     // Send response via IPC (send as user message with tool result)
@@ -2378,6 +2448,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    console.log(`[TRACE-AI] [FRONTEND] respondToApproval calling claude.sendMessage | sessionId=${sessionId} | approved=${approved}`);
     console.log('[SessionStore] Responding to approval:', approved);
 
     // Send approval response
@@ -2430,8 +2501,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   },
 
   /**
-   * Trigger compact and reload Claude.md
-   * Sends /compact command followed by Claude.md reload prompt
+   * Trigger compact and refresh context usage
+   * Sends /compact command and waits for SDK compact_boundary event
    * @param sessionId Session ID
    */
   triggerCompact: async (sessionId) => {
@@ -2442,41 +2513,38 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    console.log(`[TRACE-AI] [FRONTEND] triggerCompact ENTRY | sessionId=${sessionId}`);
     console.log(`[SessionStore] Triggering compact for session: ${sessionId}`);
 
     try {
-      // 1. 发送 /compact 命令
-      await window.api.claude.sendMessage(sessionId, '/compact');
+      // 设置临时监听器，等待 SDK 的 compact_boundary 事件
+      const compactComplete = new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          console.log('[SessionStore] Compact timeout, proceeding anyway');
+          resolve();
+        }, 15000);
 
-      // 2. 等待压缩完成
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // 3. 读取项目 .claude/Claude.md 文件
-      const projectStore = useProjectStore.getState();
-      const project = projectStore.projects.find(p => p.id === session.projectId);
-
-      if (project?.path) {
-        const claudeMdPath = `${project.path}/.claude/Claude.md`;
-        try {
-          const result = await window.api.fs.readFile(claudeMdPath);
-          if (result.success && result.content) {
-            // 4. 发送回顾提示词
-            const reloadPrompt = `上下文已压缩。请重新阅读项目 .claude/Claude.md 文件，回顾当前项目的执行流程和规范，确保后续操作符合项目约定。
-
-文件内容：
-${result.content}`;
-
-            await window.api.claude.sendMessage(sessionId, reloadPrompt);
-            console.log(`[SessionStore] Claude.md reloaded for session: ${sessionId}`);
-          } else {
-            console.log(`[SessionStore] No .claude/Claude.md found for project: ${project.path}`);
+        const cleanup = window.api.claude.onProgress((event) => {
+          if (event.sessionId !== sessionId) return;
+          if (event.type === 'status' && event.statusData?.status === 'compact_boundary') {
+            console.log('[SessionStore] Compact boundary received, compaction complete');
+            clearTimeout(timeout);
+            cleanup();
+            resolve();
           }
-        } catch (err) {
-          console.warn('[SessionStore] Failed to read Claude.md:', err);
-        }
-      }
+        });
+      });
 
-      // 5. 刷新上下文使用量（获取真实值而非估算）
+      // 发送 /compact 命令（仅压缩，不发送额外消息）
+      console.log(`[TRACE-AI] [FRONTEND] triggerCompact calling claude.sendMessage('/compact') | sessionId=${sessionId}`);
+      await window.api.claude.sendMessage(sessionId, '/compact');
+      console.log('[SessionStore] /compact command sent');
+
+      // 等待 compact_boundary 事件或 15 秒超时
+      await compactComplete;
+
+      // 刷新上下文使用量
       await refreshContextUsage(sessionId, set);
       console.log(`[SessionStore] Context usage refreshed after compact for session: ${sessionId}`);
 

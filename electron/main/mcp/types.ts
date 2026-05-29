@@ -174,6 +174,8 @@ export interface MCPStats {
   enabled: number
   /** 正在运行的 MCP 数量 */
   running: number
+  /** 已下载的 MCP 数量 */
+  downloaded: number
   /** 总下载大小（字节） */
   totalDownloadSize: number
   /** 已下载大小（字节） */
@@ -418,11 +420,11 @@ export const BUILTIN_MCPS: MCPDefinition[] = [
   // 桌面控制 - Windows
   {
     id: 'desktop-touch',
-    name: 'Desktop Touch',
-    description: 'Windows 桌面自动化工具，支持鼠标键盘模拟、窗口控制',
+    name: 'Desktop Control',
+    description: 'Windows 桌面自动化工具，支持鼠标键盘模拟、窗口控制、截图、剪贴板',
     category: 'desktop',
-    packageName: '@harusame64/desktop-touch-mcp',
-    version: 'latest',
+    packageName: 'mcp-control',
+    version: '0.2.0',
     platforms: ['win32'],
     builtin: false,
     defaultEnabled: true,

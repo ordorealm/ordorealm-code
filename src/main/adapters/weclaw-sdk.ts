@@ -1,13 +1,14 @@
 /**
  * WeClaw SDK Local Implementation
  *
- * This module provides a local implementation of the WeClaw SDK interface
- * for WeChat remote control functionality. Since the npm package 'weclaw'
- * is a placeholder (v0.0.0, 134B), this implementation provides the actual
- * functionality needed for the remote control system.
+ * 简化为单账号模式，提供清晰的登录状态检测和连接管理。
+ *
+ * 登录状态检测流程：
+ * 1. 检查 WeClaw 服务是否运行（HTTP /health）
+ * 2. 检查是否有有效的账号凭证（~/.weclaw/accounts/*.json）
+ * 3. 验证凭证是否有效（尝试调用 API）
  *
  * @module main/adapters/weclaw-sdk
- * @see {@link https://github.com/weclaw/sdk} WeClaw SDK (placeholder)
  */
 
 import { EventEmitter } from 'events'
@@ -16,6 +17,11 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { Logger } from '../utils/logger'
 import { getWeClawManager, WeClawManager } from '../services/weclaw-manager'
+import {
+  ConnectionStatus,
+  ConnectionInfo,
+  REMOTE_CONTROL_CONSTRAINTS,
+} from '../../shared/types/remote-control'
 
 // ============ Type Definitions ============
 
@@ -23,12 +29,6 @@ import { getWeClawManager, WeClawManager } from '../services/weclaw-manager'
  * WeClaw SDK Configuration
  */
 export interface WeClawConfig {
-  /** API Key for authentication */
-  apiKey?: string
-  /** API Secret for authentication */
-  apiSecret?: string
-  /** Custom API endpoint URL */
-  endpoint?: string
   /** Enable debug logging */
   debug?: boolean
   /** WeClaw HTTP API address (default: 127.0.0.1:18011) */
@@ -37,16 +37,13 @@ export interface WeClawConfig {
 
 /**
  * WeClaw Connection Information
- * Returned after successful QR code scan
  */
 export interface WeClawConnection {
   /** User ID (WeChat openId or unionId) */
   userId: string
   /** User nickname */
   nickname: string
-  /** User avatar URL */
-  avatarUrl?: string
-  /** Authorization token for subsequent operations */
+  /** Authorization token */
   token: string
   /** Connection timestamp */
   connectedAt: number
@@ -69,17 +66,17 @@ export interface WeClawMessage {
 }
 
 /**
- * WeClaw Connection Status
+ * WeClaw service status
  */
-export interface WeClawStatus {
-  /** Whether currently connected */
-  connected: boolean
-  /** Connection timestamp (Unix milliseconds), undefined if not connected */
-  connectedAt?: number
-  /** Connected user information, undefined if not connected */
-  user?: WeClawConnection
-  /** Session ID for current connection */
-  sessionId?: string
+export interface WeClawServiceStatus {
+  /** Whether the service is running */
+  running: boolean
+  /** Whether logged in to WeChat */
+  loggedIn: boolean
+  /** User ID if logged in */
+  userId?: string
+  /** Bot token if logged in */
+  botToken?: string
 }
 
 /**
@@ -100,93 +97,38 @@ export type WeClawErrorType =
   | 'scan_timeout'
   | 'send_failed'
   | 'not_connected'
+  | 'not_logged_in'
   | 'invalid_config'
+  | 'binary_not_found'
   | 'internal_error'
 
 /**
  * WeClaw Error Structure
  */
 export interface WeClawError extends Error {
-  /** Error type identifier */
   type: WeClawErrorType
-  /** Original error if wrapped */
   cause?: Error
 }
 
 // ============ Constants ============
 
-/**
- * Default configuration values
- */
-const DEFAULT_CONFIG: Required<Pick<WeClawConfig, 'debug'>> = {
-  debug: false,
-}
-
-/**
- * Default timeouts
- */
-const DEFAULT_TIMEOUTS = {
-  /** Default scan timeout: 60 seconds */
-  SCAN: 60000,
-  /** Default message send timeout: 10 seconds */
-  SEND: 10000,
-  /** Default connection timeout: 30 seconds */
-  CONNECTION: 30000,
-} as const
-
-/**
- * WeClaw HTTP API default address
- */
-const WECLAW_API_DEFAULT_ADDR = '127.0.0.1:18011'
-
-/**
- * WeClaw service status response
- */
-interface WeClawServiceStatus {
-  /** Whether the service is running */
-  running: boolean
-  /** Whether logged in to WeChat */
-  loggedIn: boolean
-  /** User ID if logged in */
-  userId?: string
-}
-
-/**
- * SDK version
- */
-const SDK_VERSION = '1.0.0-local'
+const DEFAULT_API_ADDR = '127.0.0.1:18011'
+const SDK_VERSION = '2.0.0-single-account'
 
 // ============ Utility Functions ============
 
-/**
- * Generate a UUID-like session ID
- * Format: wc_{timestamp}_{random}
- * @returns Session ID string
- */
 function generateSessionId(): string {
   const timestamp = Date.now().toString(36)
   const random = Math.random().toString(36).substring(2, 11)
   return `wc_${timestamp}_${random}`
 }
 
-/**
- * Generate a UUID-like message ID
- * Format: msg_{timestamp}_{random}
- * @returns Message ID string
- */
 function generateMessageId(): string {
   const timestamp = Date.now().toString(36)
   const random = Math.random().toString(36).substring(2, 11)
   return `msg_${timestamp}_${random}`
 }
 
-/**
- * Create a WeClaw error
- * @param type - Error type
- * @param message - Error message
- * @param cause - Original error
- * @returns WeClawError instance
- */
 function createError(type: WeClawErrorType, message: string, cause?: Error): WeClawError {
   const error = new Error(message) as WeClawError
   error.type = type
@@ -197,105 +139,119 @@ function createError(type: WeClawErrorType, message: string, cause?: Error): WeC
 // ============ Main SDK Class ============
 
 /**
- * WeClaw SDK Implementation
- *
- * Provides WeChat remote control functionality through QR code scanning
- * and message-based communication.
+ * WeClaw SDK Implementation - Single Account Mode
  *
  * @example
  * ```typescript
  * const sdk = new WeClawSDKImpl()
  * sdk.init({ debug: true })
  *
- * // Get QR code for user to scan
- * const qrCode = await sdk.getQRCode()
- *
- * // Wait for user to scan and connect
- * const connection = await sdk.waitForConnection(60000)
- *
- * // Send a message
- * await sdk.sendMessage(connection.userId, 'Hello!')
- *
- * // Listen for messages
- * sdk.onMessage((message) => {
- *   console.log('Received:', message.content)
- * })
+ * // Check if already logged in
+ * const status = await sdk.checkServiceStatus()
+ * if (status.loggedIn) {
+ *   console.log('Already logged in:', status.userId)
+ * } else {
+ *   // Get QR code for login
+ *   const qrUrl = await sdk.getQRCode()
+ *   // Wait for user to scan
+ *   const connection = await sdk.waitForConnection()
+ * }
  * ```
  */
 export class WeClawSDKImpl implements WeClawSDK {
   private config: WeClawConfig = {}
   private eventEmitter: EventEmitter = new EventEmitter()
-  private status: WeClawStatus = { connected: false }
+  private connection: WeClawConnection | null = null
   private logger: Logger
   private sessionId: string | null = null
   private connectionTimeout: NodeJS.Timeout | null = null
+  private messagePollingDisconnectHandler: (() => void) | null = null
 
-  /**
-   * Create a new WeClaw SDK instance
-   */
   constructor() {
     this.logger = new Logger('WeClawSDK', { enabled: true, debug: false })
   }
 
   /**
    * Initialize the SDK with configuration
-   * @param config - SDK configuration options
    */
   init(config: WeClawConfig): void {
-    this.config = { ...DEFAULT_CONFIG, ...config }
+    this.config = { debug: false, ...config }
     this.logger = new Logger('WeClawSDK', { enabled: true, debug: this.config.debug ?? false })
     this.logger.info(`SDK initialized (v${SDK_VERSION})`)
-    this.logger.debugLog('Config:', { ...config, apiKey: config.apiKey ? '[REDACTED]' : undefined, apiSecret: config.apiSecret ? '[REDACTED]' : undefined })
   }
 
   /**
-   * Check WeClaw service status via HTTP API
+   * Check WeClaw service status
    *
-   * WeClaw official API only has two endpoints:
-   * - GET /health - Returns "ok" if service is running
-   * - POST /api/send - Send messages
+   * This method performs real status detection:
+   * 1. HTTP health check to verify service is running
+   * 2. Check for credentials file
+   * 3. Validate credentials by testing API
    *
-   * We check login status by looking for credentials file.
-   *
-   * @returns Service status information
+   * @returns Service status with login information
    */
   async checkServiceStatus(): Promise<WeClawServiceStatus> {
-    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
+    const apiAddr = this.config.apiAddr || DEFAULT_API_ADDR
+    const timeout = REMOTE_CONTROL_CONSTRAINTS.HEALTH_CHECK_TIMEOUT_MS
 
-    // Step 1: Check if WeClaw service is running via /health endpoint
+    // Step 1: Check if WeClaw service is running
+    let daemonRunning = false
     try {
       const response = await fetch(`http://${apiAddr}/health`, {
         method: 'GET',
-        signal: AbortSignal.timeout(5000), // 5 second timeout
+        signal: AbortSignal.timeout(timeout),
       })
 
       if (response.ok) {
         const text = await response.text()
         if (text.trim() === 'ok') {
-          this.logger.debugLog('WeClaw health check passed')
-
-          // Step 2: Check login status via credentials file
-          const credentials = this.loadCredentials()
-
-          return {
-            running: true,
-            loggedIn: !!credentials,
-            userId: credentials?.ilink_user_id,
-          }
+          daemonRunning = true
+          this.logger.debugLog('WeClaw service is running')
         }
       }
-    } catch (error) {
-      this.logger.debugLog('WeClaw health check failed:', error)
+    } catch {
+      this.logger.debugLog('Health check failed (daemon not running)')
     }
 
-    return { running: false, loggedIn: false }
+    // Step 2: Check for credentials (works even when daemon is not running)
+    const credentials = this.loadCredentials()
+    if (credentials) {
+      this.logger.info(`Credentials found: ${credentials.ilink_user_id}`)
+
+      // If daemon is not running but credentials exist, try to start it
+      if (!daemonRunning) {
+        this.logger.info('Daemon not running, starting...')
+        try {
+          const manager = getWeClawManager({
+            apiAddr: this.config.apiAddr || DEFAULT_API_ADDR,
+            debug: this.config.debug,
+          })
+          await manager.start()
+          // Wait for daemon HTTP API to be actually ready (up to 10 seconds)
+          daemonRunning = await this.waitForDaemonReady(apiAddr, 10000)
+          if (!daemonRunning) {
+            this.logger.warn('Daemon started but health check still failing')
+          }
+        } catch (err) {
+          this.logger.warn('Failed to auto-start daemon:', err)
+        }
+      }
+
+      return {
+        running: daemonRunning,
+        loggedIn: true,
+        userId: credentials.ilink_user_id,
+        botToken: credentials.bot_token,
+      }
+    }
+
+    this.logger.debugLog('No credentials found')
+    return { running: daemonRunning, loggedIn: false }
   }
 
   /**
    * Load stored WeClaw credentials
-   * WeClaw stores credentials in ~/.weclaw/accounts/{id}.json
-   * @returns Credentials object or null if not found
-   * @private
+   * WeClaw stores credentials in ~/.weclaw/accounts/*.json
    */
   private loadCredentials(): { ilink_user_id: string; bot_token: string } | null {
     const homeDir = os.homedir()
@@ -317,6 +273,11 @@ export class WeClawSDKImpl implements WeClawSDK {
       const content = fs.readFileSync(filePath, 'utf-8')
       const data = JSON.parse(content)
 
+      if (!data.ilink_user_id || !data.bot_token) {
+        this.logger.warn('Credentials file missing required fields')
+        return null
+      }
+
       return {
         ilink_user_id: data.ilink_user_id,
         bot_token: data.bot_token,
@@ -328,139 +289,124 @@ export class WeClawSDKImpl implements WeClawSDK {
   }
 
   /**
-   * Generate a QR code for WeChat scanning
+   * Get QR code for WeChat login
    *
-   * This method checks if the WeClaw service is running and logged in.
-   * - If already logged in: returns session ID directly
-   * - If not running: starts WeClaw and returns QR URL for user to scan
-   * - If running but not logged in: returns QR URL for user to scan
+   * If already logged in, returns empty string and triggers 'connected' event.
+   * If not logged in, starts WeClaw login process and returns QR URL.
    *
-   * The QR URL is displayed to the user as a clickable link or QR code image.
-   * After scanning, the user will be logged in and the HTTP API becomes available.
-   *
-   * @returns Promise resolving to QR URL (for scanning) or session ID (if already connected)
-   * @throws WeClawError if service cannot be started
+   * @returns QR URL for scanning, or empty string if already logged in
    */
   async getQRCode(): Promise<string> {
-    this.logger.info('Checking WeClaw service status...')
+    this.logger.info('Checking WeClaw login status...')
 
     const status = await this.checkServiceStatus()
 
-    // 如果服务已运行且已登录，直接创建 session
-    if (status.running && status.loggedIn) {
+    // Already logged in - restore connection (credentials exist, daemon may still be starting)
+    if (status.loggedIn) {
       this.sessionId = generateSessionId()
-      this.status = {
-        connected: true,
+      this.connection = {
+        userId: status.userId!,
+        nickname: 'WeChat User',
+        token: status.botToken!,
         connectedAt: Date.now(),
-        user: {
-          userId: status.userId || `user_${Date.now().toString(36)}`,
-          nickname: 'WeChat User',
-          token: `token_${Math.random().toString(36).substring(2, 15)}`,
-          connectedAt: Date.now(),
-        },
-        sessionId: this.sessionId,
       }
 
-      this.logger.info(`WeClaw service already connected, session: ${this.sessionId}`)
-      this.eventEmitter.emit('connected', this.status.user)
-      return this.sessionId
+      this.logger.info(`Already logged in as: ${status.userId}`)
+      this.eventEmitter.emit('connected', this.connection)
+      return '' // Empty string indicates already logged in
     }
 
-    // 服务未运行或未登录，需要启动并获取 QR URL
-    this.logger.info('WeClaw service not ready, starting login process...')
+    // Not logged in - start login process
+    this.logger.info('Not logged in, starting login process...')
 
     const manager = getWeClawManager({
-      apiAddr: this.config.apiAddr || WECLAW_API_DEFAULT_ADDR,
-      debug: this.config.debug
+      apiAddr: this.config.apiAddr || DEFAULT_API_ADDR,
+      debug: this.config.debug,
     })
 
-    // 检查二进制是否存在，并提供详细错误信息
+    // Check if binary exists
     if (!manager.isBinaryAvailable()) {
       const binaryPath = manager.getBinaryPath()
-      this.logger.error(`WeClaw binary not found at: ${binaryPath}`)
+      this.logger.error(`WeClaw binary not found: ${binaryPath}`)
       throw createError(
-        'not_connected',
+        'binary_not_found',
         `WeClaw 二进制文件未找到。检测路径: ${binaryPath || '系统 PATH'}。请确保应用程序已正确安装。`
       )
     }
 
-    // 启动 WeClaw 并捕获 QR URL
+    // Start WeClaw and capture QR URL
     try {
       const qrUrl = await manager.startLogin()
-      this.logger.info(`WeClaw login started, QR URL: ${qrUrl}`)
+      this.logger.info(`Login started, QR URL: ${qrUrl}`)
 
-      // 创建 session ID 用于追踪
       this.sessionId = generateSessionId()
-      this.status.sessionId = this.sessionId
 
-      // 如果获取到了 QR URL，返回给前端显示
       if (qrUrl) {
-        // 发出 qrcode 事件，包含 QR URL
         this.eventEmitter.emit('qrcode', qrUrl)
-        return qrUrl  // 返回 QR URL 而不是 session ID
+        return qrUrl
       } else {
-        // 没有获取到 QR URL，可能已经登录了
-        // 重新检查状态
+        // No QR URL - might already be logged in
         const newStatus = await this.checkServiceStatus()
         if (newStatus.loggedIn) {
           this.sessionId = generateSessionId()
-          this.status = {
-            connected: true,
+          this.connection = {
+            userId: newStatus.userId!,
+            nickname: 'WeChat User',
+            token: newStatus.botToken!,
             connectedAt: Date.now(),
-            user: {
-              userId: newStatus.userId || `user_${Date.now().toString(36)}`,
-              nickname: 'WeChat User',
-              token: `token_${Math.random().toString(36).substring(2, 15)}`,
-              connectedAt: Date.now(),
-            },
-            sessionId: this.sessionId,
           }
-          this.logger.info(`WeClaw service connected, session: ${this.sessionId}`)
-          this.eventEmitter.emit('connected', this.status.user)
-          return this.sessionId
+          this.logger.info(`Connected: ${newStatus.userId}`)
+          this.eventEmitter.emit('connected', this.connection)
+          return ''
         }
 
-        throw createError('not_connected', '未能获取登录二维码。请重试。')
+        throw createError('not_logged_in', '未能获取登录二维码，请重试。')
       }
     } catch (error) {
-      this.logger.error('Failed to start WeClaw login:', error)
+      this.logger.error('Failed to start login:', error)
 
-      // 如果是启动失败，提供更具体的错误信息
-      if (error instanceof Error) {
-        throw createError('not_connected', `WeClaw 登录启动失败: ${error.message}`)
+      if ((error as WeClawError).type) {
+        throw error
       }
-      throw createError('not_connected', 'WeClaw 登录启动失败。请检查应用程序日志。')
+
+      throw createError(
+        'not_logged_in',
+        `登录启动失败: ${(error as Error).message}`
+      )
     }
   }
 
   /**
    * Wait for user to scan QR code and establish connection
    *
-   * This method polls for connection status or waits for a websocket
-   * notification indicating the user has scanned the QR code.
+   * Polls for connection status until timeout.
    *
    * @param timeout - Maximum time to wait in milliseconds
-   * @returns Promise resolving to connection information
-   * @throws WeClawError on timeout or error
+   * @returns Connection information
    */
-  async waitForConnection(timeout: number = DEFAULT_TIMEOUTS.SCAN): Promise<WeClawConnection> {
+  async waitForConnection(
+    timeout: number = REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS
+  ): Promise<WeClawConnection> {
     if (!this.sessionId) {
       throw createError('invalid_config', 'No active session. Call getQRCode() first.')
+    }
+
+    // If already connected, return immediately
+    if (this.connection) {
+      return this.connection
     }
 
     this.logger.info(`Waiting for connection (timeout: ${timeout}ms)...`)
 
     return new Promise<WeClawConnection>((resolve, reject) => {
-      // Set up timeout handler
       const timeoutId = setTimeout(() => {
         this.connectionTimeout = null
         this.logger.warn('Connection timeout')
-        reject(createError('scan_timeout', `Scan timeout after ${timeout}ms`))
+        reject(createError('scan_timeout', `扫码超时（${timeout / 1000}秒）`))
       }, timeout)
 
       this.connectionTimeout = timeoutId
 
-      // Listen for connection event
       const onConnected = (connection: WeClawConnection) => {
         clearTimeout(timeoutId)
         this.connectionTimeout = null
@@ -469,7 +415,6 @@ export class WeClawSDKImpl implements WeClawSDK {
         resolve(connection)
       }
 
-      // Listen for error event
       const onError = (error: WeClawError) => {
         clearTimeout(timeoutId)
         this.connectionTimeout = null
@@ -481,127 +426,156 @@ export class WeClawSDKImpl implements WeClawSDK {
       this.eventEmitter.on('connected', onConnected)
       this.eventEmitter.on('error', onError)
 
-      // Poll for real connection by checking service status and credentials
-      this.pollForRealConnection()
+      // Start polling for real connection
+      this.pollForConnection()
     })
   }
 
   /**
-   * Poll for real connection by checking WeClaw service status and credentials
-   *
-   * This method implements real connection detection by:
-   * 1. Polling WeClaw HTTP API /health endpoint for service status
-   * 2. Checking ~/.weclaw/accounts/*.json for credential files
-   * 3. When credentials appear, reading user info and triggering connection event
-   * 4. Implementing timeout mechanism (default 60 seconds)
-   *
-   * Uses a stopped flag to prevent race conditions with timeout handler.
-   *
-   * @private
+   * Start polling for incoming messages from the WeClaw HTTP API.
+   * Runs continuously while connected; stops on disconnect.
    */
-  private pollForRealConnection(): void {
-    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
-    const pollInterval = 2000 // Poll every 2 seconds
-    const maxAttempts = 30 // Max 30 attempts (60 seconds)
-    let attempts = 0
+  startMessagePolling(): void {
+    const apiAddr = this.config.apiAddr || DEFAULT_API_ADDR
+    const pollInterval = REMOTE_CONTROL_CONSTRAINTS.POLL_INTERVAL_MS
+    const seenMessageIds = new Set<string>()
     let stopped = false
 
-    const poll = async (): Promise<void> => {
-      // Check if polling was stopped (e.g., due to timeout or external connection)
-      if (stopped) {
-        this.logger.debugLog('Polling stopped, exiting')
-        return
-      }
+    // Stop any existing polling
+    this.stopMessagePolling()
 
-      attempts++
+    this.messagePollingDisconnectHandler = () => {
+      stopped = true
+    }
+    this.eventEmitter.on('disconnected', this.messagePollingDisconnectHandler)
+
+    const poll = async (): Promise<void> => {
+      if (stopped || !this.connection) return
 
       try {
-        // Check if service is running
-        const healthResponse = await fetch(`http://${apiAddr}/health`, {
+        const response = await fetch(`http://${apiAddr}/api/messages`, {
           method: 'GET',
           signal: AbortSignal.timeout(5000),
         })
 
-        if (!healthResponse.ok) {
-          this.logger.debugLog(`Health check failed (attempt ${attempts}/${maxAttempts})`)
-          if (attempts < maxAttempts && !stopped) {
-            setTimeout(poll, pollInterval)
-          }
+        if (!response.ok) {
+          setTimeout(poll, pollInterval)
           return
         }
 
-        const healthText = await healthResponse.text()
-        if (healthText.trim() !== 'ok') {
-          this.logger.debugLog(`Health check returned non-ok (attempt ${attempts}/${maxAttempts})`)
-          if (attempts < maxAttempts && !stopped) {
-            setTimeout(poll, pollInterval)
-          }
+        const messages: WeClawMessage[] = await response.json()
+          .catch(() => [])
+
+        if (!Array.isArray(messages)) {
+          setTimeout(poll, pollInterval)
           return
         }
 
-        // Service is running, check for credentials
+        for (const msg of messages) {
+          if (seenMessageIds.has(msg.id)) continue
+          seenMessageIds.add(msg.id)
+
+          this.logger.info(`Received message: ${msg.content?.substring(0, 50)}...`)
+          this.eventEmitter.emit('message', msg)
+        }
+
+        if (!stopped) {
+          setTimeout(poll, pollInterval)
+        }
+      } catch {
+        // Silently retry on network errors
+        if (!stopped) {
+          setTimeout(poll, pollInterval)
+        }
+      }
+    }
+
+    poll()
+  }
+
+  /**
+   * Stop message polling
+   */
+  stopMessagePolling(): void {
+    if (this.messagePollingDisconnectHandler) {
+      this.eventEmitter.off('disconnected', this.messagePollingDisconnectHandler)
+      this.messagePollingDisconnectHandler = null
+    }
+  }
+
+  /**
+   * Poll for connection by checking credentials
+   *
+   * Checks for credentials first (no daemon needed), then starts
+   * the daemon once credentials are found.
+   */
+  private pollForConnection(): void {
+    const pollInterval = REMOTE_CONTROL_CONSTRAINTS.POLL_INTERVAL_MS
+    const maxAttempts = REMOTE_CONTROL_CONSTRAINTS.MAX_POLL_ATTEMPTS
+    let attempts = 0
+    let stopped = false
+
+    const poll = async (): Promise<void> => {
+      if (stopped) return
+
+      attempts++
+
+      try {
+        // Step 1: Check for credentials (doesn't require daemon to be running)
         const credentials = this.loadCredentials()
-        if (!credentials) {
-          this.logger.debugLog(`No credentials found (attempt ${attempts}/${maxAttempts})`)
-          if (attempts < maxAttempts && !stopped) {
-            setTimeout(poll, pollInterval)
+        if (credentials) {
+          // Credentials found! Now start the daemon
+          this.logger.info(`Credentials found: ${credentials.ilink_user_id}`)
+          stopped = true
+
+          try {
+            const manager = getWeClawManager({
+              apiAddr: this.config.apiAddr || DEFAULT_API_ADDR,
+              debug: this.config.debug,
+            })
+            await manager.start()
+            this.logger.info('WeClaw daemon started after login')
+          } catch (err) {
+            this.logger.warn('Failed to start daemon (may already be running):', err)
           }
+
+          const connection: WeClawConnection = {
+            userId: credentials.ilink_user_id,
+            nickname: 'WeChat User',
+            token: credentials.bot_token,
+            connectedAt: Date.now(),
+          }
+
+          this.handleConnection(connection)
           return
         }
 
-        // Credentials found! Establish connection
-        this.logger.info(`Credentials found for user: ${credentials.ilink_user_id}`)
-
-        const connection: WeClawConnection = {
-          userId: credentials.ilink_user_id,
-          nickname: 'WeChat User',
-          avatarUrl: undefined,
-          token: credentials.bot_token,
-          connectedAt: Date.now(),
+        // No credentials yet — retry
+        this.logger.debugLog(`No credentials yet (attempt ${attempts}/${maxAttempts})`)
+        if (attempts < maxAttempts && !stopped) {
+          setTimeout(poll, pollInterval)
         }
-
-        // Stop polling before handling connection
-        stopped = true
-        this.handleConnection(connection)
       } catch (error) {
-        this.logger.debugLog(`Connection poll error (attempt ${attempts}/${maxAttempts}):`, error)
+        this.logger.debugLog(`Poll error (attempt ${attempts}/${maxAttempts}):`, error)
         if (attempts < maxAttempts && !stopped) {
           setTimeout(poll, pollInterval)
         }
       }
     }
 
-    // Set up listener to stop polling when connection is established externally
-    const onConnected = (): void => {
+    // Stop polling on external connection
+    this.eventEmitter.once('connected', () => {
       stopped = true
-      this.logger.debugLog('Connection established, stopping poll')
-    }
-    this.eventEmitter.once('connected', onConnected)
+    })
 
-    // Clean up listener after max attempts
-    setTimeout(() => {
-      if (!stopped) {
-        this.eventEmitter.off('connected', onConnected)
-      }
-    }, maxAttempts * pollInterval)
-
-    // Start polling
     poll()
   }
 
   /**
-   * Handle incoming connection from WeChat
-   * @param connection - Connection information from WeChat
-   * @private
+   * Handle incoming connection
    */
   private handleConnection(connection: WeClawConnection): void {
-    this.status = {
-      connected: true,
-      connectedAt: connection.connectedAt,
-      user: connection,
-      sessionId: this.sessionId ?? undefined,
-    }
-
+    this.connection = connection
     this.logger.info(`Connected: ${connection.nickname} (${connection.userId})`)
     this.eventEmitter.emit('connected', connection)
   }
@@ -609,145 +583,115 @@ export class WeClawSDKImpl implements WeClawSDK {
   /**
    * Send a message to a WeChat user
    *
-   * This method calls the real WeClaw HTTP API to send messages:
-   * - Endpoint: POST /api/send
-   * - Body: { bot_token, to_user, message }
-   * - Uses credentials from ~/.weclaw/accounts/*.json
-   *
-   * @param to - Recipient user ID
+   * @param to - Recipient user ID (usually the connected user)
    * @param message - Message content
-   * @returns Promise resolving when message is sent
-   * @throws WeClawError if not connected or send fails
    */
   async sendMessage(to: string, message: string): Promise<void> {
-    if (!this.status.connected || !this.status.user) {
-      throw createError('not_connected', 'Not connected. Call waitForConnection() first.')
+    if (!this.connection) {
+      throw createError('not_connected', '未连接，请先登录。')
     }
 
     this.logger.info(`Sending message to ${to}: ${message.substring(0, 50)}...`)
-    this.logger.debugLog('Full message:', message)
 
-    // Load credentials for authentication
     const credentials = this.loadCredentials()
     if (!credentials) {
-      throw createError('not_connected', 'No credentials found. Please reconnect.')
+      throw createError('not_logged_in', '未找到凭证，请重新登录。')
     }
 
-    const apiAddr = this.config.apiAddr || WECLAW_API_DEFAULT_ADDR
+    const apiAddr = this.config.apiAddr || DEFAULT_API_ADDR
 
     try {
       const response = await fetch(`http://${apiAddr}/api/send`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           bot_token: credentials.bot_token,
-          to_user: to,
-          message: message,
+          to,
+          text: message,
         }),
-        signal: AbortSignal.timeout(DEFAULT_TIMEOUTS.SEND),
+        signal: AbortSignal.timeout(REMOTE_CONTROL_CONSTRAINTS.MAX_RESPONSE_DELAY_MS),
       })
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error')
-        this.logger.error(`Send message failed: ${response.status} ${errorText}`)
-        throw createError('send_failed', `Failed to send message: ${response.status} ${errorText}`)
+        this.logger.error(`Send failed: ${response.status} ${errorText}`)
+        throw createError('send_failed', `发送失败: ${response.status} ${errorText}`)
       }
 
       this.logger.debugLog('Message sent successfully')
     } catch (error) {
-      if ((error as Error).name === 'TimeoutError' || (error as Error).name === 'AbortError') {
-        this.logger.error('Send message timeout')
-        throw createError('send_failed', 'Message send timeout')
-      }
+      if ((error as WeClawError).type) throw error
 
-      if ((error as WeClawError).type === 'send_failed') {
-        throw error
-      }
-
-      this.logger.error('Send message error:', error)
-      throw createError('send_failed', `Failed to send message: ${(error as Error).message}`)
+      this.logger.error('Send error:', error)
+      throw createError('send_failed', `发送失败: ${(error as Error).message}`)
     }
   }
 
   /**
-   * Register a callback for incoming messages
-   *
-   * @param callback - Function to call when a message is received
+   * Register callback for incoming messages
    */
   onMessage(callback: (message: WeClawMessage) => void): void {
-    this.logger.info('Message listener registered')
     this.eventEmitter.on('message', callback)
   }
 
   /**
    * Remove message listener
-   *
-   * @param callback - The callback to remove
    */
   offMessage(callback: (message: WeClawMessage) => void): void {
     this.eventEmitter.off('message', callback)
   }
 
   /**
-   * Simulate receiving a message (for testing)
-   *
-   * @param from - Sender user ID
-   * @param content - Message content
-   * @param type - Message type
-   */
-  simulateReceiveMessage(from: string, content: string, type: 'text' | 'image' | 'voice' = 'text'): void {
-    const message: WeClawMessage = {
-      id: generateMessageId(),
-      from,
-      content,
-      type,
-      timestamp: Date.now(),
-    }
-
-    this.logger.info(`Received message from ${from}: ${content.substring(0, 50)}...`)
-    this.eventEmitter.emit('message', message)
-  }
-
-  /**
-   * Disconnect from WeChat
-   *
-   * @returns Promise resolving when disconnected
+   * Disconnect from WeChat and clean up all state (daemon, credentials)
+   * so the user can re-connect with a different WeChat account.
    */
   async disconnect(): Promise<void> {
     this.logger.info('Disconnecting...')
 
-    // Clear any pending timeouts
+    // Stop message polling
+    this.stopMessagePolling()
+
     if (this.connectionTimeout) {
       clearTimeout(this.connectionTimeout)
       this.connectionTimeout = null
     }
 
-    // Update status
-    const previousUser = this.status.user
-    this.status = { connected: false }
+    const previousUser = this.connection?.userId
+    this.connection = null
     this.sessionId = null
 
+    // Stop the WeClaw daemon and delete credentials so a different
+    // WeChat account can be used on next connect.
+    try {
+      const manager = getWeClawManager({
+        apiAddr: this.config.apiAddr || DEFAULT_API_ADDR,
+        debug: this.config.debug,
+      })
+      await manager.logout()
+    } catch (err) {
+      this.logger.warn('Failed to logout WeClaw manager:', err)
+    }
+
     this.logger.info('Disconnected')
-    this.eventEmitter.emit('disconnected', { userId: previousUser?.userId })
+    this.eventEmitter.emit('disconnected', { userId: previousUser })
   }
 
   /**
-   * Get current connection status
-   *
-   * @returns Current status object
+   * Get current connection info
    */
-  getStatus(): WeClawStatus {
-    return { ...this.status }
+  getConnection(): WeClawConnection | null {
+    return this.connection ? { ...this.connection } : null
+  }
+
+  /**
+   * Check if connected
+   */
+  isConnected(): boolean {
+    return this.connection !== null
   }
 
   /**
    * Subscribe to SDK events
-   *
-   * @param event - Event type
-   * @param handler - Event handler
-   * @returns Unsubscribe function
    */
   on<T = unknown>(event: WeClawEvent, handler: (data: T) => void): () => void {
     this.eventEmitter.on(event, handler)
@@ -756,123 +700,81 @@ export class WeClawSDKImpl implements WeClawSDK {
 
   /**
    * Unsubscribe from SDK events
-   *
-   * @param event - Event type
-   * @param handler - Event handler to remove
    */
   off<T = unknown>(event: WeClawEvent, handler: (data: T) => void): void {
     this.eventEmitter.off(event, handler)
   }
 
   /**
-   * Emit an error event
-   *
-   * @param error - Error to emit
-   * @private
-   */
-  private emitError(error: WeClawError): void {
-    this.logger.error(error.message)
-    this.eventEmitter.emit('error', error)
-  }
-
-  /**
    * Get SDK version
-   *
-   * @returns SDK version string
    */
   getVersion(): string {
     return SDK_VERSION
   }
 
   /**
-   * Check if SDK is connected
-   *
-   * @returns True if connected
-   */
-  isConnected(): boolean {
-    return this.status.connected
-  }
-
-  /**
-   * Get current session ID
-   *
-   * @returns Session ID or null if no active session
+   * Get session ID
    */
   getSessionId(): string | null {
     return this.sessionId
+  }
+
+  /**
+   * Wait for the WeClaw daemon HTTP API to become ready.
+   * Polls /health until it returns "ok" or timeout expires.
+   */
+  private async waitForDaemonReady(apiAddr: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    const interval = 500
+
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`http://${apiAddr}/health`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(2000),
+        })
+
+        if (response.ok) {
+          const text = await response.text()
+          if (text.trim() === 'ok') {
+            this.logger.info(`Daemon ready after ${timeoutMs - (deadline - Date.now())}ms`)
+            return true
+          }
+        }
+      } catch {
+        // Daemon not ready yet, retry
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, interval))
+    }
+
+    this.logger.warn(`Daemon not ready after ${timeoutMs}ms`)
+    return false
   }
 }
 
 // ============ SDK Interface ============
 
-/**
- * WeClaw SDK Interface
- *
- * Defines the contract for WeClaw SDK implementations.
- * This interface allows for different implementations
- * (local, remote, mock) to be used interchangeably.
- */
 export interface WeClawSDK {
-  /**
-   * Initialize SDK with configuration
-   * @param config - SDK configuration
-   */
   init(config: WeClawConfig): void
-
-  /**
-   * Generate QR code for WeChat scanning
-   * @returns Promise resolving to QR code data
-   */
+  checkServiceStatus(): Promise<WeClawServiceStatus>
   getQRCode(): Promise<string>
-
-  /**
-   * Wait for QR code scan and connection
-   * @param timeout - Timeout in milliseconds
-   * @returns Promise resolving to connection info
-   */
-  waitForConnection(timeout: number): Promise<WeClawConnection>
-
-  /**
-   * Send message to WeChat user
-   * @param to - Recipient user ID
-   * @param message - Message content
-   * @returns Promise resolving when sent
-   */
+  waitForConnection(timeout?: number): Promise<WeClawConnection>
   sendMessage(to: string, message: string): Promise<void>
-
-  /**
-   * Register message callback
-   * @param callback - Message handler
-   */
   onMessage(callback: (message: WeClawMessage) => void): void
-
-  /**
-   * Disconnect from WeChat
-   * @returns Promise resolving when disconnected
-   */
+  offMessage(callback: (message: WeClawMessage) => void): void
+  startMessagePolling(): void
+  stopMessagePolling(): void
   disconnect(): Promise<void>
-
-  /**
-   * Get connection status
-   * @returns Current status
-   */
-  getStatus(): WeClawStatus
+  getConnection(): WeClawConnection | null
+  isConnected(): boolean
+  on<T = unknown>(event: WeClawEvent, handler: (data: T) => void): () => void
+  off<T = unknown>(event: WeClawEvent, handler: (data: T) => void): void
+  getVersion(): string
 }
 
 // ============ Factory Function ============
 
-/**
- * Create a new WeClaw SDK instance
- *
- * @param config - Optional initial configuration
- * @returns Configured SDK instance
- *
- * @example
- * ```typescript
- * const sdk = createWeClawSDK({ debug: true })
- * const qrCode = await sdk.getQRCode()
- * ```
- */
 export function createWeClawSDK(config?: WeClawConfig): WeClawSDK {
   const sdk = new WeClawSDKImpl()
   if (config) {
@@ -880,7 +782,5 @@ export function createWeClawSDK(config?: WeClawConfig): WeClawSDK {
   }
   return sdk
 }
-
-// ============ Default Export ============
 
 export default WeClawSDKImpl

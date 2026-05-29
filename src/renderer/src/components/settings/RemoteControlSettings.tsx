@@ -1,231 +1,186 @@
 /**
  * Remote Control Settings Component
- * Settings panel for managing remote control channels
- * @module components/settings/RemoteControlSettings
  *
- * UI Structure:
- * - Header with title, description, and enable toggle
- * - Connected channels list with ChannelCard components
- * - Add new channel button
- * - Security settings section
+ * 简化为单账号模式的设置面板。
+ *
+ * @module components/settings/RemoteControlSettings
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   useRemoteControlStore,
-  getChannelStatusName,
-  getChannelTypeName,
-  canAddMoreChannels,
-} from '@/stores/remote-control-store';
-import { getRemoteControlClient } from '@/services/remote-control-client';
-import type { Channel, ChannelType } from '../../../../shared/types/remote-control';
-import { REMOTE_CONTROL_CONSTRAINTS } from '../../../../shared/types/remote-control';
-import QRCode from 'qrcode';
+  getConnectionStatusName,
+  isConnected,
+} from '@/stores/remote-control-store'
+import { REMOTE_CONTROL_CONSTRAINTS } from '../../../../shared/types/remote-control'
+import QRCode from 'qrcode'
 
-/**
- * RemoteControlSettings component props
- */
 interface RemoteControlSettingsProps {
-  /** Whether the component is visible */
-  visible?: boolean;
+  visible?: boolean
 }
 
 /**
- * Channel Card Component Props
+ * Generate QR code SVG
  */
-interface ChannelCardProps {
-  channel: Channel;
-  onDisconnect: (channelId: string) => void;
-  onShowDetails: (channel: Channel) => void;
+async function generateQRCodeSVG(data: string): Promise<string> {
+  try {
+    return await QRCode.toString(data, {
+      type: 'svg',
+      width: 200,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' },
+      errorCorrectionLevel: 'M',
+    })
+  } catch (error) {
+    console.error('Failed to generate QR code:', error)
+    return `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+        <rect width="200" height="200" fill="white"/>
+        <text x="100" y="100" text-anchor="middle" font-size="12" fill="red">QR生成失败</text>
+      </svg>
+    `
+  }
 }
 
 /**
- * Channel Card Component
- * Displays a single connected channel with status and actions
+ * Connect Dialog Component
  */
-function ChannelCard({ channel, onDisconnect, onShowDetails }: ChannelCardProps): JSX.Element {
-  const statusIcon = channel.status === 'connected' ? '🟢' :
-                     channel.status === 'pending' ? '🟡' : '⚪';
+function ConnectDialog({
+  isOpen,
+  onClose,
+  onSuccess,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: () => void
+}): JSX.Element | null {
+  const [qrCode, setQrCode] = useState<string | null>(null)
+  const [qrCodeSvg, setQrCodeSvg] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [isGeneratingQR, setIsGeneratingQR] = useState(false)
+  const [countdown, setCountdown] = useState(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000)
+  const [alreadyLoggedIn, setAlreadyLoggedIn] = useState(false)
 
-  const formattedTime = channel.connectedAt
-    ? new Date(channel.connectedAt).toLocaleString('zh-CN', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : '未连接';
+  const { connect } = useRemoteControlStore()
+  const connectionStatus = useRemoteControlStore((s) => s.settings.connection?.status)
+  const connectStartedRef = useRef(false)
 
-  return (
-    <div className="flex items-center justify-between p-3 bg-bg-secondary border border-border rounded-lg">
-      <div className="flex items-center gap-3">
-        {/* Status Icon */}
-        <span className="text-lg" title={getChannelStatusName(channel.status)}>
-          {statusIcon}
-        </span>
-
-        {/* Channel Info */}
-        <div>
-          <div className="text-sm font-medium text-text-primary">
-            {getChannelTypeName(channel.type)}
-          </div>
-          <div className="text-xs text-text-muted">
-            {formattedTime}
-          </div>
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onShowDetails(channel)}
-          className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded transition-colors"
-        >
-          详情
-        </button>
-        <button
-          onClick={() => onDisconnect(channel.id)}
-          className="px-2 py-1 text-xs text-text-secondary hover:text-red-500 hover:bg-bg-hover rounded transition-colors"
-        >
-          断开
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Add Channel Dialog Props
- */
-interface AddChannelDialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSuccess: (channelId: string) => void;
-}
-
-/**
- * Add Channel Dialog Component
- * Dialog for connecting a new channel via QR code
- */
-function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps): JSX.Element | null {
-  const [qrCode, setQrCode] = useState<string | null>(null);
-  const [qrCodeSvg, setQrCodeSvg] = useState<string | null>(null);
-  const [channelId, setChannelId] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000);
-  const [error, setError] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isGeneratingQR, setIsGeneratingQR] = useState(false);
-
-  const { connectChannel } = useRemoteControlStore();
-
-  // Handle QR code generation
+  // Handle connect
   const handleConnect = useCallback(async () => {
-    setIsConnecting(true);
-    setError(null);
-    setQrCodeSvg(null);
+    // Guard against duplicate calls caused by parent re-renders
+    if (connectStartedRef.current) return
+    connectStartedRef.current = true
+
+    setIsConnecting(true)
+    setError(null)
+    setQrCodeSvg(null)
+    setAlreadyLoggedIn(false)
 
     try {
-      const result = await connectChannel('wechat');
-      setQrCode(result.qrCode);
-      setChannelId(result.channelId);
-      setCountdown(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setIsConnecting(false);
-    }
-  }, [connectChannel]);
+      const result = await connect()
 
-  // Generate QR code SVG when qrCode data changes
+      if (result.alreadyLoggedIn) {
+        // Already logged in - no QR needed
+        setAlreadyLoggedIn(true)
+        onSuccess()
+        onClose()
+      } else if (result.qrCode) {
+        setQrCode(result.qrCode)
+        setCountdown(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000)
+      } else {
+        setError('未能获取登录二维码')
+        connectStartedRef.current = false
+      }
+    } catch (err) {
+      setError(String(err))
+      connectStartedRef.current = false
+    } finally {
+      setIsConnecting(false)
+    }
+  }, [connect, onSuccess, onClose])
+
+  // Generate QR SVG
   useEffect(() => {
     if (!qrCode) {
-      setQrCodeSvg(null);
-      return;
+      setQrCodeSvg(null)
+      return
     }
 
-    let cancelled = false;
-    setIsGeneratingQR(true);
+    let cancelled = false
+    setIsGeneratingQR(true)
 
     generateQRCodeSVG(qrCode)
       .then((svg) => {
-        if (!cancelled) {
-          setQrCodeSvg(svg);
-        }
+        if (!cancelled) setQrCodeSvg(svg)
       })
       .catch((err) => {
         if (!cancelled) {
-          console.error('Failed to generate QR code SVG:', err);
-          setError('二维码生成失败');
+          console.error('QR generation failed:', err)
+          setError('二维码生成失败')
         }
       })
       .finally(() => {
-        if (!cancelled) {
-          setIsGeneratingQR(false);
-        }
-      });
+        if (!cancelled) setIsGeneratingQR(false)
+      })
 
     return () => {
-      cancelled = true;
-    };
-  }, [qrCode]);
+      cancelled = true
+    }
+  }, [qrCode])
 
-  // Countdown timer
+  // Countdown with timeout handling
   useEffect(() => {
-    if (!isOpen || !qrCode || countdown <= 0) return;
+    if (!isOpen || !qrCode) return
+
+    if (countdown <= 0) {
+      setError('扫码超时，请重试')
+      setQrCode(null)
+      setQrCodeSvg(null)
+      return
+    }
 
     const timer = setInterval(() => {
-      setCountdown((prev) => prev - 1);
-    }, 1000);
+      setCountdown((prev) => prev - 1)
+    }, 1000)
 
-    return () => clearInterval(timer);
-  }, [isOpen, qrCode, countdown]);
+    return () => clearInterval(timer)
+  }, [isOpen, qrCode, countdown])
 
-  // Start connection when dialog opens
+  // Auto-close dialog when connection is established (async QR scan flow)
+  useEffect(() => {
+    if (isOpen && qrCode && connectionStatus === 'connected') {
+      onSuccess()
+      onClose()
+    }
+  }, [isOpen, qrCode, connectionStatus, onSuccess, onClose])
+
+  // Start connection on open
   useEffect(() => {
     if (isOpen) {
-      handleConnect();
+      handleConnect()
     } else {
-      // Reset state when dialog closes
-      setQrCode(null);
-      setQrCodeSvg(null);
-      setChannelId(null);
-      setError(null);
-      setCountdown(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000);
+      // Reset on close
+      connectStartedRef.current = false
+      setQrCode(null)
+      setQrCodeSvg(null)
+      setError(null)
+      setCountdown(REMOTE_CONTROL_CONSTRAINTS.SCAN_TIMEOUT_MS / 1000)
+      setAlreadyLoggedIn(false)
     }
-  }, [isOpen, handleConnect]);
+  }, [isOpen, handleConnect])
 
-  // Check for successful connection
-  useEffect(() => {
-    if (!channelId) return;
-
-    const { settings } = useRemoteControlStore.getState();
-    const channels = settings?.channels ?? [];
-    const channel = channels.find(c => c.id === channelId);
-
-    if (channel?.status === 'connected') {
-      onSuccess(channelId);
-      onClose();
-    }
-  }, [channelId, onSuccess, onClose]);
-
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Dialog */}
       <div className="relative w-[400px] max-w-[90vw] bg-bg-primary rounded-lg shadow-xl p-6">
-        {/* Header */}
         <div className="text-center mb-4">
           <h3 className="text-lg font-medium text-text-primary">接入微信 ClawBot</h3>
         </div>
 
-        {/* QR Code Area */}
         <div className="flex flex-col items-center mb-4">
           {isConnecting || isGeneratingQR ? (
             <div className="w-48 h-48 flex items-center justify-center bg-bg-secondary rounded-lg border border-border">
@@ -276,7 +231,6 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
             </div>
           ) : qrCodeSvg ? (
             <>
-              {/* QR Code Display */}
               <div className="w-48 h-48 flex items-center justify-center bg-white rounded-lg border border-border p-2">
                 <img
                   src={`data:image/svg+xml,${encodeURIComponent(qrCodeSvg)}`}
@@ -284,8 +238,6 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
                   className="w-full h-full"
                 />
               </div>
-
-              {/* Countdown */}
               <div className="mt-2 text-sm text-text-muted">
                 请在 <span className="text-accent-indigo font-medium">{countdown}</span> 秒内扫码
               </div>
@@ -293,23 +245,27 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
           ) : null}
         </div>
 
-        {/* Steps */}
         <div className="space-y-2 mb-6">
           <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">1</span>
+            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">
+              1
+            </span>
             <span>使用手机微信扫描二维码</span>
           </div>
           <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">2</span>
+            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">
+              2
+            </span>
             <span>在手机端确认授权</span>
           </div>
           <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">3</span>
+            <span className="w-5 h-5 flex items-center justify-center bg-bg-tertiary rounded-full text-xs text-text-muted">
+              3
+            </span>
             <span>连接成功</span>
           </div>
         </div>
 
-        {/* Cancel Button */}
         <div className="flex justify-center">
           <button
             onClick={onClose}
@@ -320,127 +276,14 @@ function AddChannelDialog({ isOpen, onClose, onSuccess }: AddChannelDialogProps)
         </div>
       </div>
     </div>
-  );
-}
-
-/**
- * Generate a QR code SVG string from data
- * Uses the qrcode library to generate a proper scannable QR code
- */
-async function generateQRCodeSVG(data: string): Promise<string> {
-  try {
-    // Generate QR code as SVG string with optimal settings for scanning
-    const svgString = await QRCode.toString(data, {
-      type: 'svg',
-      width: 200,
-      margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#ffffff',
-      },
-      errorCorrectionLevel: 'M', // Medium error correction for better scanning
-    });
-    return svgString;
-  } catch (error) {
-    console.error('Failed to generate QR code:', error);
-    // Return a fallback error indicator SVG
-    return `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
-        <rect width="200" height="200" fill="white"/>
-        <text x="100" y="100" text-anchor="middle" font-size="12" fill="red">QR生成失败</text>
-      </svg>
-    `;
-  }
-}
-
-/**
- * Channel Details Dialog Props
- */
-interface ChannelDetailsDialogProps {
-  isOpen: boolean;
-  channel: Channel | null;
-  onClose: () => void;
-}
-
-/**
- * Channel Details Dialog Component
- */
-function ChannelDetailsDialog({ isOpen, channel, onClose }: ChannelDetailsDialogProps): JSX.Element | null {
-  if (!isOpen || !channel) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Dialog */}
-      <div className="relative w-[400px] max-w-[90vw] bg-bg-primary rounded-lg shadow-xl p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-medium text-text-primary">
-            {getChannelTypeName(channel.type)} 详情
-          </h3>
-          <button
-            onClick={onClose}
-            className="p-1 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Channel Info */}
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-sm text-text-muted">通道 ID</span>
-            <span className="text-sm text-text-secondary font-mono">{channel.id.slice(0, 8)}...</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-sm text-text-muted">类型</span>
-            <span className="text-sm text-text-secondary">{getChannelTypeName(channel.type)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-sm text-text-muted">状态</span>
-            <span className="text-sm text-text-secondary">
-              {channel.status === 'connected' ? '🟢 ' : channel.status === 'pending' ? '🟡 ' : '⚪ '}
-              {getChannelStatusName(channel.status)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-sm text-text-muted">连接时间</span>
-            <span className="text-sm text-text-secondary">
-              {channel.connectedAt
-                ? new Date(channel.connectedAt).toLocaleString('zh-CN')
-                : '未连接'}
-            </span>
-          </div>
-        </div>
-
-        {/* Close Button */}
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-text-primary bg-bg-secondary hover:bg-bg-hover rounded-lg transition-colors"
-          >
-            关闭
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  )
 }
 
 /**
  * RemoteControlSettings Component
- * Main settings panel for remote control configuration
  */
 export function RemoteControlSettings({ visible = true }: RemoteControlSettingsProps): JSX.Element | null {
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [detailsChannel, setDetailsChannel] = useState<Channel | null>(null);
+  const [isConnectDialogOpen, setIsConnectDialogOpen] = useState(false)
 
   const {
     settings,
@@ -450,75 +293,61 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
     cleanup,
     enable,
     disable,
-    disconnectChannel,
+    disconnect,
     updateSettings,
-    refresh,
-  } = useRemoteControlStore();
+  } = useRemoteControlStore()
 
-  // Initialize store on mount
+  // Initialize on mount
   useEffect(() => {
-    initialize();
-    return () => cleanup();
-  }, [initialize, cleanup]);
+    initialize()
+    return () => cleanup()
+  }, [initialize, cleanup])
 
   // Handle enable toggle
-  const handleEnableToggle = async (): Promise<void> => {
+  const handleEnableToggle = async () => {
     try {
       if (settings.enabled) {
-        await disable();
+        await disable()
       } else {
-        await enable();
+        await enable()
       }
     } catch (err) {
-      console.error('Failed to toggle remote control:', err);
+      console.error('Failed to toggle:', err)
     }
-  };
-
-  // Handle disconnect channel
-  const handleDisconnect = async (channelId: string): Promise<void> => {
-    try {
-      await disconnectChannel(channelId);
-    } catch (err) {
-      console.error('Failed to disconnect channel:', err);
-    }
-  };
-
-  // Handle show details
-  const handleShowDetails = (channel: Channel): void => {
-    setDetailsChannel(channel);
-  };
+  }
 
   // Handle require confirm toggle
-  const handleRequireConfirmToggle = async (): Promise<void> => {
+  const handleRequireConfirmToggle = async () => {
     try {
-      await updateSettings({ requireConfirm: !settings.requireConfirm });
+      await updateSettings({ requireConfirm: !settings.requireConfirm })
     } catch (err) {
-      console.error('Failed to update settings:', err);
+      console.error('Failed to update:', err)
     }
-  };
+  }
 
-  // Handle add channel success
-  const handleAddChannelSuccess = (channelId: string): void => {
-    console.log(`Channel ${channelId} connected successfully`);
-  };
+  // Handle disconnect
+  const handleDisconnect = async () => {
+    try {
+      await disconnect()
+    } catch (err) {
+      console.error('Failed to disconnect:', err)
+    }
+  }
 
-  if (!visible) return null;
+  if (!visible) return null
 
-  // Connected channels - use optional chaining and nullish coalescing for safety
-  const channels = settings?.channels ?? [];
-  const connectedChannels = channels.filter(c => c.status === 'connected');
-  const canAddChannel = canAddMoreChannels();
+  const connection = settings.connection
+  const isPending = connection?.status === 'pending'
+  const connected = connection?.status === 'connected'
 
   return (
     <div className="space-y-6">
-      {/* Header Section */}
+      {/* Header */}
       <div>
         <div className="flex items-start justify-between mb-2">
           <div>
             <h3 className="text-sm font-medium text-text-primary">远程控制</h3>
-            <p className="text-xs text-text-muted mt-1">
-              通过微信等渠道远程管理 devflow-ide
-            </p>
+            <p className="text-xs text-text-muted mt-1">通过微信远程管理 DevFlow IDE</p>
           </div>
 
           {/* Enable Toggle */}
@@ -534,7 +363,7 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
         </div>
       </div>
 
-      {/* Loading State */}
+      {/* Loading */}
       {isLoading && (
         <div className="flex items-center justify-center py-4">
           <div className="flex items-center gap-2 text-text-muted">
@@ -563,77 +392,90 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
         </div>
       )}
 
-      {/* Error State */}
+      {/* Error */}
       {error && (
         <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
           <p className="text-xs text-red-500">{error}</p>
         </div>
       )}
 
-      {/* Connected Channels Section */}
+      {/* Connection Status */}
       {!isLoading && (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h4 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-              已连接通道
-            </h4>
-            <span className="text-xs text-text-muted">
-              {connectedChannels.length} / {REMOTE_CONTROL_CONSTRAINTS.MAX_CHANNELS}
-            </span>
+            <h4 className="text-xs font-medium text-text-secondary uppercase tracking-wide">连接状态</h4>
           </div>
 
-          {/* Channel List */}
-          {channels.length === 0 ? (
+          {connection ? (
+            <div className="flex items-center justify-between p-3 bg-bg-secondary border border-border rounded-lg">
+              <div className="flex items-center gap-3">
+                <span
+                  className="text-lg"
+                  title={getConnectionStatusName(connection.status)}
+                >
+                  {connection.status === 'connected'
+                    ? '🟢'
+                    : connection.status === 'pending'
+                      ? '🟡'
+                      : connection.status === 'error'
+                        ? '🔴'
+                        : '⚪'}
+                </span>
+
+                <div>
+                  <div className="text-sm font-medium text-text-primary">微信 ClawBot</div>
+                  <div className="text-xs text-text-muted">
+                    {connection.status === 'connected'
+                      ? connection.connectedAt
+                        ? new Date(connection.connectedAt).toLocaleString('zh-CN')
+                        : '已连接'
+                      : getConnectionStatusName(connection.status)}
+                  </div>
+                </div>
+              </div>
+
+              {connected && (
+                <button
+                  onClick={handleDisconnect}
+                  className="px-2 py-1 text-xs text-text-secondary hover:text-red-500 hover:bg-bg-hover rounded transition-colors"
+                >
+                  断开
+                </button>
+              )}
+            </div>
+          ) : (
             <div className="flex flex-col items-center justify-center py-6 px-4 bg-bg-secondary border border-border rounded-lg">
               <div className="w-10 h-10 mb-2 flex items-center justify-center bg-bg-tertiary rounded-full">
                 <span className="text-xl">📱</span>
               </div>
-              <p className="text-sm text-text-secondary">暂无已连接的通道</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {channels.map((channel) => (
-                <ChannelCard
-                  key={channel.id}
-                  channel={channel}
-                  onDisconnect={handleDisconnect}
-                  onShowDetails={handleShowDetails}
-                />
-              ))}
+              <p className="text-sm text-text-secondary">尚未连接</p>
             </div>
           )}
         </div>
       )}
 
-      {/* Add Channel Button */}
-      {!isLoading && (
+      {/* Connect Button */}
+      {!isLoading && !connected && (
         <div>
           <button
-            onClick={() => setIsAddDialogOpen(true)}
-            disabled={!canAddChannel || !settings.enabled}
+            onClick={() => setIsConnectDialogOpen(true)}
+            disabled={!settings.enabled || isPending}
             className={`
               w-full py-2 text-sm font-medium rounded-lg border border-border transition-colors
-              ${canAddChannel && settings.enabled
+              ${settings.enabled && !isPending
                 ? 'text-accent-indigo border-accent-indigo/30 hover:bg-accent-indigo/10'
                 : 'text-text-muted cursor-not-allowed'}
             `}
           >
-            + 添加新通道
+            {isPending ? '连接中...' : '连接微信'}
           </button>
           {!settings.enabled && (
-            <p className="text-xs text-text-muted mt-1 text-center">
-              请先启用远程控制
-            </p>
-          )}
-          {!canAddChannel && settings.enabled && (
-            <p className="text-xs text-text-muted mt-1 text-center">
-              已达到最大通道数量限制
-            </p>
+            <p className="text-xs text-text-muted mt-1 text-center">请先启用远程控制</p>
           )}
         </div>
       )}
 
-      {/* Security Settings Section */}
+      {/* Security Settings */}
       {!isLoading && (
         <div className="pt-4 border-t border-border">
           <h4 className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-3">
@@ -641,7 +483,6 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
           </h4>
 
           <div className="flex items-start gap-3">
-            {/* Checkbox */}
             <label className="relative flex items-center cursor-pointer mt-0.5">
               <input
                 type="checkbox"
@@ -661,7 +502,6 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
               </div>
             </label>
 
-            {/* Label and Description */}
             <div>
               <span className="text-sm text-text-primary">重要操作需手机端确认</span>
               <p className="text-xs text-text-muted mt-1">
@@ -672,21 +512,14 @@ export function RemoteControlSettings({ visible = true }: RemoteControlSettingsP
         </div>
       )}
 
-      {/* Add Channel Dialog */}
-      <AddChannelDialog
-        isOpen={isAddDialogOpen}
-        onClose={() => setIsAddDialogOpen(false)}
-        onSuccess={handleAddChannelSuccess}
-      />
-
-      {/* Channel Details Dialog */}
-      <ChannelDetailsDialog
-        isOpen={detailsChannel !== null}
-        channel={detailsChannel}
-        onClose={() => setDetailsChannel(null)}
+      {/* Connect Dialog */}
+      <ConnectDialog
+        isOpen={isConnectDialogOpen}
+        onClose={() => setIsConnectDialogOpen(false)}
+        onSuccess={() => console.log('Connected successfully')}
       />
     </div>
-  );
+  )
 }
 
-export default RemoteControlSettings;
+export default RemoteControlSettings

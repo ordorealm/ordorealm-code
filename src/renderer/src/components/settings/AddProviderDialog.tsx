@@ -49,6 +49,9 @@ export function AddProviderDialog({
   const [error, setError] = useState<string | null>(null);
   const [keyFormatWarning, setKeyFormatWarning] = useState<string | null>(null);
 
+  // Disabled agent tooltip state
+  const [disabledAgentTooltip, setDisabledAgentTooltip] = useState<AgentType | null>(null);
+
   // API Key visibility state
   const [showApiKey, setShowApiKey] = useState(false);
 
@@ -129,7 +132,8 @@ export function AddProviderDialog({
   useEffect(() => {
     if (!isEditMode && isOpen) {
       setBaseUrl(DEFAULT_BASE_URLS_BY_API[apiType]);
-      setDefaultModel(DEFAULT_MODELS_BY_API[apiType][0]);
+      // 默认模型留空，让用户自行填写
+      setDefaultModel('');
     }
   }, [apiType, isEditMode, isOpen]);
 
@@ -139,7 +143,7 @@ export function AddProviderDialog({
     setApiType('anthropic');
     setApiKey('');
     setBaseUrl(DEFAULT_BASE_URLS_BY_API.anthropic);
-    setDefaultModel(DEFAULT_MODELS_BY_API.anthropic[0]);
+    setDefaultModel('');
     setContextWindow(200000);
     setIsDefault(false);
     setValidationResult(null);
@@ -260,34 +264,58 @@ export function AddProviderDialog({
               {(Object.keys(AGENT_DISPLAY_NAMES) as AgentType[]).map((agent) => {
                 const status = agentInstallStatuses[agent];
                 const isInstalled = status?.installed ?? false;
+                // 目前只支持 claude-code，其他类型禁用
+                const isDisabled = agent !== 'claude-code' || isEditMode;
+                const isFeatureDisabled = agent !== 'claude-code';
+
                 return (
                   <button
                     key={agent}
                     type="button"
-                    onClick={() => setAgentType(agent)}
-                    disabled={isEditMode}
+                    onClick={() => {
+                      if (isFeatureDisabled) {
+                        setDisabledAgentTooltip(agent);
+                        setTimeout(() => setDisabledAgentTooltip(null), 2000);
+                        return;
+                      }
+                      setAgentType(agent);
+                    }}
+                    disabled={isDisabled && !isFeatureDisabled}
                     className={`
                       relative px-3 py-2 text-sm font-medium rounded-lg border transition-all
-                      ${agentType === agent
+                      ${agentType === agent && !isFeatureDisabled
                         ? 'border-accent-indigo bg-bg-tertiary text-accent-indigo'
                         : 'border-border bg-bg-primary text-text-secondary hover:border-border'}
-                      ${isEditMode ? 'opacity-50 cursor-not-allowed' : ''}
+                      ${isFeatureDisabled ? 'opacity-50 cursor-pointer' : ''}
+                      ${isDisabled && !isFeatureDisabled ? 'opacity-50 cursor-not-allowed' : ''}
                     `}
                   >
                     <span className="flex items-center justify-center gap-1">
                       {AGENT_DISPLAY_NAMES[agent]}
-                      {status && (
+                      {isFeatureDisabled && (
+                        <span className="text-text-muted text-xs" title="暂未开发">
+                          🔒
+                        </span>
+                      )}
+                      {!isFeatureDisabled && status && (
                         <span className={isInstalled ? 'text-accent-green' : 'text-text-muted'} title={isInstalled ? `已安装: ${status.version}` : '未安装'}>
                           {isInstalled ? '✓' : '○'}
                         </span>
                       )}
                     </span>
+                    {/* 禁用提示气泡 */}
+                    {disabledAgentTooltip === agent && (
+                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-20 px-3 py-1.5 bg-bg-primary border border-border rounded-lg shadow-lg text-xs text-text-primary whitespace-nowrap">
+                        暂未开发，敬请期待
+                        <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-border" />
+                      </div>
+                    )}
                   </button>
                 );
               })}
             </div>
-            {/* Agent 安装状态详情 */}
-            {agentInstallStatuses[agentType] && (
+            {/* Agent 安装状态详情 - 仅显示已启用的 Agent */}
+            {agentType === 'claude-code' && agentInstallStatuses[agentType] && (
               <div className={`mt-2 p-2 rounded text-xs ${agentInstallStatuses[agentType]!.installed ? 'bg-accent-green/10 text-accent-green' : 'bg-accent-yellow/10 text-accent-yellow'}`}>
                 {agentInstallStatuses[agentType]!.installed ? (
                   <span>✓ {agentInstallStatuses[agentType]!.displayName} 已安装 {agentInstallStatuses[agentType]!.version && `(${agentInstallStatuses[agentType]!.version})`}</span>
@@ -307,9 +335,7 @@ export function AddProviderDialog({
               </div>
             )}
             <p className="mt-1 text-xs text-text-muted">
-              {agentType === 'claude-code' && 'Claude Code Agent 需要 Anthropic API'}
-              {agentType === 'codex' && 'Codex 需要 OpenAI API'}
-              {agentType === 'opencode' && 'OpenCode 支持 OpenAI 或 Anthropic API'}
+              目前仅支持 Claude Code，其他 Agent 敬请期待
             </p>
           </div>
 
@@ -428,29 +454,19 @@ export function AddProviderDialog({
                   {compatibleApiTypes.length > 1 ? '6' : '5'}
                 </span>
                 默认模型
+                <span className="text-text-muted font-normal">(可选)</span>
               </span>
             </label>
-            <div className="flex gap-2">
-              <select
-                value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                className="flex-1 px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none bg-bg-primary text-text-primary"
-              >
-                {availableModels.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                placeholder="自定义模型"
-                className="flex-1 px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
-                title="输入自定义模型名称"
-              />
-            </div>
+            <input
+              type="text"
+              value={defaultModel}
+              onChange={(e) => setDefaultModel(e.target.value)}
+              placeholder={availableModels[0] || '输入模型名称'}
+              className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
+            />
+            <p className="mt-1 text-xs text-text-muted">
+              留空则使用 API 默认模型
+            </p>
           </div>
 
           {/* Step 7: Context Window */}
@@ -464,41 +480,17 @@ export function AddProviderDialog({
               </span>
             </label>
             <div className="flex gap-2 items-center">
-              <input
-                type="number"
+              <select
                 value={contextWindow}
-                onChange={(e) => setContextWindow(parseInt(e.target.value) || 200000)}
-                min={1000}
-                max={1000000}
-                className="flex-1 px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
-              />
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => setContextWindow(200000)}
-                  className={`px-2 py-1 text-xs rounded border transition-colors ${
-                    contextWindow === 200000
-                      ? 'border-accent-indigo bg-accent-indigo/10 text-accent-indigo'
-                      : 'border-border text-text-muted hover:border-accent-indigo'
-                  }`}
-                >
-                  200K
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setContextWindow(1000000)}
-                  className={`px-2 py-1 text-xs rounded border transition-colors ${
-                    contextWindow === 1000000
-                      ? 'border-accent-indigo bg-accent-indigo/10 text-accent-indigo'
-                      : 'border-border text-text-muted hover:border-accent-indigo'
-                  }`}
-                >
-                  1M
-                </button>
-              </div>
+                onChange={(e) => setContextWindow(parseInt(e.target.value))}
+                className="flex-1 px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none text-sm bg-bg-primary text-text-primary"
+              >
+                <option value={200000}>200K (默认)</option>
+                <option value={1000000}>1M (仅 Sonnet 4/4.5)</option>
+              </select>
             </div>
             <p className="mt-1 text-xs text-text-muted">
-              模型的最大上下文窗口大小。Claude 默认 200K，DeepSeek 可配置 1M
+              200K 为模型默认值；1M 仅支持 Claude Sonnet 4/4.5 模型
             </p>
           </div>
 

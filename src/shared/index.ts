@@ -90,7 +90,7 @@ export type {
   SessionInfo
 } from './types'
 
-// IPC constants
+// IPC constants (from types.ts - general channels)
 export {
   IPC_CHANNELS,
   type IpcChannelType
@@ -98,57 +98,36 @@ export {
 
 // Remote Control types
 export type {
-  ChannelType,
-  ChannelStatus,
-  Channel,
+  ConnectionStatus,
+  ConnectionInfo,
   RemoteControlSettings,
   RemoteControlStatus,
-  ChannelAdapter,
-  AgentContext,
   OperationResult,
-  MasterAgent,
   PermissionConfig,
-  CommandType,
-  ParsedCommand,
-  CommandHandler,
-  ConnectChannelRequest,
-  ConnectChannelResponse,
-  DisconnectChannelRequest,
-  DisconnectChannelResponse,
-  // Note: UpdateSettingsRequest and UpdateSettingsResponse are exported from ipc/remote-control-channels
-  RemoteControlIpcChannelType,
-  IncomingRemoteMessage,
-  OutgoingRemoteMessage,
-  ConfirmationRequest,
-  ConfirmationResponse
+  ConnectionChangeEvent,
+  MessageReceivedEvent,
+  ConfirmRequestEvent,
+  ConfirmResponseEvent,
+  SwitchProjectEvent,
 } from './types/remote-control'
 
-// Remote Control constants
+// Remote Control constants (rename to avoid conflict)
 export {
   PERMISSIONS,
-  REMOTE_CONTROL_IPC_CHANNELS,
+  IPC_CHANNELS as REMOTE_CONTROL_IPC_CHANNELS,
+  IPC_PUSH_CHANNELS as REMOTE_CONTROL_IPC_PUSH_CHANNELS,
   REMOTE_CONTROL_CONSTRAINTS
 } from './types/remote-control'
 
 // IPC Channel definitions for Remote Control
 export {
-  IPC_CHANNELS as REMOTE_CONTROL_IPC_CHANNEL_NAMES,
-  type IpcChannelName,
+  type IpcChannelName as RemoteControlIpcChannelName,
   type GetStatusRequest,
   type GetStatusResponse,
   type ConnectRequest,
   type ConnectResponse,
   type DisconnectRequest,
   type DisconnectResponse,
-  type ListChannelsRequest,
-  type ListChannelsResponse,
   type UpdateSettingsRequest,
   type UpdateSettingsResponse,
-  type IpcHandler,
-  type GetStatusHandler,
-  type ConnectHandler,
-  type DisconnectHandler,
-  type ListChannelsHandler,
-  type UpdateSettingsHandler,
-  type IpcChannelMap,
 } from './ipc/remote-control-channels'

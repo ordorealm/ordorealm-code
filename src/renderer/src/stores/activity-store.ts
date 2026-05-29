@@ -5,7 +5,6 @@
  */
 
 import { create } from 'zustand';
-import { useShallow } from 'zustand/react/shallow';
 
 /**
  * Activity types for progress tracking
@@ -199,39 +198,5 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 }));
 
-/**
- * Hook to get thinking duration with auto-update
- */
-export function useThinkingDuration(sessionId: string): number {
-  const thinkingStartTime = useActivityStore(
-    useShallow(state => state.sessions[sessionId]?.thinkingStartTime)
-  );
 
-  // This will be updated by the component using setInterval
-  return thinkingStartTime ? Math.floor((Date.now() - thinkingStartTime) / 1000) : 0;
-}
 
-/**
- * Hook to get current activity detail
- */
-export function useCurrentActivity(sessionId: string): Activity | null {
-  return useActivityStore(
-    useShallow(state => state.sessions[sessionId]?.current || null)
-  );
-}
-
-/**
- * Optimized selector for activity data
- * Returns stable reference when data hasn't changed
- */
-export function useSessionActivity(sessionId: string): {
-  current: Activity | null;
-  thinkingStartTime: number | null;
-} {
-  return useActivityStore(
-    useShallow(state => ({
-      current: state.sessions[sessionId]?.current || null,
-      thinkingStartTime: state.sessions[sessionId]?.thinkingStartTime || null,
-    }))
-  );
-}

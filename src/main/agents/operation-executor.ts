@@ -77,6 +77,11 @@ export interface IdeApiAdapter {
    * Switch to a skill group
    */
   switchSkillGroup(skillGroupId: string): Promise<{ success: boolean; message: string }>
+
+  /**
+   * Send a message to a project's AI agent and wait for response
+   */
+  sendMessage(projectId: string, message: string): Promise<{ success: boolean; message: string }>
 }
 
 // ============ Operation Mapping ============
@@ -93,8 +98,15 @@ const COMMAND_TO_OPERATION: Record<ExtendedCommandType, string> = {
   mcp_stop: 'mcp_stop',
   skillgroup_list: 'skillgroup_list',
   skillgroup_switch: 'skillgroup_switch',
+  chat: 'chat',
   help: 'view_status', // help is a read-only operation
   unknown: 'unknown',
+}
+
+/** Reverse mapping: operation → command type */
+const OPERATION_TO_COMMAND: Record<string, ExtendedCommandType> = {}
+for (const [cmd, op] of Object.entries(COMMAND_TO_OPERATION)) {
+  OPERATION_TO_COMMAND[op] = cmd as ExtendedCommandType
 }
 
 // ============ Confirm Handler Type ============
@@ -284,9 +296,10 @@ class DefaultOperationExecutor implements OperationExecutor {
       }
     }
 
-    // Execute the operation
+    // Execute the operation (convert operation name back to command type)
+    const commandType = OPERATION_TO_COMMAND[pending.operation] || 'unknown'
     const command: ParsedCommand = {
-      type: pending.operation as ExtendedCommandType,
+      type: commandType,
       raw: pending.operation,
       params: pending.params as Record<string, string>,
       requiresConfirm: false, // Already confirmed
@@ -391,6 +404,8 @@ class DefaultOperationExecutor implements OperationExecutor {
         return this.executeSkillgroupList(context)
       case 'skillgroup_switch':
         return this.executeSkillgroupSwitch(command.params, context)
+      case 'chat':
+        return this.executeChat(command.params, context)
       case 'help':
         return this.executeHelp()
       default:
@@ -439,7 +454,7 @@ class DefaultOperationExecutor implements OperationExecutor {
         ? ` - ${project.currentTask}`
         : ''
 
-      return `${isCurrent ? '▶️ ' : '   '}${statusEmoji} ${project.name}${progressInfo}${taskInfo}`
+      return `${isCurrent ? '▶️ ' : '   '}${statusEmoji} ${project.name}${progressInfo}${taskInfo}\n      🆔 ${project.id}`
     })
 
     const message = `📊 项目会话状态\n\n${statusLines.join('\n')}`
@@ -488,7 +503,7 @@ class DefaultOperationExecutor implements OperationExecutor {
           return {
             success: true,
             message: `已经是当前项目: ${project.name}`,
-            data: { projectId: project.id },
+            data: { projectId: project.id, operation: 'switch_project' },
           }
         }
 
@@ -499,7 +514,7 @@ class DefaultOperationExecutor implements OperationExecutor {
             ? `✅ 已切换到项目: ${project.name}`
             : result.message,
           data: result.success
-            ? { projectId: project.id, projectName: project.name }
+            ? { projectId: project.id, projectName: project.name, operation: 'switch_project' }
             : undefined,
         }
       } catch (error) {
@@ -529,7 +544,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       return {
         success: true,
         message: `已经是当前项目: ${project.name}`,
-        data: { projectId: project.id },
+        data: { projectId: project.id, operation: 'switch_project' },
       }
     }
 
@@ -540,6 +555,7 @@ class DefaultOperationExecutor implements OperationExecutor {
       data: {
         projectId: project.id,
         projectName: project.name,
+        operation: 'switch_project',
       },
     }
   }
@@ -587,6 +603,7 @@ class DefaultOperationExecutor implements OperationExecutor {
                 projectId: project.id,
                 projectName: project.name,
                 restartedAt: new Date().toISOString(),
+                operation: 'restart_session',
               }
             : undefined,
         }
@@ -620,6 +637,7 @@ class DefaultOperationExecutor implements OperationExecutor {
         projectId: project.id,
         projectName: project.name,
         restartedAt: new Date().toISOString(),
+        operation: 'restart_session',
       },
     }
   }
@@ -1005,6 +1023,55 @@ class DefaultOperationExecutor implements OperationExecutor {
         skillgroupName: group.name,
         skillCount: group.skillCount,
       },
+    }
+  }
+
+  /**
+   * Execute chat operation - send message to current project's AI agent
+   */
+  private async executeChat(
+    params: Record<string, string>,
+    context: AgentContext
+  ): Promise<OperationResult> {
+    const { message } = params
+
+    if (!message) {
+      return {
+        success: false,
+        message: '请提供要发送给 AI 的消息内容',
+      }
+    }
+
+    // Determine target project: explicit param, current project, or first available
+    const targetProjectId = params.projectId
+      || context.currentProject
+      || context.projects[0]?.id
+
+    if (!targetProjectId) {
+      return {
+        success: false,
+        message: '没有可用的项目。请在 IDE 中打开一个项目后再试。',
+      }
+    }
+
+    if (!this.ideApi) {
+      return {
+        success: false,
+        message: 'IDE API 不可用，无法与 AI Agent 通信',
+      }
+    }
+
+    try {
+      const result = await this.ideApi.sendMessage(targetProjectId, message)
+      return {
+        success: result.success,
+        message: result.message,
+      }
+    } catch (error) {
+      return {
+        success: false,
+        message: `与 AI Agent 通信失败: ${(error as Error).message}`,
+      }
     }
   }
 

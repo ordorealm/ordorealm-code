@@ -475,7 +475,7 @@ export function ChatPanel(): JSX.Element {
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-2 space-y-2 min-h-0"
       >
         {/* History loading indicator */}
         {isLoadingHistory && (
@@ -496,6 +496,14 @@ export function ChatPanel(): JSX.Element {
           >
             ↑ 加载更早的消息
           </button>
+        )}
+
+        {/* Connection notice banner */}
+        {session.connectionNotice && (
+          <div className="flex items-center justify-center gap-2 py-2 px-4 bg-accent-green/10 border border-accent-green/30 rounded-lg text-sm text-accent-green animate-in fade-in slide-in-from-top-2 duration-300">
+            <span>🔗</span>
+            <span>{session.connectionNotice}</span>
+          </div>
         )}
 
         {/* Empty state */}

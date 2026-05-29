@@ -165,6 +165,9 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
     if (config.envOverrides) {
       Object.assign(cleanEnv, config.envOverrides)
     }
+    // ★ API 调用优化
+    cleanEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+    cleanEnv.CLAUDE_CODE_MAX_RETRIES = '2'
 
     // Build SDK options
     const abortController = new AbortController()
@@ -175,6 +178,10 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
       env: cleanEnv,
       permissionMode: config.autoAccept ? 'bypassPermissions' : 'auto',
       allowDangerouslySkipPermissions: config.autoAccept,
+      betas: [
+        'advanced-tool-use-2025-11-20',
+        'token-counting-2024-11-01',
+      ],
       includePartialMessages: true,
       abortController,
       settingSources: [],

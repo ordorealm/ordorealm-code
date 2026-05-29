@@ -8,9 +8,16 @@
  * @module main/agents/command-parser
  */
 
-import type { AgentContext } from '../../shared/types/remote-control'
-
 // ============ Extended Types ============
+
+/**
+ * Minimal agent context used by custom command handlers.
+ */
+interface AgentContext {
+  sessionId: string
+  projectName: string
+  userId: string
+}
 
 /**
  * Extended command type including 'unknown' for unrecognized commands
@@ -24,6 +31,7 @@ export type ExtendedCommandType =
   | 'mcp_stop'
   | 'skillgroup_list'
   | 'skillgroup_switch'
+  | 'chat'
   | 'help'
   | 'unknown'
 
@@ -120,6 +128,12 @@ const EXPLICIT_COMMAND_PATTERNS: Array<{
   {
     pattern: /^\/help$/i,
     type: 'help',
+    requiresConfirm: false,
+  },
+  {
+    pattern: /^\/(?:ask|chat)\s+(.+)$/i,
+    type: 'chat',
+    paramExtractor: (match) => ({ message: match[1].trim() }),
     requiresConfirm: false,
   },
 ]
@@ -456,6 +470,7 @@ export class CommandParser {
       'mcp_stop',
       'skillgroup_list',
       'skillgroup_switch',
+      'chat',
       'help',
     ]
   }
@@ -471,6 +486,7 @@ export class CommandParser {
   /status - 查看所有项目会话状态
   /switch <项目名> - 切换到指定项目会话
   /restart <项目名> - 重启指定项目会话
+  /ask <问题> - 向当前项目的 AI Agent 提问
   /help - 显示帮助信息
 
 🔹 MCP 管理

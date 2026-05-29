@@ -21,12 +21,27 @@ import {
 } from '../../src/main/agents/operation-executor'
 import { setMasterSessionConfig } from '../../src/main/agents/session-config'
 import type { ProjectInfo, MCPStatus, SkillGroup } from '../../src/main/agents/master-agent'
+import { createTokenCountProxy } from './token-count-cache'
 
 // Check if running in development mode
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 // Runtime manager instance (initialized on app ready)
 let runtimeManager: RuntimeManager | null = null
+
+// ★ Token count cache proxy（拦截 count_tokens 请求并缓存结果）
+let tokenCountProxyUrl: string | null = null
+let tokenCountRealBaseUrl: string | null = null
+
+async function getTokenCountProxyUrl(realBaseUrl: string): Promise<string> {
+  if (tokenCountProxyUrl && tokenCountRealBaseUrl === realBaseUrl) {
+    return tokenCountProxyUrl
+  }
+  const { url } = await createTokenCountProxy(realBaseUrl)
+  tokenCountProxyUrl = url
+  tokenCountRealBaseUrl = realBaseUrl
+  return url
+}
 
 /**
  * 检测 Agent CLI 安装状态
@@ -242,6 +257,8 @@ interface ClaudeSession {
   lastPrompt?: string
   /** ★ 空内容重试计数（每次 sendMessage 重置为 0） */
   emptyOutputRetryCount?: number
+  /** ★ SDK 错误重试计数（每次 sendMessage 重置为 0） */
+  errorRetryCount?: number
   /** ★ 上次收到前端 pong 的时间戳（用于双向心跳检测） */
   lastPongTime?: number
 }
@@ -468,53 +485,87 @@ async function getOrCreateSession(
 ): Promise<ClaudeSession> {
   // 检查是否已有活跃会话
   const existing = activeSessions.get(sessionId)
+  // ★ 保存 providerSessionId 用于恢复上下文（提前声明，供后续重建分支使用）
+  let savedProviderSessionId: string | undefined = resumeSessionId
   // ★ 只有当 status 不是 error 且 sdkQuery 存在时才复用
   // 如果 sdkQuery 为 null，说明之前被中断并关闭了，需要重建
   if (existing && existing.status !== 'error' && existing.sdkQuery) {
-    // ★ 即使复用会话，也检查并更新 MCP 配置
-    try {
-      const mcpConnector = getMCPConnector()
-      const builtinMcpServers = mcpConnector.getMCPServerConfigs()
+    // ★ 检测 Provider 参数是否变更（model / baseUrl / apiKey）
+    const modelChanged = !!(model && existing.providerConfig?.model !== model);
+    const baseUrlChanged = !!(baseUrl && existing.providerConfig?.baseUrl !== baseUrl);
+    const apiKeyChanged = !!(apiKey && existing.providerConfig?.apiKey !== apiKey);
+    const configChanged = modelChanged || baseUrlChanged || apiKeyChanged;
 
-      // 读取全局 MCP 配置
-      let globalMcpServers: Record<string, any> = {}
-      try {
-        const claudeJsonPath = join(app.getPath('home'), '.claude.json')
-        const claudeJsonContent = await fs.readFile(claudeJsonPath, 'utf-8')
-        const claudeJson = JSON.parse(claudeJsonContent)
-        globalMcpServers = claudeJson.mcpServers || {}
-      } catch {}
+    if (configChanged) {
+      console.log('[Claude SDK] Provider config changed:', {
+        model: modelChanged ? `${existing.providerConfig?.model} → ${model}` : 'unchanged',
+        baseUrl: baseUrlChanged ? 'changed' : 'unchanged',
+        apiKey: apiKeyChanged ? 'changed' : 'unchanged',
+        sessionStatus: existing.status,
+      });
 
-      // 合并配置
-      const mergedConfig = {
-        ...globalMcpServers,
-        ...builtinMcpServers
-      }
-
-      // 比较配置是否有变化
-      if (JSON.stringify(existing.mcpConfigSnapshot) !== JSON.stringify(mergedConfig)) {
-        console.log('[Claude SDK] MCP 配置变化，动态更新')
-        console.log('[Claude SDK] 内置 MCP:', Object.keys(builtinMcpServers))
-
-        // 使用 SDK API 更新
-        if (existing.sdkQuery.setMcpServers) {
-          await existing.sdkQuery.setMcpServers(mergedConfig)
-          existing.mcpConfigSnapshot = mergedConfig
-          console.log('[Claude SDK] MCP 配置已更新')
-        } else {
-          console.warn('[Claude SDK] SDK 不支持 setMcpServers，无法动态更新 MCP')
+      // ★ 多会话安全：仅重建当前 sessionId 的会话，不影响其他会话
+      if (existing.status === 'running') {
+        // 不打断正在执行的消息，下次 sendMessage 时生效
+        console.log('[Claude SDK] Session is running, deferring config change to next message');
+      } else {
+        // 空闲或错误状态 → 保存上下文，关闭旧会话，重建新会话
+        if (!savedProviderSessionId && existing.providerSessionId) {
+          savedProviderSessionId = existing.providerSessionId;
+          console.log('[Claude SDK] Will resume context via providerSessionId:', savedProviderSessionId);
         }
+        try { await existing.sdkQuery.interrupt(); } catch (e) { /* ignore */ }
+        activeSessions.delete(sessionId);
+        console.log('[Claude SDK] Old session closed, will recreate with new config');
+        // 不 return，继续走到下面创建新会话分支（带 resume）
       }
-    } catch (err) {
-      console.warn('[Claude SDK] 更新 MCP 配置失败:', err)
     }
 
-    return existing
+    // 如果仍在 activeSessions 中（未被重建逻辑删除），执行 MCP 更新并返回
+    if (activeSessions.has(sessionId)) {
+      // ★ 即使复用会话，也检查并更新 MCP 配置
+      try {
+        const mcpConnector = getMCPConnector()
+        const builtinMcpServers = mcpConnector.getMCPServerConfigs()
+
+        // 读取全局 MCP 配置
+        let globalMcpServers: Record<string, any> = {}
+        try {
+          const claudeJsonPath = join(app.getPath('home'), '.claude.json')
+          const claudeJsonContent = await fs.readFile(claudeJsonPath, 'utf-8')
+          const claudeJson = JSON.parse(claudeJsonContent)
+          globalMcpServers = claudeJson.mcpServers || {}
+        } catch {}
+
+        // 合并配置
+        const mergedConfig = {
+          ...globalMcpServers,
+          ...builtinMcpServers
+        }
+
+        // 比较配置是否有变化
+        if (JSON.stringify(existing.mcpConfigSnapshot) !== JSON.stringify(mergedConfig)) {
+          console.log('[Claude SDK] MCP 配置变化，动态更新')
+          console.log('[Claude SDK] 内置 MCP:', Object.keys(builtinMcpServers))
+
+          // 使用 SDK API 更新
+          if (existing.sdkQuery.setMcpServers) {
+            await existing.sdkQuery.setMcpServers(mergedConfig)
+            existing.mcpConfigSnapshot = mergedConfig
+            console.log('[Claude SDK] MCP 配置已更新')
+          } else {
+            console.warn('[Claude SDK] SDK 不支持 setMcpServers，无法动态更新 MCP')
+          }
+        }
+      } catch (err) {
+        console.warn('[Claude SDK] 更新 MCP 配置失败:', err)
+      }
+
+      return existing
+    }
   }
 
   // 如果会话存在但 sdkQuery 为 null，需要重建
-  // 保存 providerSessionId 用于恢复上下文
-  let savedProviderSessionId: string | undefined = resumeSessionId
   if (existing && !existing.sdkQuery) {
     console.log(`[Claude SDK] Session ${sessionId} exists but sdkQuery is null, will recreate`)
     // 如果没有传入 resumeSessionId，尝试使用保存的
@@ -553,15 +604,6 @@ async function getOrCreateSession(
         ANTHROPIC_DEFAULT_OPUS_MODEL: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL,
       }
 
-      // ── 调试日志 ──
-      console.log('[Claude SDK] ===== DEBUG API CONFIG =====')
-      console.log('[Claude SDK] apiType:', apiType)
-      console.log('[Claude SDK] apiKey (first 20 chars):', apiKey?.substring(0, 20))
-      console.log('[Claude SDK] apiKey length:', apiKey?.length)
-      console.log('[Claude SDK] baseUrl:', baseUrl || 'default')
-      console.log('[Claude SDK] model:', model || 'not set')
-      console.log('[Claude SDK] ===== END DEBUG =====')
-
       const abortController = new AbortController()
       const inputStream = new AsyncIterableQueue<any>()
 
@@ -572,7 +614,17 @@ async function getOrCreateSession(
         const claudeJsonContent = await fs.readFile(claudeJsonPath, 'utf-8')
         const claudeJson = JSON.parse(claudeJsonContent)
         globalMcpServers = claudeJson.mcpServers || {}
-        console.log('[Claude SDK] Loaded global MCP servers:', Object.keys(globalMcpServers))
+        // ★ 为每个 MCP 服务器设置 alwaysLoad: false，让工具按需加载
+        // 这样 Tool Search 可以按需发现工具，而不是预先加载全部
+        for (const serverName of Object.keys(globalMcpServers)) {
+          if (globalMcpServers[serverName] && typeof globalMcpServers[serverName] === 'object') {
+            // 保留用户显式设置的 alwaysLoad，否则默认 false
+            if (globalMcpServers[serverName].alwaysLoad === undefined) {
+              globalMcpServers[serverName].alwaysLoad = false
+            }
+          }
+        }
+        console.log('[Claude SDK] Loaded global MCP servers (with alwaysLoad=false):', Object.keys(globalMcpServers))
       } catch (err) {
         console.log('[Claude SDK] No global MCP config found')
       }
@@ -601,12 +653,19 @@ async function getOrCreateSession(
         }
       }
 
-      // SDK options（参考 SpectrAI 的 buildQueryOptions）
+      // SDK options
       const sdkOptions: Record<string, any> = {
         cwd: workingDirectory,
         env: cleanEnv,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        // ★ Beta 功能组合：
+        // - advanced-tool-use-2025-11-20: Tool Search，工具按需发现
+        // - token-counting-2024-11-01: 优化 token 计数行为
+        betas: [
+          'advanced-tool-use-2025-11-20',  // Tool Search: 工具按需发现
+          'token-counting-2024-11-01',  // ★ Token 计数优化：减少不必要的 count_tokens 调用
+        ],
         includePartialMessages: true,
         abortController,
         settingSources: ['user', 'project', 'local'],  // 加载 user 级 Skills/MCP
@@ -618,7 +677,6 @@ async function getOrCreateSession(
         canUseTool: createPermissionHandler(sessionId),
       }
 
-      // ★ 添加系统提示，指导 AI 使用内置 MCP 工具
       sdkOptions.systemPrompt = {
         type: 'preset',
         preset: 'claude_code',
@@ -632,7 +690,6 @@ async function getOrCreateSession(
 - 天气查询：用户问"今天天气"、"北京天气"等，调用 search 工具
 - 新闻资讯：用户问"最新新闻"、"科技新闻"等
 - 知识查询：用户问"什么是..."、"如何..."等需要搜索的问题
-- 示例：用户问"今天北京天气怎么样"，调用 \`mcp__open-websearch__search\` 搜索"北京今天天气"
 
 ### 2. 网页内容抓取 (mcp__fetch__get_markdown)
 用于获取网页内容：
@@ -641,72 +698,31 @@ async function getOrCreateSession(
 
 ### 3. 浏览器自动化 (mcp__playwright__*)
 用于需要操作浏览器的场景：
-- 截取网页截图
-- 填写表单
-- 点击按钮
-- 页面导航
+- 截取网页截图、填写表单、点击按钮、页面导航
 
-### 4. macOS 自动化 (mcp__macos-automator__*)
+${process.platform === 'win32'
+  ? `### 4. 桌面控制 (mcp__desktop-touch__*)
+用于 Windows 桌面自动化：
+- 鼠标键盘模拟、窗口控制、截图、剪贴板操作`
+  : `### 4. macOS 自动化 (mcp__macos-automator__*)
 用于 macOS 系统自动化：
-- 执行 AppleScript
-- 运行快捷指令
-- 系统控制
+- 执行 AppleScript、运行快捷指令、系统控制`
+}
 
-### 5. ⭐ 知识记忆系统 (mcp__memory__*) - 重要！
+### 5. 知识记忆系统 (mcp__memory__*) - 重要！
+Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储和查询重要信息。
 
-**Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储和查询重要信息。**
-
-#### 什么时候必须存储记忆？
+**什么时候必须存储记忆？**
 - 用户说"记住..."、"别忘了..."、"记下来..."
 - 用户提供了重要的个人信息（姓名、偏好、联系方式等）
-- 用户提到了项目配置、API 密钥、账号信息等
 - 用户明确要求下次记住某些设置
 
-#### 什么时候必须查询记忆？
-- **每次对话开始时**，先调用 \`mcp__memory__read_graph\` 或 \`mcp__memory__search_nodes\` 查询历史记忆
-- 用户问"之前说的..."、"上次提到的..."、"我记得..."
-- 用户询问自己的偏好、设置、历史记录
+**什么时候必须查询记忆？**
+- 每次对话开始时，先查询历史记忆
+- 用户问"之前说的..."、"上次提到的..."
 
-#### 记忆工具使用方法：
-- \`mcp__memory__create_entities\`：创建实体（人、项目、概念等）
-  - 示例：用户说"我叫张三"，创建实体 {name: "张三", type: "person", observations: ["用户的名字"]}
-- \`mcp__memory__add_observations\`：为实体添加属性/观察
-  - 示例：用户说"我喜欢用深色主题"，添加观察 ["喜欢深色主题"] 到用户实体
-- \`mcp__memory__create_relations\`：创建实体间关系
-  - 示例：用户说"我在做项目A"，创建关系 {from: "张三", to: "项目A", relationType: "正在做"}
-- \`mcp__memory__search_nodes\`：搜索已存储的知识
-  - 示例：用户问"我喜欢什么"，搜索 "喜欢" 或 "偏好"
-- \`mcp__memory__read_graph\`：读取整个知识图谱
-
-**重要**：
-1. 当用户的问题可以通过上述工具解决时，请主动调用工具，不要询问用户是否需要使用工具。
-2. 记忆系统是核心功能，必须积极使用，不要让用户反复提供相同信息。
-
-### 6. Windows 桌面自动化 (mcp__desktop-touch__*)
-用于 Windows 系统桌面自动化操作：
-- 鼠标移动、点击、拖拽
-- 键盘输入、快捷键
-- 窗口控制（移动、调整大小、关闭）
-- 屏幕截图
-
-使用场景：
-- 用户需要自动化操作 Windows 应用
-- 用户需要模拟鼠标键盘操作
-- 用户需要控制窗口位置和大小
-
-### 7. 浏览器自动化 - MCPBrowser (mcp__mcpbrowser__*)
-用于浏览器自动化，支持 Cookie 持久化和浏览器指纹保持：
-- 网页导航、点击、输入
-- 表单自动填写
-- 网页截图
-- Cookie 管理（保持登录状态）
-
-使用场景：
-- 需要保持登录状态的自动化操作
-- 需要避免被网站检测为自动化工具
-- 需要跨会话保持浏览器状态
-`
-      }
+**重要**：当用户的问题可以通过上述工具解决时，请主动调用工具，不要询问用户是否需要使用工具。
+`}
 
       // ★ 集成内置 MCP 服务
       try {
@@ -761,7 +777,8 @@ async function getOrCreateSession(
           flagEnv.ANTHROPIC_AUTH_TOKEN = apiKey
         }
         if (baseUrl) {
-          flagEnv.ANTHROPIC_BASE_URL = baseUrl
+          // ★ 通过本地缓存代理，拦截 count_tokens 请求
+          flagEnv.ANTHROPIC_BASE_URL = await getTokenCountProxyUrl(baseUrl)
         }
         if (model) {
           flagEnv.ANTHROPIC_MODEL = model
@@ -770,6 +787,11 @@ async function getOrCreateSession(
           flagEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = model
           flagEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = model
         }
+        // ★ 优化环境变量：减少不必要的 API 调用
+        // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 禁用非必要网络请求
+        flagEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+        // CLAUDE_CODE_MAX_RETRIES: 减少重试次数
+        flagEnv.CLAUDE_CODE_MAX_RETRIES = '2'
         sdkOptions.settings = {
           env: flagEnv
         }
@@ -789,18 +811,18 @@ async function getOrCreateSession(
         console.log('[Claude SDK] No model specified, SDK will use default')
       }
 
-      // ★ 设置上下文窗口和 betas（用于 1M 上下文）
-      // SDK 的 betas 选项用于启用 1M token 上下文窗口
-      // 参考: https://docs.anthropic.com/en/api/beta-headers
+      // ★ 设置上下文窗口：>= 1M 时追加 context-1m beta（不覆盖已有 betas）
       if (contextWindow && contextWindow >= 1000000) {
-        sdkOptions.betas = ['context-1m-2025-08-07']
-        console.log('[Claude SDK] Enabled 1M context window with betas: context-1m-2025-08-07')
+        const existingBetas = (sdkOptions.betas as string[]) || [];
+        sdkOptions.betas = [...existingBetas, 'context-1m-2025-08-07']
+        console.log('[Claude SDK] Enabled 1M context window, total betas:', sdkOptions.betas)
       }
 
       console.log('[Claude SDK] Final sdkOptions.model:', sdkOptions.model || 'not set')
       console.log('[Claude SDK] Context window:', contextWindow || 200000)
 
       // 创建 SDK query
+      console.log(`[Claude SDK] Creating new SDK query | sessionId=${sessionId} | model=${model}`);
       const sdkQuery: SDKQuery = sdk.query({
         prompt: inputStream,
         options: sdkOptions,
@@ -830,10 +852,7 @@ async function getOrCreateSession(
         lastPongTime: Date.now(),
       }
 
-      // Cache provider config globally for remote-control on-demand session creation
       globalProviderConfig = { apiKey, apiType, baseUrl, model, envOverrides }
-
-      // Also update master AI session config so it can initialize on next attempt
       try {
         setMasterSessionConfig({
           apiKey,
@@ -867,7 +886,13 @@ async function getOrCreateSession(
  * 持续运行，处理所有 SDK 消息
  */
 async function consumeSessionStream(session: ClaudeSession): Promise<void> {
-  if (!session.sdkQuery) return
+  const streamId = `${session.id.slice(0, 8)}-${Date.now()}`;
+  console.log(`[Claude SDK] consumeSessionStream ENTRY | streamId=${streamId}`);
+
+  if (!session.sdkQuery) {
+    console.log(`[Claude SDK] consumeSessionStream ABORT (no sdkQuery) | streamId=${streamId}`);
+    return;
+  }
 
   console.log(`[Claude SDK] Starting stream consumer for session: ${session.id}`)
 
@@ -896,6 +921,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
 
   try {
     for await (const msg of session.sdkQuery) {
+
       // ★ 检查是否已被中断
       if (session.abortController.signal.aborted) {
         console.log(`[Claude SDK] Stream aborted for session: ${session.id}`)
@@ -1334,6 +1360,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
         case 'result':
           session.lastActivity = Date.now()
           const isSuccess = msg.subtype === 'success'
+          console.log(`[Claude SDK] RESULT | sessionId=${session.id} | inputTokens=${msg.usage?.input_tokens} | outputTokens=${msg.usage?.output_tokens}`);
           console.log('[Claude SDK] Result:', isSuccess ? 'success' : 'failed')
           console.log('[Claude SDK] Result message keys:', Object.keys(msg))
           console.log('[Claude SDK] Result usage:', JSON.stringify(msg.usage, null, 2))
@@ -1403,14 +1430,41 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
               } as ProgressEvent)
             }
           } else {
-            // SDK 明确返回错误 → 直接通知前端，不重试
-            const errorMsg = msg.result || 'Unknown error'
-            mainWindow.webContents.send('claude:progress', {
-              sessionId: session.id,
-              type: 'error',
-              content: errorMsg,
-            } as ProgressEvent)
-            return
+            // SDK 明确返回错误 → 自动重试（最多 3 次）
+            const errorSubtype = msg.subtype || 'unknown'
+            const errorMsg = msg.result || msg.error || `Error: ${errorSubtype}`
+            console.error(`[Claude SDK] Error result | subtype=${errorSubtype} | result=${msg.result} | error=${msg.error} | keys=${Object.keys(msg).join(',')}`)
+            session.errorRetryCount = (session.errorRetryCount || 0) + 1
+
+            if (session.errorRetryCount <= 3 && session.lastPrompt) {
+              console.log(`[Claude SDK] Retrying (${session.errorRetryCount}/3) for session ${session.id}`)
+              // 通知前端正在重试
+              mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
+                type: 'status',
+                content: `AI 遇到错误，正在自动重试 (${session.errorRetryCount}/3)...`,
+                statusData: { status: 'api_retry', reason: errorSubtype },
+              } as ProgressEvent)
+              // 重置状态并重新发送
+              session.status = 'running'
+              session.output = ''
+              session.inputStream.enqueue({
+                type: 'user',
+                message: {
+                  role: 'user',
+                  content: [{ type: 'text', text: session.lastPrompt }],
+                },
+              })
+              // 不 return，继续循环等待新结果
+            } else {
+              console.warn(`[Claude SDK] Error retry exhausted (${session.errorRetryCount}) for session ${session.id}`)
+              mainWindow.webContents.send('claude:progress', {
+                sessionId: session.id,
+                type: 'error',
+                content: `${errorMsg}（已重试 ${session.errorRetryCount - 1} 次）`,
+              } as ProgressEvent)
+              return
+            }
           }
           break
 
@@ -1440,7 +1494,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
       }
     }
 
-    console.log(`[Claude SDK] Stream ended naturally for session: ${session.id}`)
+    console.log(`[Claude SDK] Stream ended naturally | sessionId=${session.id}`)
 
     // ★ 检查是否是软中断后的正常退出
     if (session.isSoftAbort) {
@@ -1531,6 +1585,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
     }
   } finally {
     clearInterval(keepaliveInterval)
+    console.log(`[Claude SDK] consumeSessionStream EXIT | streamId=${streamId} | status=${session.status}`);
   }
 }
 
@@ -1546,7 +1601,9 @@ async function retryEmptyOutput(
   session: ClaudeSession,
   mainWindow: BrowserWindow
 ): Promise<boolean> {
-  const retryCount = (session.emptyOutputRetryCount || 0) + 1
+  const traceId = `${session.id.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const retryCount = (session.emptyOutputRetryCount || 0) + 1;
+  console.log(`[Claude SDK] retryEmptyOutput TRIGGERED | traceId=${traceId} | retryCount=${retryCount}/3`);
   session.emptyOutputRetryCount = retryCount
 
   if (retryCount > 3) {
@@ -1900,13 +1957,8 @@ function registerClaudeHandlers(): void {
     async (_event, options: Omit<ClaudeExecuteOptions, 'prompt'> & { sessionId: string; envOverrides?: Record<string, string>; contextWindow?: number }): Promise<{ success: boolean; error?: string }> => {
       const { sessionId, workingDirectory, apiKey, baseUrl, model, apiType = 'anthropic', envOverrides, contextWindow } = options
 
-      console.log('[Claude SDK] ===== claude:startSession called =====')
-      console.log('[Claude SDK] Session ID:', sessionId)
-      console.log('[Claude SDK] Received apiKey (first 20 chars):', apiKey?.substring(0, 20))
-      console.log('[Claude SDK] Received apiKey length:', apiKey?.length)
-      console.log('[Claude SDK] Received model:', model)
-      console.log('[Claude SDK] Received baseUrl:', baseUrl)
-      console.log('[Claude SDK] Received contextWindow:', contextWindow)
+      const traceId = `${sessionId.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      console.log(`[Claude SDK] claude:startSession | traceId=${traceId} | sessionId=${sessionId} | model=${model}`)
 
       // ★ 如果已有会话，获取保存的 providerSessionId 用于恢复上下文
       const existingSession = activeSessions.get(sessionId)
@@ -1937,8 +1989,8 @@ function registerClaudeHandlers(): void {
   ipcMain.handle(
     'claude:sendMessage',
     async (_event, sessionId: string, prompt: string): Promise<{ success: boolean; error?: string }> => {
-      console.log('[Claude SDK] ===== claude:sendMessage called =====')
-      console.log('[Claude SDK] Session:', sessionId, 'Prompt:', prompt.substring(0, 50))
+      const traceId = `${sessionId.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      console.log(`[Claude SDK] claude:sendMessage | traceId=${traceId} | sessionId=${sessionId}`)
 
       let session = activeSessions.get(sessionId)
       if (!session) {
@@ -1999,6 +2051,7 @@ function registerClaudeHandlers(): void {
       session.lastActivity = Date.now()
       session.lastPrompt = prompt
       session.emptyOutputRetryCount = 0
+      session.errorRetryCount = 0
 
       // ★ 通过 inputStream 向 SDK 推送用户消息
       session.inputStream.enqueue({
@@ -2247,7 +2300,7 @@ function registerClaudeHandlers(): void {
       try {
         // 调用 SDK 的 getContextUsage 方法获取准确的上下文使用量
         const usage = await (session.sdkQuery as any).getContextUsage()
-        console.log('[Claude SDK] getContextUsage result:', usage)
+        console.log(`[Claude SDK] getContextUsage | sessionId=${sessionId} | totalTokens=${usage?.totalTokens}`)
 
         return {
           success: true,
@@ -2275,7 +2328,7 @@ function registerClaudeHandlers(): void {
   ipcMain.handle(
     'claude:execute',
     async (event, options: ClaudeExecuteOptions): Promise<ClaudeCodeResult> => {
-      console.log('[Claude SDK] ===== claude:execute called (legacy) =====')
+      console.log('[Claude SDK] claude:execute called (legacy)')
 
       const startTime = Date.now()
       const { prompt, workingDirectory, apiKey, baseUrl, model, timeout = 300000, apiType = 'anthropic' } = options
@@ -3207,7 +3260,6 @@ app.whenReady().then(async () => {
     // Continue without MCP - not critical for basic functionality
   }
 
-  // Initialize Remote Control IPC handlers
   await initializeRemoteControl()
 
   createWindow()

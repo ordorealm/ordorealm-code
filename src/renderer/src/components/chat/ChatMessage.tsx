@@ -487,13 +487,22 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
           />
         )}
 
-        {/* Content */}
+        {/* Content - Streaming vs Formatted Rendering */}
         {message.content && (
-          <div
-            className="text-sm text-text-primary leading-relaxed max-w-none prose prose-sm prose-invert"
-            style={{ whiteSpace: 'pre-wrap' }}
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-          />
+          message.isStreaming ? (
+            // 流式期间：原始文本 + 等宽字体，保留换行
+            // 不进行 Markdown 解析，避免不完整结构导致格式错乱
+            <pre className="text-sm text-text-primary font-mono whitespace-pre-wrap leading-relaxed overflow-x-auto">
+              {message.content}
+            </pre>
+          ) : (
+            // 完成后：Markdown 格式化渲染
+            <div
+              className="text-sm text-text-primary leading-relaxed max-w-none prose prose-sm prose-invert"
+              style={{ whiteSpace: 'pre-wrap' }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+            />
+          )
         )}
 
         {/* Streaming cursor animation */}

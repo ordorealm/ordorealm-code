@@ -482,7 +482,7 @@ export class WeClawManager {
           this.config.binaryPath,
           ['login'],
           {
-            timeout: 30000, // 30 seconds to get QR code
+            timeout: 120000, // 2 minutes to allow QR scan to complete
           }
         );
 
@@ -500,8 +500,8 @@ export class WeClawManager {
           if (qrUrlMatch && !resolved) {
             resolved = true;
             this.logger.info(`QR URL captured: ${qrUrlMatch[1]}`);
-            // Kill the process after capturing QR URL
-            loginProcess?.kill();
+            // Keep the login process running so it can complete the WeChat
+            // scan flow and write credentials to ~/.weclaw/accounts/
             resolve(qrUrlMatch[1]);
           }
         });
@@ -569,6 +569,40 @@ export class WeClawManager {
     // Wait for process to fully stop
     await new Promise(resolve => setTimeout(resolve, 2000));
     return this.start();
+  }
+
+  /**
+   * Logout: stop daemon and delete credentials
+   *
+   * Called when user intentionally disconnects to allow switching accounts.
+   */
+  async logout(): Promise<void> {
+    this.logger.info('Logging out: stopping daemon and deleting credentials...')
+
+    // Stop the daemon
+    try {
+      await this.stop()
+    } catch (err) {
+      this.logger.warn('Failed to stop daemon during logout:', err)
+    }
+
+    // Delete all credential files
+    if (fs.existsSync(this.accountsDir)) {
+      try {
+        const files = fs.readdirSync(this.accountsDir)
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            const filePath = path.join(this.accountsDir, file)
+            fs.unlinkSync(filePath)
+            this.logger.info(`Deleted credentials: ${filePath}`)
+          }
+        }
+      } catch (err) {
+        this.logger.warn('Failed to delete credentials:', err)
+      }
+    }
+
+    this.logger.info('Logout complete')
   }
 
   /**

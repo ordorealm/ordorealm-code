@@ -199,6 +199,19 @@ export interface Api {
     pingSession: (sessionId: string) => Promise<{ alive: boolean; status: string; lastActivity: number }>
     /** Respond to keepalive ping */
     pong: (sessionId: string) => Promise<void>
+    /** Get real-time context usage (accumulated tokens + accurate contextWindow) */
+    getContextUsage: (sessionId: string) => Promise<{
+      success: boolean
+      data?: {
+        totalTokens: number
+        maxTokens: number
+        rawMaxTokens: number
+        percentage: number
+        model: string
+        categories: { name: string; tokens: number; color: string }[]
+      }
+      error?: string
+    }>
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (options: ClaudeExecuteOptions, onProgress?: ProgressCallback) => Promise<ClaudeCodeResult>
     /** Listen for progress events (legacy, for backward compatibility) */
@@ -372,6 +385,8 @@ export interface Api {
     onConfirmRequest: (callback: (event: { confirmId: string; message: string; timestamp: string }) => void) => () => void
     /** Listen for confirmation responses */
     onConfirmResponse: (callback: (event: { confirmId: string; confirmed: boolean }) => void) => () => void
+    /** Listen for project switch requests from remote */
+    onSwitchProject: (callback: (event: { projectId: string; projectName: string }) => void) => () => void
   }
 }
 

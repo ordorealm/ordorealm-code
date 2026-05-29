@@ -123,11 +123,15 @@ export function MainLayout(): JSX.Element {
           </svg>
         </button>
 
-        {/* Drag region for remaining title bar space */}
+        {/* Drag region with centered app title */}
         <div
-          className="flex-1 h-full drag-region"
+          className="flex-1 h-full drag-region flex items-center justify-center select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        />
+        >
+          <span className="text-text-secondary text-xs font-medium tracking-wide">
+            DevFlow IDE
+          </span>
+        </div>
 
         {/* Settings icon */}
         <button

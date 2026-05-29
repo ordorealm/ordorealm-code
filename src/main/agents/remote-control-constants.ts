@@ -32,21 +32,3 @@ export type OperationRequiringConfirmation = typeof OPERATIONS_REQUIRING_CONFIRM
 export function requiresConfirmation(operation: string): boolean {
   return OPERATIONS_REQUIRING_CONFIRMATION.includes(operation as OperationRequiringConfirmation)
 }
-
-// ============ Command to Operation Mapping ============
-
-/**
- * Map command types to operation identifiers for permission checking
- */
-export const COMMAND_TO_OPERATION: Record<string, string> = {
-  status: 'view_status',
-  switch: 'switch_project',
-  restart: 'restart_session',
-  mcp_status: 'mcp_status',
-  mcp_start: 'mcp_start',
-  mcp_stop: 'mcp_stop',
-  skillgroup_list: 'skillgroup_list',
-  skillgroup_switch: 'skillgroup_switch',
-  help: 'view_status', // help is a read-only operation
-  unknown: 'unknown',
-}

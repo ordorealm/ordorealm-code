@@ -193,6 +193,20 @@ const api = {
     pong: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke('claude:pong', sessionId),
 
+    /** Get real-time context usage (accumulated tokens + accurate contextWindow) */
+    getContextUsage: (sessionId: string): Promise<{
+      success: boolean;
+      data?: {
+        totalTokens: number;
+        maxTokens: number;
+        rawMaxTokens: number;
+        percentage: number;
+        model: string;
+        categories: { name: string; tokens: number; color: string }[];
+      };
+      error?: string;
+    }> => ipcRenderer.invoke('claude:getContextUsage', sessionId),
+
     /** Execute claude command with progress events (legacy one-shot mode) */
     execute: (
       options: ClaudeExecuteOptions,

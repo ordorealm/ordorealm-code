@@ -199,6 +199,8 @@ export interface Session {
   interactivePanel?: InteractivePanelState;
   /** Token usage tracking for context window monitoring */
   tokenUsage?: TokenUsage;
+  /** Transient connection notice (e.g. "连接已恢复"), cleared after display timeout */
+  connectionNotice?: string | null;
 }
 
 /**

@@ -173,6 +173,14 @@ export function ProviderCard({ provider, onEdit, onDelete, onSetDefault }: Provi
         )}
       </div>
 
+      {/* Context Window */}
+      {provider.contextWindow && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
+          <span>📊</span>
+          <span>{provider.contextWindow >= 1000000 ? `${provider.contextWindow / 1000000}M` : `${provider.contextWindow / 1000}K`} 上下文</span>
+        </div>
+      )}
+
       {/* Test Result */}
       {testResult && (
         <div className={`mt-2 p-2 rounded text-xs ${

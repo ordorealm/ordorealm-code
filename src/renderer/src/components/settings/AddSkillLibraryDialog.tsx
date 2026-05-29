@@ -326,21 +326,30 @@ export function AddSkillLibraryDialog({
               Agent 类型 <span className="text-accent-red">*</span>
             </label>
             <div className="grid grid-cols-3 gap-2">
-              {(Object.keys(AGENT_DISPLAY_NAMES) as AgentType[]).map((agent) => (
-                <button
-                  key={agent}
-                  type="button"
-                  onClick={() => setAgentType(agent)}
-                  className={`
-                    px-3 py-2 text-sm font-medium rounded-lg border transition-all
-                    ${agentType === agent
-                      ? 'border-accent-indigo bg-bg-tertiary text-accent-indigo'
-                      : 'border-border bg-bg-primary text-text-secondary hover:border-border'}
-                  `}
-                >
-                  {AGENT_DISPLAY_NAMES[agent]}
-                </button>
-              ))}
+              {(Object.keys(AGENT_DISPLAY_NAMES) as AgentType[]).map((agent) => {
+                // 禁用 codex 和 opencode
+                const isDisabled = agent === 'codex' || agent === 'opencode';
+                return (
+                  <button
+                    key={agent}
+                    type="button"
+                    onClick={() => !isDisabled && setAgentType(agent)}
+                    disabled={isDisabled}
+                    className={`
+                      px-3 py-2 text-sm font-medium rounded-lg border transition-all
+                      ${isDisabled
+                        ? 'border-border bg-bg-primary text-text-muted opacity-50 cursor-not-allowed'
+                        : agentType === agent
+                          ? 'border-accent-indigo bg-bg-tertiary text-accent-indigo'
+                          : 'border-border bg-bg-primary text-text-secondary hover:border-border'}
+                    `}
+                    title={isDisabled ? '暂不支持' : undefined}
+                  >
+                    {AGENT_DISPLAY_NAMES[agent]}
+                    {isDisabled && <span className="ml-1 text-[10px]">(暂不支持)</span>}
+                  </button>
+                );
+              })}
             </div>
           </div>
 

@@ -862,6 +862,8 @@ interface SessionActions {
   updateTokenUsage: (sessionId: string, usage: { inputTokens: number; outputTokens: number; contextWindow: number }) => void;
   /** Update input draft - save unsent text when switching sessions/tabs */
   updateInputDraft: (sessionId: string, draft: string) => void;
+  /** Set auto-compacted flag - prevents repeated auto-compact within same session */
+  setAutoCompacted: (sessionId: string, value: boolean) => void;
 }
 
 /** Store initialization state */
@@ -1842,24 +1844,31 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               };
             });
 
-            // ★ 新增：流式传输结束后检查是否需要自动压缩
-            // 从 get() 获取最新的 tokenUsage
+            // ★ 流式传输结束后检查是否需要自动压缩
+            // 使用共享的 autoCompacted 状态，避免与 SessionToolbar 重复触发
             const latestSession = get().sessions[sessionId];
             const latestUsage = latestSession?.tokenUsage;
-            if (latestUsage) {
+            const alreadyCompacted = latestSession?.autoCompacted ?? false;
+
+            if (latestUsage && !alreadyCompacted) {
               const newPercentage = (latestUsage.inputTokens / latestUsage.contextWindow) * 100;
               if (newPercentage > 80) {
                 console.log('[SessionStore] Auto-compact needed after message, percentage:', newPercentage.toFixed(1), '%');
+                // 设置 autoCompacted 标志，防止重复触发
+                get().setAutoCompacted(sessionId, true);
                 // 延迟触发，避免阻塞当前响应
                 setTimeout(() => {
                   const currentSession = get().sessions[sessionId];
-                  // 再次检查，避免重复触发
+                  // 再次检查，确保仍需要压缩
                   const currentUsage = currentSession?.tokenUsage;
                   if (currentUsage) {
                     const pct = (currentUsage.inputTokens / currentUsage.contextWindow) * 100;
                     if (pct > 80) {
                       console.log('[SessionStore] Triggering delayed auto-compact, percentage:', pct.toFixed(1), '%');
                       get().triggerCompact(sessionId);
+                    } else {
+                      // 压缩不再需要，重置标志
+                      get().setAutoCompacted(sessionId, false);
                     }
                   }
                 }, 2000);
@@ -2664,6 +2673,28 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           [sessionId]: {
             ...existingSession,
             inputDraft: draft,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Set auto-compacted flag - prevents repeated auto-compact within same session
+   * @param sessionId Session ID
+   * @param value Auto-compacted flag value
+   */
+  setAutoCompacted: (sessionId, value) => {
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            autoCompacted: value,
           },
         },
       };

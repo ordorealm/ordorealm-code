@@ -603,6 +603,7 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
 function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null {
   const session = useSessionStore(state => state.sessions[sessionId]);
   const triggerCompact = useSessionStore(state => state.triggerCompact);
+  const setAutoCompacted = useSessionStore(state => state.setAutoCompacted);
   const project = useProjectStore(state => {
     const p = state.projects.find(p => p.id === session?.projectId);
     return p;
@@ -647,26 +648,22 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     };
   }, [session?.tokenUsage]);
 
-  // ★ 自动压缩去重：每个会话只自动触发一次，百分比降至 60% 以下时重置
-  const autoCompactedRef = useRef(false);
-  useEffect(() => {
-    autoCompactedRef.current = false;
-  }, [sessionId]);
-
+  // ★ 自动压缩去重：使用 store 状态（而非 useRef），与 complete 事件处理共享
+  const autoCompacted = session?.autoCompacted ?? false;
   const isStreaming = session?.messages?.some(m => m.isStreaming) ?? false;
 
   // ★ Auto-compact when > 80%（降低阈值，提前预防）
   useEffect(() => {
-    if (percentage > 80 && session?.tokenUsage && !autoCompactedRef.current && !isStreaming) {
-      autoCompactedRef.current = true;
+    if (percentage > 80 && session?.tokenUsage && !autoCompacted && !isStreaming) {
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
+      setAutoCompacted(sessionId, true);
       triggerCompact(sessionId);
     }
     // ★ 降到 60% 才重置，确保压缩效果达标
-    if (percentage < 60) {
-      autoCompactedRef.current = false;
+    if (percentage < 60 && autoCompacted) {
+      setAutoCompacted(sessionId, false);
     }
-  }, [percentage, sessionId, session?.tokenUsage, triggerCompact, isStreaming]);
+  }, [percentage, sessionId, session?.tokenUsage, autoCompacted, setAutoCompacted, triggerCompact, isStreaming]);
 
   // Handle click to show confirmation
   const handleClick = useCallback(() => {

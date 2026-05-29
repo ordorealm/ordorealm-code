@@ -201,6 +201,10 @@ export interface Session {
   tokenUsage?: TokenUsage;
   /** Transient connection notice (e.g. "连接已恢复"), cleared after display timeout */
   connectionNotice?: string | null;
+  /** Input draft - unsent text saved when switching sessions/tabs */
+  inputDraft?: string;
+  /** Auto-compact triggered flag - prevents repeated auto-compact within same session */
+  autoCompacted?: boolean;
 }
 
 /**

@@ -624,7 +624,9 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     }
 
     const total = usage.contextWindow || 200000;
-    const used = usage.inputTokens + usage.outputTokens;
+    // ★ 修正：inputTokens 已是 SDK 返回的真实总使用量，不需要再加 outputTokens
+    // 避免重复计算导致 >100%
+    const used = usage.inputTokens;
     const pct = (used / total) * 100;
 
     // Determine color based on percentage
@@ -645,7 +647,7 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     };
   }, [session?.tokenUsage]);
 
-  // ★ 自动压缩去重：每个会话只自动触发一次，百分比降至 70% 以下时重置
+  // ★ 自动压缩去重：每个会话只自动触发一次，百分比降至 60% 以下时重置
   const autoCompactedRef = useRef(false);
   useEffect(() => {
     autoCompactedRef.current = false;
@@ -653,14 +655,15 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
 
   const isStreaming = session?.messages?.some(m => m.isStreaming) ?? false;
 
-  // Auto-compact when > 90%
+  // ★ Auto-compact when > 80%（降低阈值，提前预防）
   useEffect(() => {
-    if (percentage > 90 && session?.tokenUsage && !autoCompactedRef.current && !isStreaming) {
+    if (percentage > 80 && session?.tokenUsage && !autoCompactedRef.current && !isStreaming) {
       autoCompactedRef.current = true;
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
       triggerCompact(sessionId);
     }
-    if (percentage < 70) {
+    // ★ 降到 60% 才重置，确保压缩效果达标
+    if (percentage < 60) {
       autoCompactedRef.current = false;
     }
   }, [percentage, sessionId, session?.tokenUsage, triggerCompact, isStreaming]);

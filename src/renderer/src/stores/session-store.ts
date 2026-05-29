@@ -517,24 +517,44 @@ function startHeartbeatCheck(
       const timeoutMinutes = Math.round(currentTimeout / 60000);
       console.warn(`[SessionStore] Heartbeat timeout #${listenerInfo.heartbeatTimeoutCount} for session: ${sessionId}, last event was ${Math.round(timeSinceLastEvent / 1000)}s ago (threshold: ${timeoutMinutes}min)`);
 
-      // ★ 前 2 次超时：先尝试重连（ping 后端确认存活状态）
-      if (listenerInfo.heartbeatTimeoutCount < 3) {
+      // ★ 尝试重建会话（最多 3 次）
+      if (listenerInfo.heartbeatTimeoutCount <= 3) {
         (async () => {
+          // 显示重连提示
+          const prevTimer = connectionNoticeTimers.get(sessionId);
+          if (prevTimer) clearTimeout(prevTimer);
+          set(state => {
+            const s = state.sessions[sessionId];
+            if (!s) return state;
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...s,
+                  connectionNotice: `连接超时，正在重连（第 ${listenerInfo.heartbeatTimeoutCount}/3 次）...`
+                }
+              }
+            };
+          });
+
           try {
-            const pingResult = await window.api.claude.pingSession(sessionId);
-            if (pingResult.alive) {
-              // 后端流仍存活 → 重置时间戳，重启心跳
-              console.warn(`[SessionStore] Backend stream is alive (status: ${pingResult.status}), reconnecting...`);
+            // ★ 调用后端重建 API
+            const result = await window.api.claude.retryHeartbeat(sessionId);
+
+            if (result.success) {
+              // 重连成功
+              console.log(`[SessionStore] Heartbeat retry #${result.retryCount} success for session: ${sessionId}`);
               listenerInfo.lastEventTime = Date.now();
-              // ★ 重启心跳检测
+              listenerInfo.heartbeatTimeoutCount = 0;  // 重置计数
               startHeartbeatCheck(sessionId, assistantMessageId, set);
-              // ★ 设置 UI 提示（3 秒后自动清除）- per-session timer
-              const prevTimer = connectionNoticeTimers.get(sessionId);
-              if (prevTimer) clearTimeout(prevTimer);
+
+              // 显示恢复提示
               set(state => {
                 const s = state.sessions[sessionId];
                 if (!s) return state;
-                return { sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: '连接已恢复' } } };
+                return {
+                  sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: '连接已恢复' } }
+                };
               });
               const noticeTimer = setTimeout(() => {
                 connectionNoticeTimers.delete(sessionId);
@@ -547,12 +567,24 @@ function startHeartbeatCheck(
               connectionNoticeTimers.set(sessionId, noticeTimer);
               return;
             }
-            console.warn(`[SessionStore] Backend stream is dead (status: ${pingResult.status}), aborting...`);
+
+            // 重连失败
+            console.warn(`[SessionStore] Heartbeat retry #${result.retryCount} failed: ${result.error}`);
+
+            // ★ 同步后端返回的重试计数，保持前后端状态一致
+            if (result.retryCount) {
+              listenerInfo.heartbeatTimeoutCount = result.retryCount;
+            }
+
+            // 如果达到最大重试次数，执行中止
+            if (result.retryCount && result.retryCount >= 3) {
+              performHeartbeatAbort(sessionId, assistantMessageId, set, timeoutMinutes);
+            }
+            // 否则继续下一次心跳检查（等待下次超时触发）
           } catch (err) {
-            console.warn('[SessionStore] pingSession failed:', err);
+            console.warn('[SessionStore] retryHeartbeat failed:', err);
+            // 异常情况也继续等待下次检查
           }
-          // ping 失败或后端已死 → 执行中止
-          performHeartbeatAbort(sessionId, assistantMessageId, set, timeoutMinutes);
         })();
         return;
       }
@@ -828,6 +860,8 @@ interface SessionActions {
   triggerCompact: (sessionId: string) => Promise<void>;
   /** Update token usage (for auto-compact detection) */
   updateTokenUsage: (sessionId: string, usage: { inputTokens: number; outputTokens: number; contextWindow: number }) => void;
+  /** Update input draft - save unsent text when switching sessions/tabs */
+  updateInputDraft: (sessionId: string, draft: string) => void;
 }
 
 /** Store initialization state */
@@ -1790,8 +1824,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 // ★ inputTokens 由 refreshContextUsage 维护（SDK 累积值，即真实值）
                 // 这里不追加，避免与 refreshContextUsage 竞态导致重复累加 >100%
                 inputTokens: currentUsage.inputTokens,
-                // ★ outputTokens：getContextUsage 不返回 outputTokens，这里手动累加
-                outputTokens: currentUsage.outputTokens + usageData.outputTokens,
+                // ★ outputTokens：仅展示本次输出，不累加（不参与百分比计算）
+                outputTokens: usageData.outputTokens || 0,
                 contextWindow: newContextWindow,
               };
 
@@ -1807,6 +1841,30 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 },
               };
             });
+
+            // ★ 新增：流式传输结束后检查是否需要自动压缩
+            // 从 get() 获取最新的 tokenUsage
+            const latestSession = get().sessions[sessionId];
+            const latestUsage = latestSession?.tokenUsage;
+            if (latestUsage) {
+              const newPercentage = (latestUsage.inputTokens / latestUsage.contextWindow) * 100;
+              if (newPercentage > 80) {
+                console.log('[SessionStore] Auto-compact needed after message, percentage:', newPercentage.toFixed(1), '%');
+                // 延迟触发，避免阻塞当前响应
+                setTimeout(() => {
+                  const currentSession = get().sessions[sessionId];
+                  // 再次检查，避免重复触发
+                  const currentUsage = currentSession?.tokenUsage;
+                  if (currentUsage) {
+                    const pct = (currentUsage.inputTokens / currentUsage.contextWindow) * 100;
+                    if (pct > 80) {
+                      console.log('[SessionStore] Triggering delayed auto-compact, percentage:', pct.toFixed(1), '%');
+                      get().triggerCompact(sessionId);
+                    }
+                  }
+                }, 2000);
+              }
+            }
           } else {
             console.log('[SessionStore] No usageData in complete event');
           }
@@ -2548,6 +2606,21 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       await refreshContextUsage(sessionId, set);
       console.log(`[SessionStore] Context usage refreshed after compact for session: ${sessionId}`);
 
+      // ★ 新增：验证压缩效果
+      const updatedSession = get().sessions[sessionId];
+      const usage = updatedSession?.tokenUsage;
+      if (usage) {
+        const newPercentage = (usage.inputTokens / usage.contextWindow) * 100;
+        console.log('[SessionStore] After compact, percentage:', newPercentage.toFixed(1), '%');
+
+        // 如果压缩后仍 > 80%，记录警告
+        if (newPercentage > 80) {
+          console.warn('[SessionStore] ⚠️ Compact ineffective, still at', newPercentage.toFixed(1), '%');
+        } else {
+          console.log('[SessionStore] ✅ Compact effective, reduced to', newPercentage.toFixed(1), '%');
+        }
+      }
+
     } catch (error) {
       console.error('[SessionStore] Failed to trigger compact:', error);
     }
@@ -2569,6 +2642,28 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           [sessionId]: {
             ...existingSession,
             tokenUsage: usage,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Update input draft - save unsent text when switching sessions/tabs
+   * @param sessionId Session ID
+   * @param draft Input draft text
+   */
+  updateInputDraft: (sessionId, draft) => {
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            inputDraft: draft,
           },
         },
       };

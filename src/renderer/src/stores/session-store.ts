@@ -1204,33 +1204,18 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return '';
     }
 
-    // Use index for O(1) lookup
-    const { sessions, projectSessionIndex } = get();
     console.log(`[SessionStore] createSession called for project: ${projectId}`);
-    console.log(`[SessionStore] Current projectSessionIndex size: ${projectSessionIndex.size}, keys:`, Array.from(projectSessionIndex.keys()));
 
-    const existingSessionId = projectSessionIndex.get(projectId);
-    if (existingSessionId && sessions[existingSessionId]) {
+    // Use getSessionByProjectId which handles index miss with direct search
+    const existingSession = get().getSessionByProjectId(projectId);
+    if (existingSession) {
       // Set the existing session as active
-      set({ activeSessionId: existingSessionId });
-      console.log(`[SessionStore] Reusing existing session: ${existingSessionId} for project: ${projectId}`);
-      return existingSessionId;
-    }
-
-    // ★ 新增：检查内存中是否有该项目的会话（projectId 匹配但索引缺失）
-    const memorySession = Object.values(sessions).find(s => s.projectId === projectId);
-    if (memorySession) {
-      console.log(`[SessionStore] Found session in memory but not in index, restoring: ${memorySession.id}`);
-      // 修复索引
-      set(state => ({
-        activeSessionId: memorySession.id,
-        projectSessionIndex: new Map(state.projectSessionIndex).set(projectId, memorySession.id),
-      }));
-      return memorySession.id;
+      set({ activeSessionId: existingSession.id });
+      console.log(`[SessionStore] Reusing existing session: ${existingSession.id} for project: ${projectId}`);
+      return existingSession.id;
     }
 
     console.log(`[SessionStore] No existing session found, creating new one`);
-    console.log(`[SessionStore] DEBUG - sessions count: ${Object.keys(sessions).length}, projectSessionIndex entries: ${projectSessionIndex.size}`);
 
     // Create new session only if none exists
     const sessionId = uuidv4();
@@ -2277,11 +2262,33 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
    * @param projectId Project ID
    * @returns Session or undefined
    */
+  /**
+   * Get session by project ID
+   * First checks the index, then falls back to direct search if index miss
+   * @param projectId Project ID
+   * @returns Session or undefined
+   */
   getSessionByProjectId: (projectId) => {
     const { sessions, projectSessionIndex } = get();
+
+    // Primary lookup: via index (O(1))
     const sessionId = projectSessionIndex.get(projectId);
-    if (!sessionId) return undefined;
-    return sessions[sessionId];
+    if (sessionId && sessions[sessionId]) {
+      return sessions[sessionId];
+    }
+
+    // Fallback: direct search in sessions (O(n)) - handles index miss
+    const foundSession = Object.values(sessions).find(s => s.projectId === projectId);
+    if (foundSession) {
+      console.log(`[SessionStore] getSessionByProjectId: Found session by direct search (index miss) for project: ${projectId}`);
+      // Auto-repair index
+      set(state => ({
+        projectSessionIndex: new Map(state.projectSessionIndex).set(projectId, foundSession.id),
+      }));
+      return foundSession;
+    }
+
+    return undefined;
   },
 
   /**

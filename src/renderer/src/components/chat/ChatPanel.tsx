@@ -61,7 +61,6 @@ const SCROLL_THROTTLE_DELAY = 200;
  * Get active session for current project
  * Ensures activeSessionId is set when a session is found
  * ★ Fix: Always prioritize finding session by project ID to ensure session-project alignment
- * ★ Fix: Add fallback to search in sessions object directly if index lookup fails
  */
 function useActiveSession() {
   const { sessions, activeSessionId, createSession, getSessionByProjectId, setActiveSession } = useSessionStore();
@@ -69,20 +68,12 @@ function useActiveSession() {
 
   // ★ Fix: Always look up session by current project first (most reliable)
   // This ensures session-project alignment even when activeSessionId points to a different project
+  // Note: getSessionByProjectId now handles index miss with direct search fallback
   let session = null;
 
-  // Primary lookup: by current project ID (via index)
+  // Primary lookup: by current project ID
   if (activeProjectId) {
     session = getSessionByProjectId(activeProjectId);
-
-    // ★ 新增：如果索引查找失败，直接在 sessions 中搜索
-    if (!session) {
-      const foundBySearch = Object.values(sessions).find(s => s.projectId === activeProjectId);
-      if (foundBySearch) {
-        session = foundBySearch;
-        console.log('[useActiveSession] Found session by direct search (index miss):', foundBySearch.id);
-      }
-    }
   }
 
   // Fallback: use activeSessionId only if it belongs to the current project

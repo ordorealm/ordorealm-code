@@ -1207,6 +1207,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     // Use index for O(1) lookup
     const { sessions, projectSessionIndex } = get();
     console.log(`[SessionStore] createSession called for project: ${projectId}`);
+    console.log(`[SessionStore] Current projectSessionIndex size: ${projectSessionIndex.size}, keys:`, Array.from(projectSessionIndex.keys()));
 
     const existingSessionId = projectSessionIndex.get(projectId);
     if (existingSessionId && sessions[existingSessionId]) {
@@ -1216,7 +1217,21 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return existingSessionId;
     }
 
+    // ★ 新增：检查内存中是否有该项目的会话（projectId 匹配但索引缺失）
+    const memorySession = Object.values(sessions).find(s => s.projectId === projectId);
+    if (memorySession) {
+      console.log(`[SessionStore] Found session in memory but not in index, restoring: ${memorySession.id}`);
+      // 修复索引
+      set(state => ({
+        activeSessionId: memorySession.id,
+        projectSessionIndex: new Map(state.projectSessionIndex).set(projectId, memorySession.id),
+      }));
+      return memorySession.id;
+    }
+
     console.log(`[SessionStore] No existing session found, creating new one`);
+    console.log(`[SessionStore] DEBUG - sessions count: ${Object.keys(sessions).length}, projectSessionIndex entries: ${projectSessionIndex.size}`);
+
     // Create new session only if none exists
     const sessionId = uuidv4();
     const now = new Date().toISOString();

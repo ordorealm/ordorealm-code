@@ -61,6 +61,7 @@ const SCROLL_THROTTLE_DELAY = 200;
  * Get active session for current project
  * Ensures activeSessionId is set when a session is found
  * ★ Fix: Always prioritize finding session by project ID to ensure session-project alignment
+ * ★ Fix: Add fallback to search in sessions object directly if index lookup fails
  */
 function useActiveSession() {
   const { sessions, activeSessionId, createSession, getSessionByProjectId, setActiveSession } = useSessionStore();
@@ -70,9 +71,18 @@ function useActiveSession() {
   // This ensures session-project alignment even when activeSessionId points to a different project
   let session = null;
 
-  // Primary lookup: by current project ID
+  // Primary lookup: by current project ID (via index)
   if (activeProjectId) {
     session = getSessionByProjectId(activeProjectId);
+
+    // ★ 新增：如果索引查找失败，直接在 sessions 中搜索
+    if (!session) {
+      const foundBySearch = Object.values(sessions).find(s => s.projectId === activeProjectId);
+      if (foundBySearch) {
+        session = foundBySearch;
+        console.log('[useActiveSession] Found session by direct search (index miss):', foundBySearch.id);
+      }
+    }
   }
 
   // Fallback: use activeSessionId only if it belongs to the current project
@@ -85,15 +95,25 @@ function useActiveSession() {
     }
   }
 
-  // Debug log
-  console.log('[useActiveSession] State:', {
-    activeProjectId,
-    activeSessionId,
-    foundSessionId: session?.id,
-    foundSessionProjectId: session?.projectId,
-    sessionsCount: Object.keys(sessions).length,
-    isStreaming: session?.messages.some(m => m.isStreaming),
-  });
+  // Debug log (reduce frequency - only log when state changes)
+  const sessionKey = session?.id || 'null';
+  const logKey = `${activeProjectId}-${sessionKey}`;
+
+  // Only log if this is a different state than last time
+  if (typeof window !== 'undefined') {
+    const lastLogKey = (window as unknown as { __lastSessionLogKey?: string }).__lastSessionLogKey;
+    if (logKey !== lastLogKey) {
+      console.log('[useActiveSession] State:', {
+        activeProjectId,
+        activeSessionId,
+        foundSessionId: session?.id,
+        foundSessionProjectId: session?.projectId,
+        sessionsCount: Object.keys(sessions).length,
+        isStreaming: session?.messages.some(m => m.isStreaming),
+      });
+      (window as unknown as { __lastSessionLogKey?: string }).__lastSessionLogKey = logKey;
+    }
+  }
 
   // If we found a session but activeSessionId is not set or mismatched, set it
   // This ensures the session is properly tracked as active

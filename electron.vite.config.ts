@@ -42,7 +42,7 @@ export default defineConfig({
       }
     },
     server: {
-      port: 9527
+      port: 38421  // 冷门高位端口，避免与其他项目冲突
     },
     build: {
       rollupOptions: {

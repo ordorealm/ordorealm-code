@@ -15,6 +15,7 @@ import { getMCPConnector } from './mcp/connector'
 import { getMCPManager } from './mcp/manager'
 import { getRemoteControlManager, initRemoteControlManager } from '../../src/main/services/remote-control-manager'
 import { createRemoteControlHandler } from '../../src/main/ipc/remote-control-handler'
+import { registerControllerHandlers } from '../../src/main/ipc/controller-handler'
 import {
   setIdeApiAdapter,
   type IdeApiAdapter,
@@ -3370,6 +3371,7 @@ app.whenReady().then(async () => {
   registerFileWatcherHandlers()
   registerGitHandlers()
   registerSkillLibraryHandlers()
+  registerControllerHandlers()
 
   // Initialize MCP Manager (built-in MCP tools)
   console.log('[Main] Initializing MCP Manager...')

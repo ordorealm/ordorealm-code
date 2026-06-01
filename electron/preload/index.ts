@@ -512,6 +512,27 @@ const api = {
       return () => ipcRenderer.removeListener('remote-control:switch-project', listener)
     },
   },
+
+  // Controller APIs
+  controller: {
+    /** Run a controller skill */
+    run: (options: {
+      sessionId: string
+      projectRoot: string
+      skillName: string
+    }): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('controller:run', options),
+
+    /** Abort a running controller */
+    abort: (sessionId: string): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke('controller:abort', sessionId),
+
+    /** Get controller status */
+    status: (sessionId: string): Promise<{
+      running: boolean
+      skillName?: string
+    }> => ipcRenderer.invoke('controller:status', sessionId),
+  },
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to renderer

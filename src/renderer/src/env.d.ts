@@ -390,6 +390,21 @@ export interface Api {
     /** Listen for project switch requests from remote */
     onSwitchProject: (callback: (event: { projectId: string; projectName: string }) => void) => () => void
   }
+  controller: {
+    /** Run a controller skill */
+    run: (options: {
+      sessionId: string
+      projectRoot: string
+      skillName: string
+    }) => Promise<{ success: boolean; error?: string }>
+    /** Abort a running controller */
+    abort: (sessionId: string) => Promise<{ success: boolean }>
+    /** Get controller status */
+    status: (sessionId: string) => Promise<{
+      running: boolean
+      skillName?: string
+    }>
+  }
 }
 
 interface DirEntry {

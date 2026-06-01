@@ -1581,6 +1581,75 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    // ★ 控制器命令拦截
+    const controllerMatch = content.match(/^\/(\w+-controller)/);
+    if (controllerMatch) {
+      const skillName = controllerMatch[1];
+      console.log(`[SessionStore] Controller command detected: ${skillName}`);
+
+      // 获取项目路径
+      const projectStore = useProjectStore.getState();
+      const project = projectStore.projects.find(p => p.id === session.projectId);
+      if (!project) {
+        console.error('[SessionStore] Project not found for controller');
+        return;
+      }
+
+      // 添加用户消息
+      const userMessage: Message = {
+        id: uuidv4(),
+        role: 'user',
+        content,
+        timestamp: new Date().toISOString(),
+      };
+      set(state => {
+        const existingSession = state.sessions[sessionId];
+        if (!existingSession) return state;
+        return {
+          sessions: {
+            ...state.sessions,
+            [sessionId]: {
+              ...existingSession,
+              messages: [...existingSession.messages, userMessage],
+              lastActiveAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+
+      // 添加助手占位消息
+      const assistantMessageId = get().addAssistantMessage(sessionId, '', true);
+
+      try {
+        // 调用控制器
+        const result = await window.api.controller.run({
+          sessionId,
+          projectRoot: project.path,
+          skillName,
+        });
+
+        if (result.success) {
+          get().updateMessage(sessionId, assistantMessageId, {
+            content: '✅ 控制器执行完成',
+            isStreaming: false,
+          });
+        } else {
+          get().updateMessage(sessionId, assistantMessageId, {
+            content: `❌ 控制器执行失败: ${result.error}`,
+            isStreaming: false,
+          });
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        get().updateMessage(sessionId, assistantMessageId, {
+          content: `❌ 控制器调用失败: ${errorMessage}`,
+          isStreaming: false,
+        });
+      }
+
+      return; // 控制器命令已处理，不继续正常流程
+    }
+
     // ★ 生成追踪 ID
     const traceId = `${sessionId.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     console.log(`[TRACE-AI] ========================================`);

@@ -417,19 +417,19 @@ export const BUILTIN_MCPS: MCPDefinition[] = [
     ]
   },
 
-  // 桌面控制 - Windows
+  // 桌面控制 - Windows (使用 @cool-mcp/desktop-automation，预编译原生模块，开箱即用)
   {
     id: 'desktop-touch',
     name: 'Desktop Control',
-    description: 'Windows 桌面自动化工具，支持鼠标键盘模拟、窗口控制、截图、剪贴板',
+    description: 'Windows 桌面自动化工具，支持鼠标键盘模拟、窗口控制、截图',
     category: 'desktop',
-    packageName: 'mcp-control',
-    version: '0.2.0',
+    packageName: '@cool-mcp/desktop-automation',
+    version: '1.0.9',
     platforms: ['win32'],
     builtin: false,
     defaultEnabled: true,
-    downloadSize: 10 * 1024 * 1024, // ~10MB
-    runtimeSize: 25 * 1024 * 1024, // ~25MB
+    downloadSize: 15 * 1024 * 1024, // ~15MB
+    runtimeSize: 40 * 1024 * 1024, // ~40MB
     permissions: {
       windows: {
         type: 'admin',

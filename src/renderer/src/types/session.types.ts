@@ -227,6 +227,8 @@ export interface Message {
   sessionId?: string;
   /** Whether the message is still streaming */
   isStreaming?: boolean;
+  /** Whether the message was sent from remote control (WeChat) */
+  isRemote?: boolean;
   /**
    * @deprecated Use independent ToolUseMessage instead
    * Tool calls associated with this message (legacy, for backward compatibility)

@@ -140,7 +140,7 @@ interface ClaudeExecuteOptions {
 interface ProgressEvent {
   /** 会话 ID，用于前端按会话过滤事件 */
   sessionId?: string
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'keepalive'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'keepalive' | 'remote_user_message'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>
@@ -698,14 +698,41 @@ async function getOrCreateSession(
 - 用户需要查看某个网页的内容时
 - 用户提供了 URL 并希望获取其内容时
 
-### 3. 浏览器自动化 (mcp__playwright__*)
-用于需要操作浏览器的场景：
-- 截取网页截图、填写表单、点击按钮、页面导航
+### 3. 浏览器自动化
+**Playwright** (mcp__playwright__*): 侧重测试，独立浏览器实例，适合页面交互验证
+**MCPBrowser** (mcp__mcpbrowser__*): 侧重自动化，复用用户浏览器保持Cookie，适合登录操作
+
+常用流程：browser_fetch_webpage → browser_detect_forms → browser_type_text → browser_click_element
 
 ${process.platform === 'win32'
   ? `### 4. 桌面控制 (mcp__desktop-touch__*)
-用于 Windows 桌面自动化：
-- 鼠标键盘模拟、窗口控制、截图、剪贴板操作`
+用于 Windows 桌面自动化，提供以下工具：
+
+**截图工具：**
+- bot_screenshot: 截取指定进程窗口截图
+- bot_screenshot_fullscreen: 截取整个屏幕
+
+**鼠标操作：**
+- bot_click: 点击指定位置（支持 bbox 归一化坐标）
+- bot_move_mouse: 移动鼠标
+- bot_drag: 拖拽操作
+- bot_scroll: 滚动
+- bot_get_mouse_position: 获取鼠标位置
+
+**键盘操作：**
+- bot_type_text: 输入文本
+- bot_hotkey: 快捷键组合（如 Ctrl+C）
+- bot_press_key / bot_release_key: 按键控制
+
+**窗口管理：**
+- bot_list_windows: 列出所有窗口
+- bot_activate_window: 激活窗口
+- bot_get_window_info: 获取窗口信息
+
+**使用流程：**
+1. 先用 bot_list_windows 查看可用窗口
+2. 用 bot_screenshot 截图并获取 windowBounds
+3. 根据截图内容用 bot_click 点击（传入 windowBounds）`
   : `### 4. macOS 自动化 (mcp__macos-automator__*)
 用于 macOS 系统自动化：
 - 执行 AppleScript、运行快捷指令、系统控制`
@@ -794,6 +821,8 @@ Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储
         flagEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
         // CLAUDE_CODE_MAX_RETRIES: 减少重试次数
         flagEnv.CLAUDE_CODE_MAX_RETRIES = '2'
+        // ★ 禁用归因指纹 (CCH)，防止第三方代理缓存失效
+        flagEnv.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
         sdkOptions.settings = {
           env: flagEnv
         }
@@ -3159,6 +3188,16 @@ function createIdeApiAdapter(): IdeApiAdapter {
         activeSession.status = 'running'
         activeSession.lastActivity = Date.now()
 
+        // ★ 通知前端添加远程用户消息（用于显示和持久化）
+        const mainWindow = BrowserWindow.getAllWindows()[0]
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('claude:progress', {
+            sessionId: activeSession.id,
+            type: 'remote_user_message',
+            content: message,
+          } as ProgressEvent)
+        }
+
         // Enqueue the user message
         activeSession.inputStream.enqueue({
           type: 'user',
@@ -3357,4 +3396,26 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// ★ 应用退出前强制保存 Master AI 会话历史
+// 使用 before-quit 事件，可以在窗口关闭前执行异步保存
+let isQuitting = false
+
+app.on('before-quit', async (event) => {
+  if (isQuitting) return
+
+  console.log('[App] before-quit: saving master agent session')
+  event.preventDefault()
+  isQuitting = true
+
+  try {
+    const manager = getRemoteControlManager()
+    await manager.forceSaveSession()
+  } catch (err) {
+    console.warn('[App] Failed to save master agent session on quit:', err)
+  }
+
+  // 保存完成后继续退出
+  app.quit()
 })

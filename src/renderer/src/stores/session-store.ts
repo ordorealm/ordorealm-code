@@ -19,7 +19,7 @@ import { useAgentStore } from './agent-store';
 import { useProviderStore } from './provider-store';
 import { useProjectStore } from './project-store';
 import { useActivityStore } from './activity-store';
-import { getSessionFilePath, saveSessionToDisk, loadSessionFromDisk } from '@/services/session-storage';
+import { getSessionFilePath, saveSessionToDisk, loadSessionFromDisk, saveInputDraft, loadInputDraft, deleteInputDraft } from '@/services/session-storage';
 
 /** Maximum number of conversation rounds to keep in memory */
 const MAX_ROUNDS = 200;
@@ -38,6 +38,303 @@ const INITIAL_MESSAGES = 20;
 
 /** @deprecated Use ROUNDS_PER_PAGE instead */
 const MESSAGES_PER_PAGE = 20;
+
+// ═══════════════════════════════════════════════════════════════
+// 上下文摘要相关常量和函数（用于重置会话时继承记忆）
+// ═══════════════════════════════════════════════════════════════
+
+/** 上下文摘要最大 token 数 */
+const MAX_CONTEXT_TOKENS = 80000;
+
+/** 继承的对话轮数 */
+const INHERIT_ROUNDS = 5;
+
+/**
+ * 估算文本 token 数（与 token-count-cache.ts 保持一致）
+ */
+function estimateTokens(text: string): number {
+  if (!text) return 0;
+  let tokens = 0;
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code < 128) {
+      tokens += 0.3;
+    } else if (code >= 0x4e00 && code <= 0x9fff) {
+      tokens += 1.2;
+    } else if ((code >= 0x3040 && code <= 0x30ff) || (code >= 0xac00 && code <= 0xd7af)) {
+      tokens += 1.2;
+    } else {
+      tokens += 1.0;
+    }
+  }
+  return Math.max(1, Math.round(tokens * 1.5));
+}
+
+/**
+ * 截断内容（保留开头和结尾）
+ */
+function truncateContentForSummary(content: string, maxLength: number): string {
+  if (!content || content.length <= maxLength) {
+    return content || '';
+  }
+  const half = Math.floor(maxLength / 2);
+  return content.slice(0, half) + '\n...[已截断]...\n' + content.slice(-half);
+}
+
+/**
+ * 格式化单轮对话（用于摘要）
+ */
+function formatRoundForSummary(index: number, messages: Message[]): string {
+  const lines: string[] = [];
+
+  lines.push(`### 第 ${index} 轮`);
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      lines.push(`**用户**: ${truncateContentForSummary(msg.content, 1000)}`);
+    } else if (msg.role === 'assistant') {
+      lines.push(`**AI**: ${truncateContentForSummary(msg.content, 1000)}`);
+    } else if (msg.role === 'tool_use') {
+      lines.push(`**🔧 调用工具**: \`${msg.toolName || 'unknown'}\``);
+    } else if (msg.role === 'tool_result') {
+      const isError = msg.isError;
+      const icon = isError ? '❌' : '✅';
+      const resultPreview = truncateContentForSummary(msg.toolResult || '', 300);
+      lines.push(`**${icon} 工具结果**: ${resultPreview}`);
+    }
+  }
+
+  lines.push('');  // 空行分隔
+  return lines.join('\n');
+}
+
+/**
+ * 构建上下文摘要（用户可见版本）
+ */
+function buildContextSummary(messages: Message[], maxTokens: number): string {
+  const lines: string[] = [
+    '## 📋 上下文记忆（从上一个会话继承）',
+    '> 以下是对话摘要，AI 已了解这些内容：',
+    '',
+  ];
+
+  let totalTokens = estimateTokens(lines.join('\n'));
+
+  // 按轮次组织消息
+  const rounds = identifyRounds(messages);
+
+  let includedRounds = 0;
+  for (let i = 0; i < rounds.length; i++) {
+    const round = rounds[i];
+    const roundMessages = messages.slice(round.startIndex, round.endIndex);
+    const roundText = formatRoundForSummary(i + 1, roundMessages);
+    const roundTokens = estimateTokens(roundText);
+
+    if (totalTokens + roundTokens > maxTokens) {
+      console.log(`[SessionStore] Token limit reached at round ${i}, truncating`);
+      break;
+    }
+
+    lines.push(roundText);
+    totalTokens += roundTokens;
+    includedRounds++;
+  }
+
+  if (includedRounds < rounds.length) {
+    lines.push(`*(已截断，共 ${rounds.length} 轮，显示 ${includedRounds} 轮)*`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * ★ 增量持久化：防抖保存
+ * 避免频繁写入磁盘，同时确保崩溃时最大丢失 2 秒数据
+ */
+const INCREMENTAL_SAVE_INTERVAL = 2000; // 2 秒
+const incrementalSaveTimers = new Map<string, NodeJS.Timeout>();
+const incrementalSavePending = new Map<string, boolean>();
+
+/**
+ * 触发增量保存（防抖）
+ * @param sessionId 会话 ID
+ */
+function triggerIncrementalSave(sessionId: string): void {
+  // 标记有待保存的数据
+  incrementalSavePending.set(sessionId, true);
+
+  // 如果已有定时器，不重复创建
+  if (incrementalSaveTimers.has(sessionId)) {
+    return;
+  }
+
+  // 创建定时器，2 秒后保存
+  const timer = setTimeout(async () => {
+    incrementalSaveTimers.delete(sessionId);
+
+    // 检查是否仍有待保存的数据
+    if (!incrementalSavePending.get(sessionId)) {
+      return;
+    }
+    incrementalSavePending.delete(sessionId);
+
+    // 执行保存 - 使用 getState() 获取当前状态
+    const session = useSessionStore.getState().sessions[sessionId];
+    if (session && session.messages?.length > 0) {
+      console.log(`[SessionStore] Incremental save: ${sessionId}, messages: ${session.messages.length}`);
+      try {
+        await saveSessionToDisk(session);
+      } catch (err) {
+        console.error('[SessionStore] Incremental save failed:', err);
+      }
+    }
+  }, INCREMENTAL_SAVE_INTERVAL);
+
+  incrementalSaveTimers.set(sessionId, timer);
+}
+
+/**
+ * 取消增量保存定时器
+ * @param sessionId 会话 ID
+ */
+function cancelIncrementalSave(sessionId: string): void {
+  const timer = incrementalSaveTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    incrementalSaveTimers.delete(sessionId);
+  }
+  incrementalSavePending.delete(sessionId);
+}
+
+/**
+ * ★ 应用退出前强制保存所有待保存的会话
+ * 确保崩溃或关闭时数据不丢失
+ */
+async function forceSaveAllPendingSessions(): Promise<void> {
+  const pendingSessionIds = Array.from(incrementalSavePending.keys());
+  if (pendingSessionIds.length === 0) return;
+
+  console.log(`[SessionStore] Force saving ${pendingSessionIds.length} pending sessions before exit`);
+
+  // 取消所有定时器
+  for (const sessionId of pendingSessionIds) {
+    cancelIncrementalSave(sessionId);
+  }
+
+  // 同步保存所有待保存的会话
+  const store = useSessionStore.getState();
+  for (const sessionId of pendingSessionIds) {
+    const session = store.sessions[sessionId];
+    if (session && session.messages?.length > 0) {
+      try {
+        await saveSessionToDisk(session);
+        console.log(`[SessionStore] Force saved session: ${sessionId}`);
+      } catch (err) {
+        console.error(`[SessionStore] Failed to force save session ${sessionId}:`, err);
+      }
+    }
+  }
+}
+
+/**
+ * ★ 同步保存所有待保存会话（用于 beforeunload 等同步场景）
+ * 使用 localStorage 作为临时备份，下次启动时恢复
+ */
+function syncSavePendingSessionsToBackup(): void {
+  const pendingSessionIds = Array.from(incrementalSavePending.keys());
+  if (pendingSessionIds.length === 0) return;
+
+  console.log(`[SessionStore] Sync backup ${pendingSessionIds.length} pending sessions`);
+
+  const store = useSessionStore.getState();
+  const backupData: Record<string, { messages: Message[]; lastActiveAt: string }> = {};
+
+  for (const sessionId of pendingSessionIds) {
+    const session = store.sessions[sessionId];
+    if (session && session.messages?.length > 0) {
+      backupData[sessionId] = {
+        messages: session.messages,
+        lastActiveAt: session.lastActiveAt || new Date().toISOString(),
+      };
+    }
+  }
+
+  if (Object.keys(backupData).length > 0) {
+    try {
+      localStorage.setItem('session_backup_pending', JSON.stringify(backupData));
+      console.log('[SessionStore] Sync backup saved to localStorage');
+    } catch (err) {
+      console.error('[SessionStore] Failed to sync backup:', err);
+    }
+  }
+}
+
+/**
+ * ★ 恢复上次未保存的会话（启动时调用）
+ */
+async function restorePendingSessionsFromBackup(): Promise<void> {
+  try {
+    const backupStr = localStorage.getItem('session_backup_pending');
+    if (!backupStr) return;
+
+    const backupData = JSON.parse(backupStr);
+    localStorage.removeItem('session_backup_pending'); // 清理备份
+
+    const sessionIds = Object.keys(backupData);
+    if (sessionIds.length === 0) return;
+
+    console.log(`[SessionStore] Restoring ${sessionIds.length} pending sessions from backup`);
+
+    for (const sessionId of sessionIds) {
+      const data = backupData[sessionId];
+      const existingSession = useSessionStore.getState().sessions[sessionId];
+
+      // 仅当会话存在且备份的消息更多时才恢复
+      if (existingSession && data.messages?.length > 0) {
+        if (!existingSession.messages || data.messages.length > existingSession.messages.length) {
+          // 更新会话消息
+          useSessionStore.getState().updateSessionMessages(sessionId, data.messages);
+          // 保存到磁盘
+          const session = useSessionStore.getState().sessions[sessionId];
+          if (session) {
+            await saveSessionToDisk(session);
+          }
+          console.log(`[SessionStore] Restored session from backup: ${sessionId}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[SessionStore] Failed to restore pending sessions:', err);
+  }
+}
+
+/**
+ * ★ 注册 beforeunload 事件处理
+ * 在窗口关闭前强制保存所有待保存的会话
+ */
+let beforeUnloadHandlerRegistered = false;
+function registerBeforeUnloadHandler(): void {
+  if (beforeUnloadHandlerRegistered) return;
+  beforeUnloadHandlerRegistered = true;
+
+  // ★ 使用 pagehide 事件（比 beforeunload 更可靠）
+  window.addEventListener('pagehide', (event) => {
+    console.log('[SessionStore] pagehide triggered, persistState:', event.persisted);
+    // 同步保存到 localStorage 作为备份
+    syncSavePendingSessionsToBackup();
+    // 同时尝试异步保存（可能无法完成）
+    forceSaveAllPendingSessions().catch(err => {
+      console.error('[SessionStore] Failed to save on pagehide:', err);
+    });
+  });
+
+  // ★ 兼容旧浏览器
+  window.addEventListener('beforeunload', () => {
+    console.log('[SessionStore] beforeunload triggered');
+    // 同步保存到 localStorage 作为备份
+    syncSavePendingSessionsToBackup();
+  });
+}
 
 /**
  * Conversation round structure
@@ -838,6 +1135,8 @@ interface SessionActions {
   addAssistantMessage: (sessionId: string, content: string, isStreaming?: boolean) => string;
   /** Update an existing message */
   updateMessage: (sessionId: string, messageId: string, updates: Partial<Message>) => void;
+  /** Update session messages array (for crash recovery) */
+  updateSessionMessages: (sessionId: string, messages: Message[]) => void;
   /** Initialize store and load existing sessions */
   initialize: () => Promise<void>;
   /** Check if store is initialized */
@@ -1178,6 +1477,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           console.log('[SessionStore] No sessions found or read failed');
         }
 
+        // ★ 注册应用退出前的强制保存处理
+        registerBeforeUnloadHandler();
+
+        // ★ 恢复上次未保存的会话（崩溃恢复）
+        await restorePendingSessionsFromBackup();
+
         initialized = true;
         console.log('[SessionStore] Initialization complete');
       } catch (error) {
@@ -1212,6 +1517,23 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       // Set the existing session as active
       set({ activeSessionId: existingSession.id });
       console.log(`[SessionStore] Reusing existing session: ${existingSession.id} for project: ${projectId}`);
+      // ★ 加载已保存的草稿
+      loadInputDraft(existingSession.id).then(draft => {
+        if (draft) {
+          set(state => ({
+            sessions: {
+              ...state.sessions,
+              [existingSession.id]: {
+                ...state.sessions[existingSession.id],
+                inputDraft: draft,
+              },
+            },
+          }));
+          console.log(`[SessionStore] Loaded saved draft for session: ${existingSession.id}`);
+        }
+      }).catch(err => {
+        console.warn('[SessionStore] Failed to load draft:', err);
+      });
       return existingSession.id;
     }
 
@@ -1602,6 +1924,34 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             timestamp: Date.now(),
             metadata: { rateLimit: statusData?.rateLimit },
           });
+        } else if (type === 'remote_user_message') {
+          // ★ 远程用户消息（来自微信/远程控制）
+          // 添加用户消息到会话，确保对话完整显示和持久化
+          console.log('[SessionStore] Remote user message:', eventContent?.substring(0, 50));
+          const userMessage: Message = {
+            id: uuidv4(),
+            role: 'user',
+            content: eventContent || '',
+            timestamp: new Date().toISOString(),
+            sessionId,
+            isRemote: true, // 标记为远程消息
+          };
+          set(state => {
+            const existingSession = state.sessions[sessionId];
+            if (!existingSession) return state;
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...existingSession,
+                  messages: trimMessages([...existingSession.messages, userMessage]),
+                  lastActiveAt: new Date().toISOString(),
+                },
+              },
+            };
+          });
+          // ★ 触发增量保存
+          triggerIncrementalSave(sessionId);
         } else if (type === 'text') {
           // ★ Flush pending tool batch before text (preserves message order)
           immediateFlushToolBatchForSession(sessionId);
@@ -1613,6 +1963,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             detail: '正在回复...',
             timestamp: Date.now(),
           });
+          // ★ 增量保存：流式文本每 2 秒保存一次
+          triggerIncrementalSave(sessionId);
         } else if (type === 'thinking') {
           // ★ 处理 thinking 事件（来自 thinking_delta 或 thinking 块）
           // 累积 thinking 内容到消息的 thinkingText 字段
@@ -1774,6 +2126,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             detail: matchingToolName ? `${matchingToolName} 完成` : '工具执行完成',
             timestamp: Date.now(),
           });
+          // ★ 增量保存：工具结果到达时保存
+          triggerIncrementalSave(sessionId);
         } else if (type === 'error') {
           // Flush any pending batches before handling error
           immediateFlushToolBatchForSession(sessionId);
@@ -1787,6 +2141,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // ★ 重要：结束思考计时器和活动状态
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
+          // ★ 取消增量保存定时器
+          cancelIncrementalSave(sessionId);
+          // ★ 错误时也要保存，防止崩溃丢失数据
+          const session = get().sessions[sessionId];
+          if (session && session.messages?.length > 0) {
+            saveSessionToDisk(session).catch(err => {
+              console.error('[SessionStore] Failed to save session on error:', err);
+            });
+          }
           // ★ 修复：只清理该会话的监听器
           cleanupProgressListenerForSession(sessionId);
         } else if (type === 'complete') {
@@ -1880,10 +2243,29 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         }
       });
 
-      // ★ Step 3: 发送消息
+      // ★ Step 3: 检查是否有继承的上下文摘要（重置会话后第一次发送）
+      let finalContent = content;
+      const currentSession = get().sessions[sessionId];
+      // ★ 使用 ID 前缀精确匹配，避免字符串内容匹配的误判
+      const contextSummaryMsg = currentSession?.messages.find(
+        m => m.id.startsWith('context-summary-') && !m.content.includes('*(已发送给 AI)*')
+      );
+
+      if (contextSummaryMsg) {
+        // 将摘要附加到用户消息前面发送给 AI
+        finalContent = `${contextSummaryMsg.content}\n\n---\n\n**用户当前问题**: ${content}`;
+        console.log('[SessionStore] First message after reset: attaching context summary for AI');
+
+        // 标记摘要已发送，后续不再附加
+        get().updateMessage(sessionId, contextSummaryMsg.id, {
+          content: contextSummaryMsg.content + '\n\n*(已发送给 AI)*'
+        });
+      }
+
+      // ★ Step 4: 发送消息
       console.log(`[TRACE-AI] [FRONTEND] Calling claude.sendMessage IPC | traceId=${traceId}`);
       console.log('[SessionStore] Sending message...');
-      const sendResult = await window.api.claude.sendMessage(sessionId, content);
+      const sendResult = await window.api.claude.sendMessage(sessionId, finalContent);
 
       if (!sendResult.success) {
         throw new Error(sendResult.error || 'Failed to send message');
@@ -1924,6 +2306,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       console.log(`[SessionStore] Message sent and response received for session: ${sessionId}`);
 
+      // ★ 取消增量保存定时器（因为会立即执行最终保存）
+      cancelIncrementalSave(sessionId);
+
       // Save session after message exchange
       await get().saveSession(sessionId);
 
@@ -1940,6 +2325,14 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         isThinking: false,
       });
       console.error('[SessionStore] Failed to send message:', error);
+      // ★ 发送失败时也要保存会话，防止用户消息丢失
+      cancelIncrementalSave(sessionId);
+      const session = get().sessions[sessionId];
+      if (session && session.messages?.length > 0) {
+        await saveSessionToDisk(session).catch(err => {
+          console.error('[SessionStore] Failed to save session on send error:', err);
+        });
+      }
     } finally {
       // ★ 并发防护：仅当仍是当前代时才清理，避免误删新 send 的监听器
       if (sendGenerations.get(sessionId) === sendGen) {
@@ -1963,6 +2356,17 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     }
 
     console.log(`[SessionStore] Restarting session: ${sessionId}`);
+
+    // ★ 取消增量保存定时器
+    cancelIncrementalSave(sessionId);
+
+    // ★ 重启前保存当前状态
+    if (session.messages?.length > 0) {
+      console.log(`[SessionStore] Saving session before restart: ${sessionId}`);
+      await saveSessionToDisk(session).catch(err => {
+        console.error('[SessionStore] Failed to save session before restart:', err);
+      });
+    }
 
     // Set status to connecting
     set(state => ({
@@ -2097,6 +2501,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
   /**
    * Reset session to fresh state (new session ID, clear history)
+   * ★ 继承最近 5 轮对话摘要，解决 token 超限死机问题
    * @param sessionId Session ID
    */
   resetSession: async (sessionId) => {
@@ -2111,11 +2516,46 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     const newSessionId = uuidv4();
     const now = new Date().toISOString();
 
+    // ★ Step 1: 提取最近 5 轮对话
+    const recentMessages = getRecentRounds(session.messages, INHERIT_ROUNDS);
+    console.log(`[SessionStore] Extracted ${recentMessages.length} messages from recent ${INHERIT_ROUNDS} rounds`);
+
+    // ★ Step 2: 构建上下文摘要
+    const contextSummary = recentMessages.length > 0
+      ? buildContextSummary(recentMessages, MAX_CONTEXT_TOKENS)
+      : undefined;
+
+    if (contextSummary) {
+      console.log(`[SessionStore] Built context summary: ${estimateTokens(contextSummary)} tokens`);
+    }
+
+    // ★ 取消旧会话的增量保存定时器
+    cancelIncrementalSave(oldSessionId);
+
+    // ★ Step 3: 关闭旧 SDK 会话（彻底断开，不使用 resume）
+    try {
+      await window.api.claude.closeSession(oldSessionId);
+      console.log(`[SessionStore] Closed old SDK session: ${oldSessionId}`);
+    } catch (err) {
+      console.warn('[SessionStore] Failed to close old SDK session:', err);
+    }
+
+    // ★ Step 4: 创建继承摘要消息（用户可见）
+    let initialMessages: Message[] = [];
+    if (contextSummary) {
+      initialMessages = [{
+        id: `context-summary-${uuidv4()}`,  // ★ 特殊前缀标识，用于精确匹配
+        role: 'system',
+        content: contextSummary,
+        timestamp: now,
+      }];
+    }
+
     // Create fresh session with new ID
     const newSession: Session = {
       id: newSessionId,
       projectId: session.projectId,
-      messages: [],
+      messages: initialMessages,  // ★ 包含继承摘要
       createdAt: now,
       lastActiveAt: now,
       status: 'connected',
@@ -2137,10 +2577,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     const oldFilePath = await getSessionFilePath(oldSessionId);
     await deleteFile(oldFilePath);
 
+    // ★ 删除旧会话的草稿
+    await deleteInputDraft(oldSessionId);
+
     // Save new session
     await get().saveSession(newSessionId);
 
-    console.log(`[SessionStore] Session reset: ${oldSessionId} -> ${newSessionId}`);
+    console.log(`[SessionStore] Session reset: ${oldSessionId} -> ${newSessionId}${contextSummary ? ' (with context summary)' : ''}`);
   },
 
   /**
@@ -2210,8 +2653,48 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
    * @param sessionId Session ID or null
    */
   setActiveSession: (sessionId) => {
+    const { activeSessionId, sessions } = get();
+
+    // ★ 切换前保存旧会话的待保存数据
+    if (activeSessionId && activeSessionId !== sessionId) {
+      const oldSession = sessions[activeSessionId];
+      if (oldSession && oldSession.messages?.length > 0) {
+        // 检查是否有待保存的数据
+        if (incrementalSavePending.get(activeSessionId)) {
+          cancelIncrementalSave(activeSessionId);
+          saveSessionToDisk(oldSession).catch(err => {
+            console.error('[SessionStore] Failed to save session on switch:', err);
+          });
+        }
+      }
+    }
+
     set({ activeSessionId: sessionId });
     console.log(`[SessionStore] Active session set to: ${sessionId}`);
+
+    // ★ 切换后加载新会话的草稿
+    if (sessionId && sessionId !== activeSessionId) {
+      loadInputDraft(sessionId).then(draft => {
+        if (draft) {
+          set(state => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...session,
+                  inputDraft: draft,
+                },
+              },
+            };
+          });
+          console.log(`[SessionStore] Loaded draft for session: ${sessionId}`);
+        }
+      }).catch(err => {
+        console.warn('[SessionStore] Failed to load draft:', err);
+      });
+    }
   },
 
   /**
@@ -2225,6 +2708,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       console.warn(`[SessionStore] Session not found: ${sessionId}`);
       return;
     }
+
+    // ★ 取消增量保存定时器
+    cancelIncrementalSave(sessionId);
 
     // Remove from state and update index
     set(state => {
@@ -2249,6 +2735,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     // Delete session file
     const filePath = await getSessionFilePath(sessionId);
     await deleteFile(filePath);
+
+    // ★ 删除草稿文件
+    await deleteInputDraft(sessionId);
 
     // Clear activity store data for this session
     useActivityStore.getState().clearSession(sessionId);
@@ -2361,11 +2850,37 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   },
 
   /**
+   * ★ 更新会话的消息列表（用于崩溃恢复）
+   * @param sessionId Session ID
+   * @param messages New messages array
+   */
+  updateSessionMessages: (sessionId, messages) => {
+    set(state => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            messages,
+            lastActiveAt: new Date().toISOString(),
+          },
+        },
+      };
+    });
+  },
+
+  /**
    * Close session and cleanup resources
    * @param sessionId Session ID
    */
   closeSession: async (sessionId) => {
     console.log(`[SessionStore] Closing session: ${sessionId}`);
+
+    // ★ 取消增量保存定时器
+    cancelIncrementalSave(sessionId);
 
     // ★ 修复：先将所有 streaming 消息标记为完成，解锁 sendMessage 轮询 Promise
     set(state => {
@@ -2602,6 +3117,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    // ★ 压缩前取消增量保存定时器，避免竞态
+    cancelIncrementalSave(sessionId);
+
     console.log(`[TRACE-AI] [FRONTEND] triggerCompact ENTRY | sessionId=${sessionId}`);
     console.log(`[SessionStore] Triggering compact for session: ${sessionId}`);
 
@@ -2700,6 +3218,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           },
         },
       };
+    });
+    // ★ 持久化草稿（防抖 500ms）
+    saveInputDraft(sessionId, draft).catch(err => {
+      console.error('[SessionStore] Failed to save draft:', err);
     });
   },
 

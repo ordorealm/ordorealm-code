@@ -280,6 +280,94 @@ function ThinkingBlock({
 }
 
 /**
+ * Context Summary Block Component
+ * Collapsible block to display inherited context summary from previous session
+ */
+function ContextSummaryBlock({
+  content,
+}: {
+  content: string;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+
+  // Calculate line count
+  const lineCount = useMemo(() => {
+    return content.split('\n').length;
+  }, [content]);
+
+  // Check if already sent to AI
+  const isSent = content.includes('*(已发送给 AI)*');
+
+  // Extract preview (first few lines without the "已发送" marker)
+  const preview = useMemo(() => {
+    const lines = content.split('\n').filter(l => !l.includes('*(已发送给 AI)*'));
+    const previewLines = lines.slice(0, 8);
+    return previewLines.join('\n');
+  }, [content]);
+
+  return (
+    <div className="mb-3">
+      {/* Header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={`
+          w-full flex items-center gap-2 px-3 py-2 rounded-lg
+          bg-gradient-to-r from-accent-purple/10 to-accent-indigo/10
+          border border-accent-purple/30
+          hover:border-accent-purple/50 transition-colors
+          text-left group
+        `}
+      >
+        {/* Icon */}
+        <span className="text-lg">📋</span>
+
+        {/* Title */}
+        <span className="text-sm text-accent-purple font-medium">
+          上下文记忆
+        </span>
+
+        {/* Status */}
+        {isSent && (
+          <span className="text-xs text-accent-green bg-accent-green/10 px-2 py-0.5 rounded-full">
+            ✓ 已发送给 AI
+          </span>
+        )}
+
+        {/* Line count */}
+        <span className="text-xs text-text-muted bg-bg-secondary px-2 py-0.5 rounded ml-auto">
+          {lineCount} 行
+        </span>
+
+        {/* Expand/collapse icon */}
+        <svg
+          className={`w-4 h-4 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Content */}
+      {expanded ? (
+        <div
+          className="mt-2 p-3 rounded-lg bg-bg-secondary border border-border text-sm text-text-primary leading-relaxed max-h-96 overflow-y-auto"
+          style={{ whiteSpace: 'pre-wrap' }}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+        />
+      ) : (
+        <div
+          className="mt-2 p-3 rounded-lg bg-bg-secondary/50 border border-border/50 text-sm text-text-secondary leading-relaxed overflow-hidden"
+          style={{ whiteSpace: 'pre-wrap' }}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(preview) }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * ChatMessage component
  * Displays a single message with role indicator, content, and actions
  * Supports SpectrAI architecture: user, assistant, system, tool_use, tool_result roles
@@ -313,6 +401,9 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
 
   // Check if message has thinking content
   const hasThinking = isAssistant && message.thinkingText && message.thinkingText.length > 0;
+
+  // ★ Check if this is a context summary message (from session reset)
+  const isContextSummary = isSystem && message.id.startsWith('context-summary-');
 
   // For tool_use and tool_result, we don't show the normal message UI
   // They are handled by ToolOperationGroup component in the message grouping
@@ -429,55 +520,60 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
         group flex gap-3 p-4 rounded-xl
         ${isUser ? 'bg-gradient-to-br from-accent-indigo/5 to-accent-purple/5 ml-8' : ''}
         ${isAssistant ? 'bg-bg-secondary' : ''}
-        ${isSystem ? 'bg-bg-secondary border border-accent-yellow/30' : ''}
+        ${isSystem && !isContextSummary ? 'bg-bg-secondary border border-accent-yellow/30' : ''}
+        ${isContextSummary ? 'bg-transparent p-0' : ''}
       `}
     >
-      {/* Role Avatar */}
-      <div
-        className={`
-          flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-base
-          ${isUser ? 'bg-gradient-to-br from-accent-indigo to-accent-purple text-white shadow-lg shadow-accent-indigo/20' : ''}
-          ${isAssistant ? 'bg-gradient-to-br from-accent-blue to-accent-indigo text-white shadow-lg shadow-accent-blue/20' : ''}
-          ${isSystem ? 'bg-accent-yellow text-white' : ''}
-        `}
-      >
-        {isUser && '👤'}
-        {isAssistant && '🤖'}
-        {isSystem && '⚠️'}
-      </div>
+      {/* Role Avatar - hide for context summary */}
+      {!isContextSummary && (
+        <div
+          className={`
+            flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-base
+            ${isUser ? 'bg-gradient-to-br from-accent-indigo to-accent-purple text-white shadow-lg shadow-accent-indigo/20' : ''}
+            ${isAssistant ? 'bg-gradient-to-br from-accent-blue to-accent-indigo text-white shadow-lg shadow-accent-blue/20' : ''}
+            ${isSystem ? 'bg-accent-yellow text-white' : ''}
+          `}
+        >
+          {isUser && '👤'}
+          {isAssistant && '🤖'}
+          {isSystem && '⚠️'}
+        </div>
+      )}
 
       {/* Message Content */}
       <div className="flex-1 min-w-0">
-        {/* Header */}
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-sm font-semibold text-text-primary">
-            {isUser && '用户'}
-            {isAssistant && 'Agent'}
-            {isSystem && '系统'}
-          </span>
-          <span className="text-xs text-text-muted">{formatTime(message.timestamp)}</span>
-          {message.isStreaming && (
-            <span className="inline-flex items-center gap-1.5 text-xs text-accent-indigo bg-accent-indigo/10 px-2 py-0.5 rounded-full">
-              <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  fill="none"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              生成中
+        {/* Header - hide for context summary */}
+        {!isContextSummary && (
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm font-semibold text-text-primary">
+              {isUser && '用户'}
+              {isAssistant && 'Agent'}
+              {isSystem && '系统'}
             </span>
-          )}
-        </div>
+            <span className="text-xs text-text-muted">{formatTime(message.timestamp)}</span>
+            {message.isStreaming && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-accent-indigo bg-accent-indigo/10 px-2 py-0.5 rounded-full">
+                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    fill="none"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  />
+                </svg>
+                生成中
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Thinking Block - show before content */}
         {hasThinking && (
@@ -487,8 +583,14 @@ export function ChatMessage({ message, showCopyButton = true }: ChatMessageProps
           />
         )}
 
+        {/* Context Summary Block - for session reset inherited memory */}
+        {isContextSummary && (
+          <ContextSummaryBlock content={message.content} />
+        )}
+
         {/* Content - Streaming vs Formatted Rendering */}
-        {message.content && (
+        {/* Don't render content again if it's a context summary (already rendered above) */}
+        {message.content && !isContextSummary && (
           message.isStreaming ? (
             // 流式期间：原始文本 + 等宽字体，保留换行
             // 不进行 Markdown 解析，避免不完整结构导致格式错乱

@@ -6,7 +6,7 @@
 
 import { ensureDir, readJsonFile, writeJsonFile, getUserDataPathAsync } from '@/utils/fs';
 import { joinPath } from '@/utils/path';
-import type { Session } from '@/types';
+import type { Session, Message } from '@/types';
 
 /**
  * Session file structure for persistence
@@ -18,6 +18,88 @@ interface SessionFile {
 }
 
 const SESSION_FILE_VERSION = '1.0.0';
+
+/**
+ * Maximum number of conversation rounds to keep in disk storage
+ * This prevents session files from growing indefinitely
+ */
+const MAX_DISK_ROUNDS = 200;
+
+// ═══════════════════════════════════════════════════════════════
+// 轮次裁剪函数（独立实现，避免循环依赖）
+// ═══════════════════════════════════════════════════════════════
+
+interface ConversationRound {
+  roundIndex: number;
+  startIndex: number;
+  endIndex: number;
+  messageCount: number;
+  timestamp: string;
+}
+
+/**
+ * Identify conversation rounds in message array
+ * A round starts with a user message and ends before the next user message
+ */
+function identifyRounds(messages: Message[]): ConversationRound[] {
+  if (!messages || messages.length === 0) return [];
+
+  const rounds: ConversationRound[] = [];
+  let currentRoundStart = 0;
+  let roundIndex = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+
+    // A new round starts with a user message (except the first message)
+    if (message.role === 'user' && i > 0) {
+      rounds.push({
+        roundIndex,
+        startIndex: currentRoundStart,
+        endIndex: i,
+        messageCount: i - currentRoundStart,
+        timestamp: messages[currentRoundStart].timestamp,
+      });
+      currentRoundStart = i;
+      roundIndex++;
+    }
+  }
+
+  // Close the last round
+  if (currentRoundStart < messages.length) {
+    rounds.push({
+      roundIndex,
+      startIndex: currentRoundStart,
+      endIndex: messages.length,
+      messageCount: messages.length - currentRoundStart,
+      timestamp: messages[currentRoundStart].timestamp,
+    });
+  }
+
+  return rounds;
+}
+
+/**
+ * Trim messages to keep only the most recent N rounds
+ * This prevents session files from growing indefinitely
+ */
+function trimMessagesForDisk(messages: Message[]): Message[] {
+  if (!messages || messages.length === 0) return [];
+
+  const rounds = identifyRounds(messages);
+
+  if (rounds.length <= MAX_DISK_ROUNDS) {
+    return messages;
+  }
+
+  // Keep the most recent MAX_DISK_ROUNDS rounds
+  const roundsToKeep = rounds.slice(-MAX_DISK_ROUNDS);
+  const startIndex = roundsToKeep[0].startIndex;
+
+  console.log(`[SessionStorage] Trimming for disk: ${rounds.length} rounds -> ${MAX_DISK_ROUNDS} rounds, ${messages.length} messages -> ${messages.length - startIndex} messages`);
+
+  return messages.slice(startIndex);
+}
 
 /**
  * Get the file path for a session
@@ -41,16 +123,23 @@ async function ensureSessionsDir(): Promise<string> {
 
 /**
  * Save a session to disk
+ * Automatically trims to MAX_DISK_ROUNDS to prevent file bloat
  * @param session Session to save
  */
 export async function saveSessionToDisk(session: Session): Promise<boolean> {
   try {
     await ensureSessionsDir();
 
+    // ★ 裁剪消息到最近 200 轮，防止文件无限增长
+    const trimmedMessages = trimMessagesForDisk(session.messages);
+
     const filePath = await getSessionFilePath(session.id);
     const data: SessionFile = {
       version: SESSION_FILE_VERSION,
-      session,
+      session: {
+        ...session,
+        messages: trimmedMessages,
+      },
       updatedAt: new Date().toISOString(),
     };
 
@@ -175,4 +264,84 @@ export async function cleanupOldSessions(): Promise<number> {
   }
 
   return cleaned;
+}
+
+/**
+ * ★ 输入草稿持久化
+ * 实时保存用户输入，防止崩溃丢失
+ */
+
+/** 草稿保存防抖定时器 */
+const draftSaveTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * 获取草稿文件路径
+ * @param sessionId 会话 ID
+ */
+export async function getDraftFilePath(sessionId: string): Promise<string> {
+  const dataPath = await getUserDataPathAsync();
+  return joinPath(dataPath, 'drafts', `${sessionId}.draft`);
+}
+
+/**
+ * 保存输入草稿（防抖 500ms）
+ * @param sessionId 会话 ID
+ * @param draft 草稿内容
+ */
+export async function saveInputDraft(sessionId: string, draft: string): Promise<void> {
+  // 取消之前的定时器
+  const existingTimer = draftSaveTimers.get(sessionId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  // 创建新定时器，500ms 后保存
+  const timer = setTimeout(async () => {
+    draftSaveTimers.delete(sessionId);
+    try {
+      const dataPath = await getUserDataPathAsync();
+      const draftsDir = joinPath(dataPath, 'drafts');
+      await ensureDir(draftsDir);
+      const filePath = await getDraftFilePath(sessionId);
+      await window.api.fs.writeFile(filePath, draft);
+      console.log(`[DraftStorage] Saved draft for session: ${sessionId}`);
+    } catch (err) {
+      console.error('[DraftStorage] Failed to save draft:', err);
+    }
+  }, 500);
+
+  draftSaveTimers.set(sessionId, timer);
+}
+
+/**
+ * 加载输入草稿
+ * @param sessionId 会话 ID
+ * @returns 草稿内容，不存在则返回空字符串
+ */
+export async function loadInputDraft(sessionId: string): Promise<string> {
+  try {
+    const filePath = await getDraftFilePath(sessionId);
+    const result = await window.api.fs.readFile(filePath);
+    if (result.success && result.content) {
+      console.log(`[DraftStorage] Loaded draft for session: ${sessionId}`);
+      return result.content;
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 删除输入草稿
+ * @param sessionId 会话 ID
+ */
+export async function deleteInputDraft(sessionId: string): Promise<void> {
+  try {
+    const filePath = await getDraftFilePath(sessionId);
+    await window.api.fs.delete(filePath);
+    console.log(`[DraftStorage] Deleted draft for session: ${sessionId}`);
+  } catch {
+    // 文件不存在，忽略
+  }
 }

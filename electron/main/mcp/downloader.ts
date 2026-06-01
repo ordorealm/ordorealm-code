@@ -682,10 +682,34 @@ export class MCPDownloader implements MCPDownloaderInterface {
     }, 2000) // 每2秒增加5%
 
     try {
-      const result = await execAsync('npm install --production', {
+      // 使用内置 npm 安装依赖
+      const npmCommand = this.buildNpmCommand('install --production')
+      console.log(`[MCP Downloader] 执行命令: ${npmCommand}`)
+
+      // ★ 设置环境变量：将内置 Node.js 目录添加到 PATH
+      // 这样 npm postinstall 脚本中的 `node` 命令才能找到
+      const nodePath = this.getNodePath()
+      // nodePath 示例:
+      //   Windows: C:\...\runtime\node\win-x64\node.exe
+      //   macOS:   /.../runtime/node/darwin-arm64/bin/node
+      // nodeDir 是 node 可执行文件所在的目录:
+      //   Windows: win-x64 (node.exe 在根目录)
+      //   macOS:   darwin-arm64/bin (node 在 bin 子目录)
+      const nodeDir = path.dirname(nodePath)
+
+      const env: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        // 将 Node.js 可执行文件所在目录添加到 PATH（最前面，确保优先使用）
+        PATH: `${nodeDir}${path.delimiter}${process.env.PATH || ''}`
+      }
+
+      console.log(`[MCP Downloader] PATH: ${env.PATH.substring(0, 200)}...`)
+
+      const result = await execAsync(npmCommand, {
         cwd: installDir,
         timeout: this.config.npmTimeout,
-        maxBuffer: 1024 * 1024 * 10 // 10MB buffer
+        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+        env,  // ★ 传递环境变量
       })
 
       if (result.stdout) {
@@ -759,14 +783,17 @@ export class MCPDownloader implements MCPDownloaderInterface {
         try {
           // 设置环境变量
           const nodeModulesBin = path.join(installDir, 'node_modules', '.bin')
+          // ★ 添加 Node.js 到 PATH（npx/playwright 需要）
+          const nodePath = this.getNodePath()
+          const nodeDir = path.dirname(nodePath)
           const env: Record<string, string> = {
             ...process.env as Record<string, string>,
             // 设置 Playwright 下载镜像
             PLAYWRIGHT_DOWNLOAD_HOST: shouldUseCNMirror()
               ? 'https://npmmirror.com/mirrors/playwright'
               : 'https://playwright.azureedge.net',
-            // 将 node_modules/.bin 添加到 PATH
-            PATH: `${nodeModulesBin}${path.delimiter}${process.env.PATH || ''}`
+            // 将 Node.js 目录和 node_modules/.bin 添加到 PATH
+            PATH: `${nodeDir}${path.delimiter}${nodeModulesBin}${path.delimiter}${process.env.PATH || ''}`
           }
 
           console.log(`[MCP Downloader] 安装 Playwright Chromium 到 ${installDir}`)
@@ -790,10 +817,12 @@ export class MCPDownloader implements MCPDownloaderInterface {
               const pkgData = JSON.parse(fs.readFileSync(playwrightCorePkgPath, 'utf-8'))
               savedPlaywrightCoreVersion = pkgData.version
               console.log(`[MCP Downloader] 当前 playwright-core: ${savedPlaywrightCoreVersion}，降级到 1.48.0 以兼容国内镜像`)
-              await execAsync('npm install playwright-core@1.48.0 --no-save', {
+              const downgradeCmd = this.buildNpmCommand('install playwright-core@1.48.0 --no-save')
+              await execAsync(downgradeCmd, {
                 cwd: installDir,
                 timeout: 60000,
-                maxBuffer: 1024 * 1024 * 10
+                maxBuffer: 1024 * 1024 * 10,
+                env
               })
             } catch (e) {
               console.warn(`[MCP Downloader] playwright-core 降级失败，使用当前版本:`, e)
@@ -811,8 +840,9 @@ export class MCPDownloader implements MCPDownloaderInterface {
             command = `"${nodePath}" "${playwrightCoreCli}" install chromium`
             console.log(`[MCP Downloader] 使用 playwright-core CLI`)
           } else {
-            // 回退到 npx，但设置正确的 PATH
-            command = 'npx playwright install chromium'
+            // 回退到 npx，使用内置 npx
+            const npxPath = this.getNpmPath().replace('npm.cmd', 'npx.cmd').replace(/\/npm$/, '/npx')
+            command = `"${npxPath}" playwright install chromium`
             console.log(`[MCP Downloader] 使用 npx playwright`)
           }
 
@@ -841,10 +871,12 @@ export class MCPDownloader implements MCPDownloaderInterface {
           if (savedPlaywrightCoreVersion && shouldUseCNMirror()) {
             try {
               console.log(`[MCP Downloader] 恢复 playwright-core 到 ${savedPlaywrightCoreVersion}`)
-              await execAsync(`npm install playwright-core@${savedPlaywrightCoreVersion} --no-save`, {
+              const restoreCmd = this.buildNpmCommand(`install playwright-core@${savedPlaywrightCoreVersion} --no-save`)
+              await execAsync(restoreCmd, {
                 cwd: installDir,
                 timeout: 60000,
-                maxBuffer: 1024 * 1024 * 10
+                maxBuffer: 1024 * 1024 * 10,
+                env
               })
             } catch (e) {
               console.warn(`[MCP Downloader] playwright-core 版本恢复失败:`, e)
@@ -859,25 +891,137 @@ export class MCPDownloader implements MCPDownloaderInterface {
   }
 
   /**
+   * 获取运行时目标目录名
+   * 映射 process.platform 到目录命名约定：
+   * - win32 -> win (Node.js 使用 'win-x64'，不是 'win32-x64')
+   * - darwin -> darwin (不变)
+   */
+  private getRuntimeTargetName(): string {
+    const platform = process.platform
+    const arch = process.arch
+    const platformName = platform === 'win32' ? 'win' : platform
+    return `${platformName}-${arch}`
+  }
+
+  /**
    * 获取 Node.js 可执行文件路径
    */
   private getNodePath(): string {
-    // 优先使用用户数据目录中的运行时
-    const userDataNode = path.join(
-      app.getPath('userData'),
-      'runtime',
-      'node',
-      `${process.platform}-${process.arch}`,
-      'bin',
-      process.platform === 'win32' ? 'node.exe' : 'node'
-    )
+    const platform = process.platform
+    const targetName = this.getRuntimeTargetName()
+    const userDataDir = app.getPath('userData')
 
-    if (fs.existsSync(userDataNode)) {
-      return userDataNode
+    // 1. 优先使用用户数据目录中的运行时（RuntimeManager 提取的位置）
+    if (platform === 'win32') {
+      // Windows: node.exe 在根目录
+      const nodeExe = path.join(userDataDir, 'runtime', 'node', targetName, 'node.exe')
+      if (fs.existsSync(nodeExe)) {
+        return nodeExe
+      }
+    } else {
+      // macOS/Linux: node 在 bin 目录
+      const nodeBin = path.join(userDataDir, 'runtime', 'node', targetName, 'bin', 'node')
+      if (fs.existsSync(nodeBin)) {
+        return nodeBin
+      }
     }
 
-    // 回退到系统 Node.js
+    // 2. 检查应用资源目录中的运行时（打包后的位置）
+    const resourcesDir = app.isPackaged
+      ? process.resourcesPath
+      : path.join(app.getAppPath(), 'electron')
+
+    if (platform === 'win32') {
+      const nodeExe = path.join(resourcesDir, 'runtime', 'node', targetName, 'node.exe')
+      if (fs.existsSync(nodeExe)) {
+        return nodeExe
+      }
+    } else {
+      const nodeBin = path.join(resourcesDir, 'runtime', 'node', targetName, 'bin', 'node')
+      if (fs.existsSync(nodeBin)) {
+        return nodeBin
+      }
+    }
+
+    // 3. 回退到系统 Node.js
     return 'node'
+  }
+
+  /**
+   * 获取 npm 可执行文件路径
+   */
+  private getNpmPath(): string {
+    const platform = process.platform
+    const targetName = this.getRuntimeTargetName()
+    const userDataDir = app.getPath('userData')
+
+    // 1. 优先使用用户数据目录中的运行时（RuntimeManager 提取的位置）
+    if (platform === 'win32') {
+      // Windows: npm.cmd 在根目录
+      const npmCmd = path.join(userDataDir, 'runtime', 'node', targetName, 'npm.cmd')
+      if (fs.existsSync(npmCmd)) {
+        return npmCmd
+      }
+    } else {
+      // macOS/Linux: npm 在 bin 目录
+      const npmBin = path.join(userDataDir, 'runtime', 'node', targetName, 'bin', 'npm')
+      if (fs.existsSync(npmBin)) {
+        return npmBin
+      }
+    }
+
+    // 2. 检查应用资源目录中的运行时（打包后的位置）
+    const resourcesDir = app.isPackaged
+      ? process.resourcesPath
+      : path.join(app.getAppPath(), 'electron')
+
+    if (platform === 'win32') {
+      const npmCmd = path.join(resourcesDir, 'runtime', 'node', targetName, 'npm.cmd')
+      if (fs.existsSync(npmCmd)) {
+        return npmCmd
+      }
+    } else {
+      const npmBin = path.join(resourcesDir, 'runtime', 'node', targetName, 'bin', 'npm')
+      if (fs.existsSync(npmBin)) {
+        return npmBin
+      }
+    }
+
+    // 3. 回退到系统 npm
+    return 'npm'
+  }
+
+  /**
+   * 构建 npm 命令（使用内置 Node.js 运行时）
+   */
+  private buildNpmCommand(args: string): string {
+    const nodePath = this.getNodePath()
+    const npmPath = this.getNpmPath()
+    const platform = process.platform
+
+    if (platform === 'win32') {
+      // Windows: 直接调用 npm.cmd
+      return `"${npmPath}" ${args}`
+    } else {
+      // macOS/Linux: 优先使用 node 执行 npm-cli.js（更可靠）
+      const targetName = this.getRuntimeTargetName()
+      const npmCliPath = path.join(
+        app.getPath('userData'),
+        'runtime',
+        'node',
+        targetName,
+        'lib',
+        'node_modules',
+        'npm',
+        'bin',
+        'npm-cli.js'
+      )
+      if (fs.existsSync(npmCliPath)) {
+        return `"${nodePath}" "${npmCliPath}" ${args}`
+      }
+      // 回退到 npm 脚本
+      return `"${npmPath}" ${args}`
+    }
   }
 }
 

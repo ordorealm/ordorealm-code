@@ -23,31 +23,57 @@ function validateMCPId(id: string): void {
 }
 
 /**
+ * 获取运行时目标目录名
+ * 映射 process.platform 到目录命名约定：
+ * - win32 -> win (Node.js 使用 'win-x64'，不是 'win32-x64')
+ * - darwin -> darwin (不变)
+ */
+function getRuntimeTargetName(): string {
+  const platform = process.platform
+  const arch = process.arch
+  const platformName = platform === 'win32' ? 'win' : platform
+  return `${platformName}-${arch}`
+}
+
+/**
  * 获取 Node.js 运行时路径
  * 优先使用 RuntimeManager 提取的运行时，回退到系统 Node.js
  */
 function getBundledNodePath(): string {
-  // 1. 检查用户数据目录中的运行时（RuntimeManager 提取的位置）
-  const userDataRuntime = path.join(
-    app.getPath('userData'),
-    'runtime',
-    'node',
-    `${process.platform}-${process.arch}`,
-    'bin',
-    process.platform === 'win32' ? 'node.exe' : 'node'
-  )
+  const platform = process.platform
+  const targetName = getRuntimeTargetName()
+  const userDataDir = app.getPath('userData')
 
-  if (fs.existsSync(userDataRuntime)) {
-    return userDataRuntime
+  // 1. 检查用户数据目录中的运行时（RuntimeManager 提取的位置）
+  if (platform === 'win32') {
+    // Windows: node.exe 在根目录
+    const nodeExe = path.join(userDataDir, 'runtime', 'node', targetName, 'node.exe')
+    if (fs.existsSync(nodeExe)) {
+      return nodeExe
+    }
+  } else {
+    // macOS/Linux: node 在 bin 目录
+    const nodeBin = path.join(userDataDir, 'runtime', 'node', targetName, 'bin', 'node')
+    if (fs.existsSync(nodeBin)) {
+      return nodeBin
+    }
   }
 
   // 2. 检查应用资源目录中的运行时（打包后的位置）
-  const resourcesRuntime = app.isPackaged
-    ? path.join(process.resourcesPath, 'runtime', 'node', `${process.platform}-${process.arch}`, 'bin', process.platform === 'win32' ? 'node.exe' : 'node')
-    : path.join(app.getAppPath(), 'electron', 'runtime', 'node', `${process.platform}-${process.arch}`, 'bin', 'node')
+  const resourcesDir = app.isPackaged
+    ? process.resourcesPath
+    : path.join(app.getAppPath(), 'electron')
 
-  if (fs.existsSync(resourcesRuntime)) {
-    return resourcesRuntime
+  if (platform === 'win32') {
+    const nodeExe = path.join(resourcesDir, 'runtime', 'node', targetName, 'node.exe')
+    if (fs.existsSync(nodeExe)) {
+      return nodeExe
+    }
+  } else {
+    const nodeBin = path.join(resourcesDir, 'runtime', 'node', targetName, 'bin', 'node')
+    if (fs.existsSync(nodeBin)) {
+      return nodeBin
+    }
   }
 
   // 3. 回退到系统 Node.js

@@ -172,6 +172,17 @@ export class RuntimeManager {
   // ── Private Helpers ────────────────────────────────────────────────────────
 
   /**
+   * Get runtime target directory name
+   * Maps process.platform to directory naming convention:
+   * - win32 -> win (Node.js uses 'win-x64', not 'win32-x64')
+   * - darwin -> darwin (no change)
+   */
+  private getRuntimeTargetName(platform: string, arch: string): string {
+    const platformName = platform === 'win32' ? 'win' : platform;
+    return `${platformName}-${arch}`;
+  }
+
+  /**
    * Check if runtime needs to be extracted
    */
   private needsExtraction(): boolean {
@@ -210,12 +221,13 @@ export class RuntimeManager {
     const platform = process.platform;
     const arch = process.arch;
 
-    // Copy Node.js
-    await this.copyRuntimeComponent('node', platform, arch);
+    // Copy Node.js (use mapped target name for directory)
+    const nodeTarget = this.getRuntimeTargetName(platform, arch);
+    await this.copyRuntimeComponent('node', nodeTarget);
 
-    // Copy Git (Windows only)
+    // Copy Git (Windows only, uses 'win-x64' naming)
     if (platform === 'win32') {
-      await this.copyRuntimeComponent('git', 'win', 'x64');
+      await this.copyRuntimeComponent('git', 'win-x64');
     }
 
     // Write version marker
@@ -224,14 +236,15 @@ export class RuntimeManager {
 
   /**
    * Copy a runtime component from resources to user data
+   * @param component - Component name (e.g., 'node', 'git')
+   * @param targetName - Target directory name (e.g., 'darwin-arm64', 'win-x64')
    */
   private async copyRuntimeComponent(
     component: string,
-    platform: string,
-    arch: string
+    targetName: string
   ): Promise<void> {
-    const sourceDir = path.join(this.resourcesRuntimeDir, component, `${platform}-${arch}`);
-    const targetDir = path.join(this.userDataRuntimeDir, component, `${platform}-${arch}`);
+    const sourceDir = path.join(this.resourcesRuntimeDir, component, targetName);
+    const targetDir = path.join(this.userDataRuntimeDir, component, targetName);
 
     if (!fs.existsSync(sourceDir)) {
       console.warn(`[RuntimeManager] ${component} runtime not found: ${sourceDir}`);
@@ -289,7 +302,8 @@ export class RuntimeManager {
   private buildEnvConfig(): RuntimeEnvConfig {
     const platform = process.platform;
     const arch = process.arch;
-    const target = `${platform}-${arch}`;
+    // Use mapped target name for directory lookup
+    const target = this.getRuntimeTargetName(platform, arch);
 
     // Determine Node.js path
     const nodeDir = path.join(this.userDataRuntimeDir, 'node', target);
@@ -388,16 +402,20 @@ export class RuntimeManager {
    */
   private findBashPath(platform: string, _arch: string): string {
     if (platform === 'win32') {
-      // Windows: use Git Bash from MinGit
+      // Windows: use Git Bash from PortableGit
       const gitDir = path.join(this.userDataRuntimeDir, 'git', 'win-x64');
-      const bashExe = path.join(gitDir, 'bin', 'bash.exe');
-      if (fs.existsSync(bashExe)) {
-        return bashExe;
-      }
-      // Fallback: check usr/bin
-      const bashUsr = path.join(gitDir, 'usr', 'bin', 'bash.exe');
-      if (fs.existsSync(bashUsr)) {
-        return bashUsr;
+
+      // PortableGit has bash.exe in multiple locations
+      // Priority: bin/bash.exe (main), usr/bin/bash.exe (fallback)
+      const bashLocations = [
+        path.join(gitDir, 'bin', 'bash.exe'),
+        path.join(gitDir, 'usr', 'bin', 'bash.exe'),
+      ];
+
+      for (const bashPath of bashLocations) {
+        if (fs.existsSync(bashPath)) {
+          return bashPath;
+        }
       }
     }
 

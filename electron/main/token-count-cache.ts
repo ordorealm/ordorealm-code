@@ -14,10 +14,12 @@ function bodyHash(body: string): string {
 }
 
 /**
- * 基于字符类型的加权 token 估算
- * - ASCII（英文、数字、符号）：约 4 字符/token
- * - 中日韩字符（CJK）：约 1.5 字符/token
- * - 其他 Unicode（表情、符号等）：约 2 字符/token
+ * 基于字符类型的加权 token 估算（激进策略）
+ * - ASCII（英文、数字、符号）：0.3 token/字符（实际 ~0.25）
+ * - 中日韩字符（CJK）：1.2 token/字符（实际 ~0.5-0.67）
+ * - 其他 Unicode（表情、符号等）：1.0 token/字符（实际 ~0.5-0.75）
+ *
+ * ★ 激进策略：估算值比实际大 40-80%，提前触发 SDK 自动压缩，防止上下文超限卡死
  */
 function estimateTokens(text: string): number {
   let tokens = 0
@@ -25,22 +27,23 @@ function estimateTokens(text: string): number {
     const code = char.charCodeAt(0)
     if (code < 128) {
       // ASCII（英文、数字、符号）
-      tokens += 0.25
+      tokens += 0.3  // 原 0.25，略微调大
     } else if (code >= 0x4e00 && code <= 0x9fff) {
-      // CJK 统一汉字
-      tokens += 0.67
+      // CJK 统一汉字 - ★ 激进值：1.2（实际约 1.0-1.5）
+      tokens += 1.2
     } else if (
       (code >= 0x3040 && code <= 0x30ff) || // 日文假名
       (code >= 0xac00 && code <= 0xd7af)    // 韩文
     ) {
-      // 日文/韩文
-      tokens += 0.67
+      // 日文/韩文 - ★ 激进值：1.2
+      tokens += 1.2
     } else {
-      // 其他 Unicode（表情、特殊符号等）
-      tokens += 0.5
+      // 其他 Unicode（表情、特殊符号等）- ★ 激进值：1.0
+      tokens += 1.0
     }
   }
-  return Math.max(1, Math.round(tokens))
+  // ★ 最终结果乘以 1.5（更激进，提前触发压缩）
+  return Math.max(1, Math.round(tokens * 1.5))
 }
 
 export function createTokenCountProxy(targetBaseUrl: string): Promise<{ port: number; url: string }> {

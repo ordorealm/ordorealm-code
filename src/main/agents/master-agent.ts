@@ -259,6 +259,11 @@ export interface MasterAgent {
    * Check whether the AI session is active.
    */
   isSessionActive(): boolean
+
+  /**
+   * Force save AI session history (before app quit).
+   */
+  forceSaveSession(): Promise<void>
 }
 
 // Re-export constants for convenience
@@ -606,6 +611,16 @@ class MasterAgentImpl implements MasterAgent {
    */
   isSessionActive(): boolean {
     return this.aiSession !== null
+  }
+
+  /**
+   * ★ 强制保存 AI 会话历史（用于应用退出前）
+   */
+  async forceSaveSession(): Promise<void> {
+    if (this.aiSession) {
+      await this.aiSession.forceSave()
+      console.log('[MasterAgent] AI session force saved')
+    }
   }
 
   // ============ Private Methods ============

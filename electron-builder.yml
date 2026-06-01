@@ -25,14 +25,6 @@ extraResources:
     to: resources
     filter:
       - "**/*"
-  # Bundled runtimes for offline installation
-  - from: electron/runtime
-    to: runtime
-    filter:
-      - "**/*"
-      - "!**/.gitkeep"
-      - "!**/README.md"
-      - "!**/.gitignore"
 
 # macOS configuration
 mac:
@@ -42,10 +34,18 @@ mac:
       arch:
         - x64
         - arm64
-  hardenedRuntime: true
-  gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # Bundled runtimes — only include darwin binaries
+  extraResources:
+    - from: electron/runtime/node/darwin-x64
+      to: runtime/node/darwin-x64
+    - from: electron/runtime/weclaw/darwin-x64
+      to: runtime/weclaw/darwin-x64
+    - from: electron/runtime/node/darwin-arm64
+      to: runtime/node/darwin-arm64
+    - from: electron/runtime/weclaw/darwin-arm64
+      to: runtime/weclaw/darwin-arm64
 
 # Windows configuration
 win:
@@ -53,6 +53,14 @@ win:
     - target: nsis
       arch:
         - x64
+  # Bundled runtimes — only include win32 binaries
+  extraResources:
+    - from: electron/runtime/node/win-x64
+      to: runtime/node/win-x64
+    - from: electron/runtime/weclaw/win32-x64
+      to: runtime/weclaw/win32-x64
+    - from: electron/runtime/git/win-x64
+      to: runtime/git/win-x64
 
 # Linux configuration
 linux:
@@ -79,6 +87,7 @@ nsis:
 
 # DMG configuration (macOS)
 dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
   contents:
     - x: 130
       y: 220

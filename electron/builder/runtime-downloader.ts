@@ -18,6 +18,8 @@ interface RuntimeSource {
   dest: string;
   extract?: boolean;
   stripComponents?: number;
+  /** Is 7z archive (requires 7zip for extraction) */
+  is7z?: boolean;
 }
 
 interface DownloadProgress {
@@ -35,7 +37,11 @@ const MIRRORS = {
 };
 
 // Node.js version to bundle
-const NODE_VERSION = 'v20.11.0';
+// v20.19.0 is the latest LTS that satisfies:
+// - lint-staged@16.4.0 requires >=20.17
+// - cheerio@1.2.0 requires >=20.18.1
+// - eslint-visitor-keys@5.0.1 requires ^20.19.0 || ^22.13.0 || >=24
+const NODE_VERSION = 'v20.19.0';
 
 // Git version to bundle
 const GIT_VERSION = 'v2.43.0.windows.1';
@@ -67,12 +73,14 @@ const RUNTIME_SOURCES: RuntimeSource[] = [
     extract: true,
     stripComponents: 1,
   },
-  // MinGit for Windows x64 (no GUI, command-line only)
+  // PortableGit for Windows x64 (includes bash.exe for Claude Code Bash tool)
+  // PortableGit ~54MB, MinGit ~37MB but lacks bash.exe
   {
-    url: `${MIRRORS.git}/${GIT_VERSION}/MinGit-2.43.0-64-bit.zip`,
+    url: `${MIRRORS.git}/${GIT_VERSION}/PortableGit-2.43.0-64-bit.7z.exe`,
     dest: path.join(RUNTIME_DIR, 'git', 'win-x64'),
     extract: true,
     stripComponents: 0,
+    is7z: true,
   },
 ];
 
@@ -211,6 +219,67 @@ async function extractTarGz(
 }
 
 /**
+ * Extract a 7z archive using 7zip-bin
+ */
+async function extract7z(
+  archivePath: string,
+  destDir: string,
+  stripComponents: number = 0
+): Promise<void> {
+  const { execSync } = await import('child_process');
+
+  // Get 7za path from 7zip-bin
+  let sevenZipPath: string;
+  try {
+    // Try to resolve 7zip-bin from project node_modules
+    const sevenZipBin = require('7zip-bin');
+    sevenZipPath = sevenZipBin.path7za;
+  } catch {
+    // Fallback to system 7z
+    sevenZipPath = '7z';
+  }
+
+  console.log(`   Using 7zip: ${sevenZipPath}`);
+
+  // Create temp extraction directory
+  const tempDir = path.join(destDir, '.temp-extract');
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  try {
+    // Extract to temp directory
+    execSync(
+      `"${sevenZipPath}" x "${archivePath}" -o"${tempDir}" -y`,
+      { stdio: 'inherit' }
+    );
+
+    // Handle strip components
+    let sourceDir = tempDir;
+    for (let i = 0; i < stripComponents; i++) {
+      const items = fs.readdirSync(sourceDir);
+      if (items.length === 1) {
+        sourceDir = path.join(sourceDir, items[0]);
+      }
+    }
+
+    // Move contents to destination
+    const items = fs.readdirSync(sourceDir);
+    for (const item of items) {
+      const src = path.join(sourceDir, item);
+      const dest = path.join(destDir, item);
+      if (fs.existsSync(dest)) {
+        fs.rmSync(dest, { recursive: true });
+      }
+      fs.renameSync(src, dest);
+    }
+  } finally {
+    // Cleanup
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true });
+    }
+  }
+}
+
+/**
  * Check if runtime already exists
  */
 function runtimeExists(destPath: string): boolean {
@@ -287,7 +356,9 @@ export async function downloadRuntimes(
       // Extract if needed
       if (source.extract) {
         console.log('   📦 Extracting...');
-        if (source.url.endsWith('.zip')) {
+        if (source.is7z || source.url.endsWith('.7z') || source.url.endsWith('.7z.exe')) {
+          await extract7z(tempFile, source.dest, source.stripComponents);
+        } else if (source.url.endsWith('.zip')) {
           await extractZip(tempFile, source.dest, source.stripComponents);
         } else if (source.url.endsWith('.tar.gz')) {
           await extractTarGz(tempFile, source.dest, source.stripComponents);

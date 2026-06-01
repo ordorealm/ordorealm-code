@@ -29,7 +29,7 @@ import {
  * Progress event for backward compatibility with existing IPC
  */
 interface ProgressEvent {
-  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init'
+  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'remote_user_message'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>

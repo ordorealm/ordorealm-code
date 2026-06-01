@@ -1121,6 +1121,15 @@ ${projectSection}
     this.initialized = false
     this.logger.info('Cleanup complete')
   }
+
+  /**
+   * ★ 强制保存 Master AI 会话历史（用于应用退出前）
+   */
+  async forceSaveSession(): Promise<void> {
+    await this.agent.forceSaveSession().catch((err) => {
+      this.logger.warn('Failed to force save master AI session:', err)
+    })
+  }
 }
 
 // ============ Singleton ============

@@ -18,6 +18,13 @@ import {
   type MasterSessionConfig,
   getMasterSessionConfig,
 } from './session-config'
+import {
+  type MasterAgentHistory,
+  loadMasterAgentHistory,
+  saveMasterAgentHistory,
+  appendMasterAgentMessage,
+  updateProviderSessionId,
+} from './master-agent-storage'
 
 // ─── System Prompt ──────────────────────────────────────────────────────────
 
@@ -55,6 +62,10 @@ const MASTER_AGENT_SYSTEM_PROMPT = `
 回复：「项目A 正在处理：修复登录bug。输入"切换到 项目A"可直接与该项目的 AI 对话。」
 `
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const SAVE_DEBOUNCE_MS = 2000 // 2 秒防抖
+
 // ─── MasterAgentSession ─────────────────────────────────────────────────────
 
 export class MasterAgentSession {
@@ -73,6 +84,15 @@ export class MasterAgentSession {
   private initialized: boolean = false
   /** Whether the session is destroyed */
   private destroyed: boolean = false
+
+  /** ★ 持久化：对话历史 */
+  private history: MasterAgentHistory | null = null
+  /** ★ 持久化：防抖保存定时器 */
+  private saveTimer: NodeJS.Timeout | null = null
+  /** ★ 持久化：是否有未保存的更改 */
+  private hasUnsavedChanges: boolean = false
+  /** ★ SDK provider session ID (用于恢复上下文) */
+  private providerSessionId: string | null = null
 
   constructor() {
     this.logger = new Logger('MasterAgentSession')
@@ -108,6 +128,15 @@ export class MasterAgentSession {
     }
 
     this.logger.info(`Initializing master agent session in ${this.workingDir}`)
+
+    // ★ 加载历史记录
+    this.history = await loadMasterAgentHistory()
+    if (this.history?.providerSessionId) {
+      this.providerSessionId = this.history.providerSessionId
+      this.logger.info(`Loaded history with ${this.history.messages.length} messages, providerSessionId: ${this.providerSessionId}`)
+    } else if (this.history) {
+      this.logger.info(`Loaded history with ${this.history.messages.length} messages`)
+    }
 
     // Dynamically import the Claude Agent SDK
     const sdk = await import('@anthropic-ai/claude-agent-sdk')
@@ -164,6 +193,8 @@ export class MasterAgentSession {
           } : {}),
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
           CLAUDE_CODE_MAX_RETRIES: '2',
+          // ★ 禁用归因指纹 (CCH)，防止第三方代理缓存失效
+          CLAUDE_CODE_ATTRIBUTION_HEADER: '0',
         },
       }
     }
@@ -204,11 +235,24 @@ export class MasterAgentSession {
       throw new Error('Master agent session has been destroyed')
     }
 
-    return new Promise((resolve, reject) => {
+    // ★ 添加用户消息到历史
+    this.history = await appendMasterAgentMessage('user', text, this.history || undefined)
+    this.triggerDebouncedSave()
+
+    return new Promise<string>((resolve, reject) => {
       this.turnResolve = resolve
       this.turnReject = reject
       this.turnOutput = ''
       this.inputStream!.enqueue({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } })
+    }).then((response: string) => {
+      // ★ 添加 AI 响应到历史
+      this.appendAssistantMessage(response)
+      return response
+    }).catch(err => {
+      // ★ SDK 调用失败时也触发保存（用户消息已添加）
+      this.logger.error('sendMessage failed:', err)
+      this.triggerDebouncedSave()
+      throw err
     })
   }
 
@@ -220,6 +264,9 @@ export class MasterAgentSession {
     this.destroyed = true
 
     this.logger.info('Destroying master agent session')
+
+    // ★ 保存未保存的更改
+    await this.forceSave()
 
     // Reject any pending turn
     if (this.turnReject) {
@@ -249,7 +296,63 @@ export class MasterAgentSession {
     this.logger.info('Master agent session destroyed')
   }
 
+  /**
+   * ★ 强制保存历史（用于应用退出前）
+   */
+  async forceSave(): Promise<void> {
+    // 取消定时器
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+
+    // 保存未保存的更改
+    if (this.hasUnsavedChanges && this.history) {
+      await saveMasterAgentHistory(this.history)
+      this.hasUnsavedChanges = false
+    }
+  }
+
   // ─── Private ──────────────────────────────────────────────────────────────
+
+  /**
+   * Append assistant message to history
+   */
+  private async appendAssistantMessage(content: string): Promise<void> {
+    if (!this.history) {
+      this.history = {
+        version: '1.0.0',
+        messages: [],
+        lastActiveAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      }
+    }
+    this.history.messages.push({
+      role: 'assistant',
+      content,
+      timestamp: new Date().toISOString(),
+    })
+    this.triggerDebouncedSave()
+  }
+
+  /**
+   * Trigger debounced save
+   */
+  private triggerDebouncedSave(): void {
+    this.hasUnsavedChanges = true
+
+    if (this.saveTimer) {
+      return
+    }
+
+    this.saveTimer = setTimeout(async () => {
+      this.saveTimer = null
+      if (this.hasUnsavedChanges && this.history) {
+        await saveMasterAgentHistory(this.history)
+        this.hasUnsavedChanges = false
+      }
+    }, SAVE_DEBOUNCE_MS)
+  }
 
   /**
    * Background stream consumer.
@@ -268,9 +371,25 @@ export class MasterAgentSession {
           case 'system':
             if (msg.subtype === 'init') {
               this.logger.info(`Master agent session model: ${msg.model}`)
-              // Save provider session ID for potential resume
+              // ★ 保存 provider session ID 用于恢复上下文
               if (msg.session_id) {
+                this.providerSessionId = msg.session_id
                 this.logger.debug(`Provider session ID: ${msg.session_id}`)
+                // ★ 确保 history 对象存在
+                if (!this.history) {
+                  this.history = {
+                    version: '1.0.0',
+                    messages: [],
+                    lastActiveAt: new Date().toISOString(),
+                    createdAt: new Date().toISOString(),
+                  }
+                }
+                // ★ 同步到内存中的 history 对象
+                this.history.providerSessionId = msg.session_id
+                // 持久化（传入内存中的 history 避免从磁盘重载）
+                updateProviderSessionId(msg.session_id, this.history).catch(err => {
+                  this.logger.warn('Failed to persist provider session ID:', err)
+                })
               }
             }
             break

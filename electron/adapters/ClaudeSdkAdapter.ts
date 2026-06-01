@@ -168,6 +168,8 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
     // ★ API 调用优化
     cleanEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
     cleanEnv.CLAUDE_CODE_MAX_RETRIES = '2'
+    // ★ 禁用归因指纹 (CCH)，防止第三方代理缓存失效
+    cleanEnv.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
 
     // Build SDK options
     const abortController = new AbortController()

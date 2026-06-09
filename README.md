@@ -5,7 +5,11 @@
 </p>
 
 <p align="center">
-  <strong>AI 驱动的开发者工作流 IDE</strong>
+  <strong>面向国内用户的 AI 编程助手，开箱即用</strong>
+</p>
+
+<p align="center">
+  内置 Claude Code 智能体，预装网络搜索、网页抓取、浏览器自动化、桌面控制、知识记忆等 MCP 工具
 </p>
 
 <p align="center">
@@ -15,6 +19,10 @@
   <a href="#技术栈">技术栈</a> •
   <a href="#许可证">许可证</a>
 </p>
+
+---
+
+让普通用户也能轻松使用最先进的 AI 编程能力。无需折腾环境配置，下载安装即可开始与 AI 对话编程。
 
 ---
 
@@ -35,11 +43,21 @@
 - 文件变更追踪
 - 消息分组显示
 
-### 🔧 MCP (模型上下文协议) 集成
+### 🔧 内置 MCP 工具
 
-- 内置 MCP 服务器管理
-- 支持外部 MCP 服务器
-- 便捷的配置与监控
+开箱即用，无需配置：
+
+| 工具 | 功能 |
+|------|------|
+| **Open WebSearch** | 网络搜索（免费，无需 API Key） |
+| **Fetch** | 网页内容抓取 |
+| **Playwright** | 浏览器自动化（截图、表单填充） |
+| **MCPBrowser** | 浏览器自动化（Cookie 持久化） |
+| **Desktop Control** | Windows 桌面控制 |
+| **macOS Automator** | macOS 桌面控制 |
+| **Memory** | 知识图谱记忆 |
+
+同时支持添加外部 MCP 服务器。
 
 ### 📁 项目管理
 
@@ -173,6 +191,12 @@ ordorealm-code/
 
 ## English
 
+**AI Coding Assistant for Chinese Users - Ready to Use**
+
+Built-in Claude Code agent with pre-installed MCP tools: web search, web scraping, browser automation, desktop control, and knowledge memory.
+
+No configuration needed - just download and start coding with AI.
+
 ### Features
 
 #### 🤖 Multi-Agent Support
@@ -189,9 +213,17 @@ ordorealm-code/
 - File change tracking
 - Message grouping
 
-#### 🔧 MCP Integration
-- Built-in MCP server management
-- External MCP server support
+#### 🔧 Built-in MCP Tools
+
+| Tool | Function |
+|------|----------|
+| **Open WebSearch** | Web search (free, no API Key) |
+| **Fetch** | Web content scraping |
+| **Playwright** | Browser automation |
+| **MCPBrowser** | Browser automation (Cookie persistence) |
+| **Desktop Control** | Windows desktop control |
+| **macOS Automator** | macOS desktop control |
+| **Memory** | Knowledge graph memory |
 
 #### 📁 Project Management
 - Multi-project workspace

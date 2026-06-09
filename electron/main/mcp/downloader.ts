@@ -996,32 +996,53 @@ export class MCPDownloader implements MCPDownloaderInterface {
    */
   private buildNpmCommand(args: string): string {
     const nodePath = this.getNodePath()
+    const npmCliPath = this.findNpmCliJs()
+
+    if (npmCliPath) {
+      console.log(`[MCP Downloader] 使用 node 执行 npm-cli.js: ${npmCliPath}`)
+      return `"${nodePath}" "${npmCliPath}" ${args}`
+    }
+
+    if (process.platform === 'win32') {
+      console.log('[MCP Downloader] 内置 npm 不可用（npm-cli.js 缺失），回退到系统 npm')
+      return `npm ${args}`
+    }
+
     const npmPath = this.getNpmPath()
+    console.log(`[MCP Downloader] npm-cli.js 未找到，回退到: ${npmPath}`)
+    return `"${npmPath}" ${args}`
+  }
+
+  /**
+   * 查找 npm-cli.js 路径（跨平台）
+   * 在 Node.js 发行版中，npm 作为 node_modules 的一部分存在
+   *
+   * Windows 结构: node_modules/npm/bin/npm-cli.js
+   * macOS 结构:   lib/node_modules/npm/bin/npm-cli.js
+   */
+  private findNpmCliJs(): string | null {
+    const targetName = this.getRuntimeTargetName()
+    const userDataDir = app.getPath('userData')
+    const resourcesDir = app.isPackaged
+      ? process.resourcesPath
+      : path.join(app.getAppPath(), 'electron')
+
+    const candidateDirs = [userDataDir, resourcesDir]
     const platform = process.platform
 
-    if (platform === 'win32') {
-      // Windows: 直接调用 npm.cmd
-      return `"${npmPath}" ${args}`
-    } else {
-      // macOS/Linux: 优先使用 node 执行 npm-cli.js（更可靠）
-      const targetName = this.getRuntimeTargetName()
-      const npmCliPath = path.join(
-        app.getPath('userData'),
-        'runtime',
-        'node',
-        targetName,
-        'lib',
-        'node_modules',
-        'npm',
-        'bin',
-        'npm-cli.js'
-      )
-      if (fs.existsSync(npmCliPath)) {
-        return `"${nodePath}" "${npmCliPath}" ${args}`
+    // Windows 和 macOS 的 npm-cli.js 路径不同
+    const relativePaths = platform === 'win32'
+      ? ['node_modules', 'npm', 'bin', 'npm-cli.js']
+      : ['lib', 'node_modules', 'npm', 'bin', 'npm-cli.js']
+
+    for (const baseDir of candidateDirs) {
+      const cliPath = path.join(baseDir, 'runtime', 'node', targetName, ...relativePaths)
+      if (fs.existsSync(cliPath)) {
+        return cliPath
       }
-      // 回退到 npm 脚本
-      return `"${npmPath}" ${args}`
     }
+
+    return null
   }
 }
 

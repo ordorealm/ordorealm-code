@@ -16,10 +16,6 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 
 /** Props for Sidebar component */
 interface SidebarProps {
-  /** Whether sidebar is visible on mobile */
-  isMobileOpen?: boolean;
-  /** Callback to close sidebar on mobile */
-  onMobileClose?: () => void;
   /** Callback when new project dialog should open */
   onOpenNewProject?: () => void;
   /** Callback to switch to file tab (when file is clicked) */
@@ -48,9 +44,8 @@ function getProjectSessionStatus(
 /**
  * Sidebar component
  * Displays project list and file tree in a collapsible left panel
- * Responsive: on small screens, shows as overlay
  */
-export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, onSwitchToFileTab }: SidebarProps): JSX.Element {
+export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): JSX.Element {
   const { projects, activeProjectId, openProject, deleteProject } = useProjectStore();
   const { restartSession, resetSession } = useSessionStore();
   const gitInitialize = useGitStore(state => state.initialize);
@@ -352,23 +347,11 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
 
   return (
     <>
-      {/* Mobile overlay backdrop */}
-      {isMobileOpen && (
-        <div
-          className="md:hidden fixed left-0 right-0 bottom-0 bg-black/50 z-40"
-          style={{ top: 'var(--title-bar-height, 0)' }}
-          onClick={onMobileClose}
-        />
-      )}
-
-      {/* Sidebar container - responsive */}
+      {/* Sidebar container */}
       <div
         className={`
           w-64 h-full bg-bg-secondary border-r border-border flex flex-col
-          /* Mobile: fixed overlay */
-          fixed md:relative inset-y-0 left-0 z-50 md:z-auto
-          transform transition-transform duration-300 ease-in-out
-          ${isMobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          relative z-auto
         `}
       >
         {/* Header */}
@@ -385,24 +368,14 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
             </button>
-            {/* Collapse button (desktop only) */}
+            {/* Collapse button */}
             <button
               onClick={handleToggleCollapse}
-              className="hidden md:flex p-1.5 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors"
+              className="p-1.5 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors"
               title="收起侧边栏"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-              </svg>
-            </button>
-            {/* Close button (mobile only) */}
-            <button
-              onClick={onMobileClose}
-              className="md:hidden p-1.5 text-text-muted hover:text-text-primary hover:bg-bg-hover rounded transition-colors"
-              title="关闭"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
@@ -441,8 +414,6 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
                       `}
                       onClick={() => {
                         handleProjectSelect(project.id);
-                        // Close sidebar on mobile after selecting project
-                        onMobileClose?.();
                       }}
                       onContextMenu={(e) => handleContextMenu(e, project.id, project.name)}
                     >

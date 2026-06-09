@@ -1,0 +1,12 @@
+<svg width="16" height="16" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 字母 O - 环形（颜色跟随主题） -->
+  <circle cx="512" cy="460" r="180" fill="none" stroke="currentColor" stroke-width="40"/>
+
+  <!-- O 内部圆点 - 核心（颜色跟随主题，稍浅） -->
+  <circle cx="512" cy="460" r="60" class="icon-secondary"/>
+
+  <!-- 底部三条横线 - 代码行（颜色跟随主题） -->
+  <rect x="280" y="700" width="464" height="24" rx="12" fill="currentColor"/>
+  <rect x="340" y="760" width="344" height="24" rx="12" class="icon-secondary"/>
+  <rect x="400" y="820" width="224" height="24" rx="12" class="icon-tertiary"/>
+</svg>

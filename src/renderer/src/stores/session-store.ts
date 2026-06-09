@@ -326,6 +326,8 @@ function registerBeforeUnloadHandler(): void {
     forceSaveAllPendingSessions().catch(err => {
       console.error('[SessionStore] Failed to save on pagehide:', err);
     });
+    // ★ 清理控制器监听器
+    cleanupControllerListeners();
   });
 
   // ★ 兼容旧浏览器
@@ -333,6 +335,8 @@ function registerBeforeUnloadHandler(): void {
     console.log('[SessionStore] beforeunload triggered');
     // 同步保存到 localStorage 作为备份
     syncSavePendingSessionsToBackup();
+    // ★ 清理控制器监听器
+    cleanupControllerListeners();
   });
 }
 
@@ -1153,6 +1157,17 @@ interface SessionActions {
   respondToQuestion: (sessionId: string, answers: Record<string, string>) => Promise<void>;
   /** Respond to plan approval */
   respondToApproval: (sessionId: string, approved: boolean) => Promise<void>;
+  /** Set controller input request */
+  setControllerInputRequest: (sessionId: string, request: {
+    requestId: string;
+    question: string;
+    type: 'text' | 'choice' | 'confirm';
+    options?: Array<{ value: string; label: string }>;
+  } | null) => void;
+  /** Clear controller input request */
+  clearControllerInputRequest: (sessionId: string) => void;
+  /** Respond to controller input request */
+  respondToControllerInput: (sessionId: string, requestId: string, answer: string | string[]) => void;
   /** Prepend history messages to the beginning of message list */
   prependMessages: (sessionId: string, messages: Message[]) => void;
   /** Trigger compact and reload Claude.md */
@@ -1163,6 +1178,10 @@ interface SessionActions {
   updateInputDraft: (sessionId: string, draft: string) => void;
   /** Set auto-compacted flag - prevents repeated auto-compact within same session */
   setAutoCompacted: (sessionId: string, value: boolean) => void;
+  /** Set session-level Provider override */
+  setOverrideProvider: (sessionId: string, providerId: string | null) => void;
+  /** Set session-level model override */
+  setOverrideModel: (sessionId: string, model: string | null) => void;
 }
 
 /** Store initialization state */
@@ -1396,6 +1415,410 @@ function immediateFlushAllBuffers(set: SetFunction): void {
   }
 }
 
+/**
+ * Agent 调用 toolCallId 映射表
+ * Key: `${sessionId}:${agentName}` → Value: toolCallId
+ * 用于 task_complete 回调时精确匹配 Agent 调用
+ */
+const agentToolCallMap = new Map<string, string>()
+
+/**
+ * Pending Agent 调用信息
+ * 用于 complete 事件时发送结果
+ */
+interface PendingAgentCall {
+  sessionId: string
+  agentName: string
+  toolCallId: string
+  prompt: string
+  startedAt: number
+}
+const pendingAgentCalls = new Map<string, PendingAgentCall>()
+
+/**
+ * 解析 Agent 输出内容
+ * 支持 JSON 代码块、纯 JSON、纯文本三种格式
+ * 只要解析出有效 JSON，就返回 AgentResult 结构
+ */
+function parseAgentOutput(content: string): {
+  success: boolean;
+  status: string;
+  modifiedFiles: string[];
+  summary: string;
+  issues?: Array<{ severity: string; location: string; description: string; suggestion?: string }>;
+  error?: string;
+  output?: Record<string, unknown>;
+} | null {
+  // 1. 尝试提取 JSON 代码块
+  const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      // 只要解析出有效 JSON 对象，就认为是 Agent 结果
+      if (parsed && typeof parsed === 'object') {
+        // 如果 status 和 success 都没有，默认为失败
+        const success = parsed.success ?? (parsed.status === 'done' || parsed.status === 'completed' || parsed.status === 'passed') ?? false;
+        const status = parsed.status || (success ? 'done' : 'failed');
+        return {
+          success,
+          status,
+          modifiedFiles: parsed.modifiedFiles || [],
+          summary: parsed.summary || '',
+          issues: parsed.issues,
+          error: parsed.error,
+          output: parsed.output || parsed,
+        };
+      }
+    } catch {
+      // JSON 解析失败，继续尝试其他方式
+    }
+  }
+
+  // 2. 尝试提取 --- 后面的 JSON（Markdown 分隔符后）
+  const separatorMatch = content.match(/---\s*([\s\S]*?)$/);
+  if (separatorMatch) {
+    try {
+      const parsed = JSON.parse(separatorMatch[1].trim());
+      if (parsed && typeof parsed === 'object') {
+        const success = parsed.success ?? (parsed.status === 'done' || parsed.status === 'completed' || parsed.status === 'passed') ?? false;
+        const status = parsed.status || (success ? 'done' : 'failed');
+        return {
+          success,
+          status,
+          modifiedFiles: parsed.modifiedFiles || [],
+          summary: parsed.summary || '',
+          issues: parsed.issues,
+          error: parsed.error,
+          output: parsed.output || parsed,
+        };
+      }
+    } catch {
+      // 解析失败，继续尝试其他方式
+    }
+  }
+
+  // 3. 尝试直接解析整个内容为 JSON
+  try {
+    const parsed = JSON.parse(content);
+    // 只要解析出有效 JSON 对象，就认为是 Agent 结果
+    if (parsed && typeof parsed === 'object') {
+      // 如果 status 和 success 都没有，默认为失败
+      const success = parsed.success ?? (parsed.status === 'done' || parsed.status === 'completed' || parsed.status === 'passed') ?? false;
+      const status = parsed.status || (success ? 'done' : 'failed');
+      return {
+        success,
+        status,
+        modifiedFiles: parsed.modifiedFiles || [],
+        summary: parsed.summary || '',
+        issues: parsed.issues,
+        error: parsed.error,
+        output: parsed.output || parsed,
+      };
+    }
+  } catch {
+    // 不是有效 JSON
+  }
+
+  // 4. 尝试提取内容中任何位置的 JSON 对象（使用非贪婪匹配）
+  const jsonObjectMatch = content.match(/\{[\s\S]*?"success"[\s\S]*?\}|\{[\s\S]*?"status"[\s\S]*?\}/);
+  if (jsonObjectMatch) {
+    try {
+      // 尝试找到完整的 JSON 对象
+      let jsonStr = jsonObjectMatch[0];
+      // 确保是完整的 JSON（匹配括号）
+      let braceCount = 0;
+      let endIndex = 0;
+      for (let i = 0; i < jsonStr.length; i++) {
+        if (jsonStr[i] === '{') braceCount++;
+        if (jsonStr[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            endIndex = i + 1;
+            break;
+          }
+        }
+      }
+      if (endIndex > 0) {
+        jsonStr = jsonStr.substring(0, endIndex);
+        const parsed = JSON.parse(jsonStr);
+        if (parsed && typeof parsed === 'object') {
+          const success = parsed.success ?? (parsed.status === 'done' || parsed.status === 'completed' || parsed.status === 'passed') ?? false;
+          const status = parsed.status || (success ? 'done' : 'failed');
+          return {
+            success,
+            status,
+            modifiedFiles: parsed.modifiedFiles || [],
+            summary: parsed.summary || '',
+            issues: parsed.issues,
+            error: parsed.error,
+            output: parsed.output || parsed,
+          };
+        }
+      }
+    } catch {
+      // 解析失败
+    }
+  }
+
+  // 5. 纯文本：无法解析为 JSON，返回 null 表示不是 Agent 结果
+  return null;
+}
+
+/**
+ * Setup controller IPC listeners
+ * Handles input requests and agent calls from controller
+ */
+function setupControllerListeners(): void {
+  // ★ 监听控制器发送的消息（通过 output action）
+  const unsubscribeConversation = window.api.claude.onConversationMessage((payload) => {
+    console.log('[SessionStore] Controller conversation message received:', payload);
+    const { sessionId, message } = payload;
+
+    // 获取会话
+    const state = useSessionStore.getState();
+    const session = state.sessions[sessionId];
+    if (!session) {
+      console.warn('[SessionStore] Session not found for controller message:', sessionId);
+      return;
+    }
+
+    // ★ 类型守卫：只处理有 content 属性的消息（AssistantMessage/UserMessage/SystemMessage）
+    // ToolUseMessage 和 ToolResultMessage 没有 content 属性
+    if (!('content' in message)) {
+      console.log('[SessionStore] Skipping non-content message:', message.role);
+      return;
+    }
+
+    // 提取文本内容
+    const messageContent = message.content;
+    const contentText = typeof messageContent === 'string'
+      ? messageContent
+      : (messageContent as Array<{ type: string; text?: string }>)?.[0]?.text || '';
+
+    // 将控制器消息追加到 streaming 的 assistant message 中
+    // 找到最后一个 streaming 的 assistant message
+    const messages = [...session.messages];
+    let assistantMsg: Message | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant' && messages[i].isStreaming) {
+        assistantMsg = messages[i];
+        break;
+      }
+    }
+
+    if (assistantMsg) {
+      // 追加内容到现有的 assistant message
+      const updatedContent = (assistantMsg.content || '') + contentText;
+      useSessionStore.getState().updateMessage(sessionId, assistantMsg.id, {
+        content: updatedContent,
+      });
+    } else {
+      // 没有找到 streaming 的 assistant message，创建新的
+      const newMessage: Message = {
+        id: uuidv4(),
+        role: 'assistant',
+        content: contentText,
+        timestamp: new Date().toISOString(),
+        isStreaming: false,
+      };
+      useSessionStore.setState((prevState) => {
+        const existingSession = prevState.sessions[sessionId];
+        if (!existingSession) return prevState;
+        return {
+          sessions: {
+            ...prevState.sessions,
+            [sessionId]: {
+              ...existingSession,
+              messages: [...existingSession.messages, newMessage],
+              lastActiveAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+    }
+  });
+
+  // 监听控制器输入请求
+  const unsubscribeInput = window.api.controller.onInputRequest((data) => {
+    console.log('[SessionStore] Controller input request received:', data);
+
+    // 设置待处理的输入请求
+    useSessionStore.getState().setControllerInputRequest(data.sessionId, {
+      requestId: data.requestId,
+      question: data.question,
+      type: data.type,
+      options: data.options,
+    });
+  });
+
+  // 监听 Agent 调用
+  const unsubscribeAgent = window.api.controller.onAgentCall(async (data) => {
+    console.log('='.repeat(80));
+    console.log('[SessionStore] ★★★ Controller agent call received ★★★');
+    console.log('[SessionStore] data:', JSON.stringify(data, null, 2));
+    console.log('='.repeat(80));
+    const { sessionId, agentName, toolCallId, prompt } = data;
+
+    // 存储 toolCallId 以便 complete 事件时精确匹配
+    const agentCallKey = `${sessionId}:${agentName}`;
+    agentToolCallMap.set(agentCallKey, toolCallId);
+    console.log('[SessionStore] agentToolCallMap.set:', agentCallKey, '->', toolCallId);
+
+    // ★ 存储 pending agent call 信息，用于 complete 事件时发送结果
+    pendingAgentCalls.set(agentCallKey, {
+      sessionId,
+      agentName,
+      toolCallId,
+      prompt,
+      startedAt: Date.now()
+    });
+    console.log('[SessionStore] pendingAgentCalls.set:', agentCallKey);
+
+    // 获取会话和项目信息
+    const state = useSessionStore.getState();
+    const session = state.sessions[sessionId];
+    console.log('[SessionStore] session found:', !!session, 'sessionIds:', Object.keys(state.sessions));
+    if (!session) {
+      console.error('[SessionStore] Session not found for agent call:', sessionId);
+      agentToolCallMap.delete(agentCallKey);
+      pendingAgentCalls.delete(agentCallKey);
+      return;
+    }
+
+    // 获取项目路径
+    const projectStore = useProjectStore.getState();
+    const project = projectStore.projects.find(p => p.id === session.projectId);
+    console.log('[SessionStore] project found:', !!project);
+    if (!project) {
+      console.error('[SessionStore] Project not found for agent call');
+      agentToolCallMap.delete(agentCallKey);
+      pendingAgentCalls.delete(agentCallKey);
+      return;
+    }
+
+    try {
+      // 将 Agent prompt 作为用户消息发送给 AI
+      // AI 会根据 prompt 中的指示执行 Agent 定义的逻辑（包括多轮对话）
+      // 最终调用 task_complete 工具返回结果
+      //
+      // ★ 修复：调用 sendMessage action 而不是直接调用 window.api.claude.sendMessage
+      // sendMessage action 会自动处理 startSession、setupProgressListener 等流程
+
+      console.log('[SessionStore] 准备发送消息给 AI, prompt:', prompt);
+
+      console.log(`[SessionStore] ★★★ Sending agent prompt to AI via sendMessage action ★★★`);
+      console.log(`[SessionStore] sessionId: ${sessionId}`);
+      console.log(`[SessionStore] agentName: ${agentName}`);
+      console.log(`[SessionStore] prompt: ${prompt}`);
+      console.log(`[SessionStore] toolCallId: ${toolCallId}`);
+
+      // ★ 调用 sendMessage action（会自动处理 startSession、setupProgressListener、消息入队等）
+      // 不使用 await，让 AI 异步执行多轮对话
+      // 结果通过 complete 事件返回
+      useSessionStore.getState().sendMessage(sessionId, prompt).then(() => {
+        console.log(`[SessionStore] ★★★ sendMessage action completed ★★★`);
+      }).catch((error: Error) => {
+        console.error('[SessionStore] ★★★ sendMessage action error ★★★');
+        console.error('[SessionStore] error:', error);
+
+        // 发送失败时通知控制器
+        const pendingToolCallId = agentToolCallMap.get(agentCallKey) || toolCallId;
+        window.api.controller.sendAgentResult(sessionId, agentName, pendingToolCallId, {
+          success: false,
+          status: 'failed',
+          modifiedFiles: [],
+          summary: `Agent ${agentName} 执行失败`,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        agentToolCallMap.delete(agentCallKey);
+        pendingAgentCalls.delete(agentCallKey);
+      });
+
+    } catch (error) {
+      console.error('[SessionStore] Agent call setup failed:', error);
+
+      // 发送失败结果（使用 toolCallId 精确匹配）
+      const pendingToolCallId = agentToolCallMap.get(agentCallKey) || toolCallId;
+      window.api.controller.sendAgentResult(sessionId, agentName, pendingToolCallId, {
+        success: false,
+        status: 'failed',
+        modifiedFiles: [],
+        summary: `Agent ${agentName} 执行失败`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      agentToolCallMap.delete(agentCallKey);
+    }
+  });
+
+  // 监听超时通知
+  const unsubscribeTimeout = window.api.controller.onTimeout((data) => {
+    console.log('[SessionStore] Controller timeout received:', data);
+    const { sessionId, type, agentName, question } = data;
+
+    // 清除待处理的输入请求（如果是用户输入超时）
+    if (type === 'user_input') {
+      useSessionStore.getState().clearControllerInputRequest(sessionId);
+    }
+
+    // 清理 agentToolCallMap 和 pendingAgentCalls（如果是 agent 超时）
+    if (type === 'agent' && agentName) {
+      const agentCallKey = `${sessionId}:${agentName}`;
+      agentToolCallMap.delete(agentCallKey);
+      pendingAgentCalls.delete(agentCallKey);
+      console.log('[SessionStore] Cleaned up pending agent call due to timeout:', agentCallKey);
+    }
+
+    // 添加超时提示消息
+    const state = useSessionStore.getState();
+    const session = state.sessions[sessionId];
+    if (session) {
+      const timeoutMessage: Message = {
+        id: uuidv4(),
+        role: 'assistant',
+        content: type === 'agent'
+          ? `⏱️ Agent ${agentName || 'unknown'} 执行超时，请检查或重试`
+          : `⏱️ 用户输入超时（问题: ${question?.slice(0, 50) || 'unknown'}...）`,
+        timestamp: new Date().toISOString(),
+      };
+
+      useSessionStore.setState((prevState) => {
+        const existingSession = prevState.sessions[sessionId];
+        if (!existingSession) return prevState;
+        return {
+          sessions: {
+            ...prevState.sessions,
+            [sessionId]: {
+              ...existingSession,
+              messages: [...existingSession.messages, timeoutMessage],
+              lastActiveAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+    }
+  });
+
+  // 保存取消订阅函数，用于清理
+  (window as any).__controllerListenersCleanup = () => {
+    unsubscribeInput();
+    unsubscribeAgent();
+    unsubscribeTimeout();
+  };
+
+  console.log('[SessionStore] Controller listeners registered');
+}
+
+/**
+ * Cleanup controller IPC listeners
+ */
+function cleanupControllerListeners(): void {
+  if ((window as any).__controllerListenersCleanup) {
+    (window as any).__controllerListenersCleanup();
+    delete (window as any).__controllerListenersCleanup;
+    console.log('[SessionStore] Controller listeners cleaned up');
+  }
+}
+
 export const useSessionStore = create<SessionState & SessionActions>((set, get) => ({
   sessions: {},
   activeSessionId: null,
@@ -1482,6 +1905,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
         // ★ 恢复上次未保存的会话（崩溃恢复）
         await restorePendingSessionsFromBackup();
+
+        // ★ 注册控制器 IPC 监听器
+        setupControllerListeners();
 
         initialized = true;
         console.log('[SessionStore] Initialization complete');
@@ -1581,73 +2007,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
-    // ★ 控制器命令拦截
-    const controllerMatch = content.match(/^\/(\w+-controller)/);
-    if (controllerMatch) {
-      const skillName = controllerMatch[1];
+    // ★ 控制器命令拦截 - 只设置标记，继续执行普通消息流程
+    const controllerMatch = content.match(/^\/([\w-]+-controller)/);
+    const isControllerCommand = !!controllerMatch;
+    const skillName = controllerMatch ? controllerMatch[1] : null;
+
+    if (isControllerCommand) {
       console.log(`[SessionStore] Controller command detected: ${skillName}`);
-
-      // 获取项目路径
-      const projectStore = useProjectStore.getState();
-      const project = projectStore.projects.find(p => p.id === session.projectId);
-      if (!project) {
-        console.error('[SessionStore] Project not found for controller');
-        return;
-      }
-
-      // 添加用户消息
-      const userMessage: Message = {
-        id: uuidv4(),
-        role: 'user',
-        content,
-        timestamp: new Date().toISOString(),
-      };
-      set(state => {
-        const existingSession = state.sessions[sessionId];
-        if (!existingSession) return state;
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...existingSession,
-              messages: [...existingSession.messages, userMessage],
-              lastActiveAt: new Date().toISOString(),
-            },
-          },
-        };
-      });
-
-      // 添加助手占位消息
-      const assistantMessageId = get().addAssistantMessage(sessionId, '', true);
-
-      try {
-        // 调用控制器
-        const result = await window.api.controller.run({
-          sessionId,
-          projectRoot: project.path,
-          skillName,
-        });
-
-        if (result.success) {
-          get().updateMessage(sessionId, assistantMessageId, {
-            content: '✅ 控制器执行完成',
-            isStreaming: false,
-          });
-        } else {
-          get().updateMessage(sessionId, assistantMessageId, {
-            content: `❌ 控制器执行失败: ${result.error}`,
-            isStreaming: false,
-          });
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        get().updateMessage(sessionId, assistantMessageId, {
-          content: `❌ 控制器调用失败: ${errorMessage}`,
-          isStreaming: false,
-        });
-      }
-
-      return; // 控制器命令已处理，不继续正常流程
     }
 
     // ★ 生成追踪 ID
@@ -1688,7 +2054,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     });
 
     // Create placeholder for assistant message
-    const assistantMessageId = get().addAssistantMessage(sessionId, '', true);
+    // 控制器命令直接创建 isStreaming: false，普通消息创建 isStreaming: true
+    const assistantMessageId = get().addAssistantMessage(sessionId, '', !isControllerCommand);
     console.log('[SessionStore] Assistant message created:', assistantMessageId);
 
     // Get provider and project for agent call
@@ -1708,15 +2075,25 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
-    // Get provider
-    const providerId = agentStore.config?.providerId;
+    // ★ Get provider - 优先使用会话级覆盖，其次使用全局默认
+    const providerId = session?.overrideProviderId || agentStore.config?.providerId;
     if (!providerId) {
-      console.error('[SessionStore] No providerId in agent config');
+      console.error('[SessionStore] No providerId available');
       get().updateMessage(sessionId, assistantMessageId, {
         content: '未配置 API Provider',
         isStreaming: false,
       });
       return;
+    }
+
+    // ★ 检测 Provider 变更，中止当前流式响应
+    if (session?.lastUsedProviderId && session.lastUsedProviderId !== providerId) {
+      console.log('[SessionStore] Provider changed from', session.lastUsedProviderId, 'to', providerId, '- aborting current turn');
+      try {
+        await window.api.claude.abort(sessionId);
+      } catch (err) {
+        console.warn('[SessionStore] Failed to abort session:', err);
+      }
     }
 
     // ★ 重新加载 providers 确保获取最新的 API Key
@@ -1730,6 +2107,21 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       });
       return;
     }
+
+    // ★ 记录本次使用的 Provider ID
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            lastUsedProviderId: providerId,
+          },
+        },
+      };
+    });
 
     console.log('[SessionStore] Provider loaded, apiKey (first 20 chars):', provider.apiKey?.substring(0, 20));
     console.log('[SessionStore] Provider apiKey length:', provider.apiKey?.length);
@@ -1767,9 +2159,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       if (!apiKey) {
         throw new Error('API Key not configured');
       }
+
+      // ★ 获取模型 - 优先使用会话级覆盖，其次使用 Provider 默认
+      const model = session?.overrideModel || provider.defaultModel;
+
       console.log('[SessionStore] apiKey (first 20 chars):', apiKey?.substring(0, 20));
       console.log('[SessionStore] apiKey length:', apiKey?.length);
-      console.log('[SessionStore] provider.defaultModel:', provider.defaultModel);
+      console.log('[SessionStore] model:', model);
       console.log('[SessionStore] provider.baseUrl:', provider.baseUrl);
       console.log('[SessionStore] provider.apiType:', provider.apiType);
 
@@ -1778,7 +2174,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         workingDirectory: project.path,
         apiKey: apiKey,
         baseUrl: provider.baseUrl,
-        model: provider.defaultModel,
+        model: model,  // ★ 使用会话级或 Provider 默认模型
         apiType: provider.apiType,
         envOverrides: provider.envOverrides,
         contextWindow: provider.contextWindow,  // ★ 传递上下文窗口配置
@@ -1899,7 +2295,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               break;
 
             case 'session_state_changed':
-              // 会话状态变化（权威的轮次结束信号）
+              // 会话状态变化
               console.log('[SessionStore] Session state changed:', statusData.sessionState);
               if (statusData.sessionState === 'requires_action') {
                 useActivityStore.getState().startActivity(sessionId, {
@@ -1908,6 +2304,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                   timestamp: Date.now(),
                 });
               }
+              // 注意：Agent 完成检测已移到 complete 事件处理中（通过 JSON status 字段检测）
               break;
 
             case 'permission_denied':
@@ -2079,6 +2476,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           if (toolName === 'AskUserQuestion' && toolInput?.questions) {
             // Handle AskUserQuestion tool - this requires user interaction
             console.log('[SessionStore] AskUserQuestion tool detected:', toolInput);
+            console.log('[SessionStore] AskUserQuestion questions:', JSON.stringify(toolInput.questions, null, 2));
             const questions = toolInput.questions as Question[];
             set(state => {
               const existingSession = state.sessions[sessionId];
@@ -2092,6 +2490,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                       pendingPermission: existingSession.interactivePanel?.pendingPermission || null,
                       pendingQuestion: { questions, toolUseId },
                       pendingApproval: existingSession.interactivePanel?.pendingApproval || null,
+                      pendingControllerInput: existingSession.interactivePanel?.pendingControllerInput || null,
                     },
                   },
                 },
@@ -2112,6 +2511,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                       pendingPermission: existingSession.interactivePanel?.pendingPermission || null,
                       pendingQuestion: existingSession.interactivePanel?.pendingQuestion || null,
                       pendingApproval: { planContent: toolInput, toolUseId },
+                      pendingControllerInput: existingSession.interactivePanel?.pendingControllerInput || null,
                     },
                   },
                 },
@@ -2197,16 +2597,103 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           });
           // ★ 增量保存：工具结果到达时保存
           triggerIncrementalSave(sessionId);
+        } else if (type === 'tool_use_update') {
+          // ★ 方案 A：更新已有的 tool_use 消息的 input（流式开始时 input 为空，这里补充完整参数）
+          const toolUseId = progressEvent.toolUseId;
+          console.log('[SessionStore] Tool use update received:', { toolUseId, toolName, toolInput });
+
+          if (toolUseId && toolInput) {
+            // 先刷新批处理队列，确保 tool_use 消息已经在 state 中
+            immediateFlushToolBatchForSession(sessionId);
+
+            // ★ 特殊处理：AskUserQuestion 工具需要更新 pendingQuestion
+            if (toolName === 'AskUserQuestion' && toolInput.questions) {
+              console.log('[SessionStore] AskUserQuestion tool_use_update - setting pendingQuestion');
+              console.log('[SessionStore] questions data:', JSON.stringify(toolInput.questions, null, 2));
+              const questions = toolInput.questions as Question[];
+              set(state => {
+                const existingSession = state.sessions[sessionId];
+                if (!existingSession) return state;
+                return {
+                  sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                      ...existingSession,
+                      interactivePanel: {
+                        pendingPermission: existingSession.interactivePanel?.pendingPermission || null,
+                        pendingQuestion: { questions, toolUseId },
+                        pendingApproval: existingSession.interactivePanel?.pendingApproval || null,
+                        pendingControllerInput: existingSession.interactivePanel?.pendingControllerInput || null,
+                      },
+                    },
+                  },
+                };
+              });
+            }
+
+            // 更新已有的 tool_use 消息的 toolInput
+            set(state => {
+              const existingSession = state.sessions[sessionId];
+              if (!existingSession) return state;
+
+              const updatedMessages = existingSession.messages.map(m => {
+                if (m.role === 'tool_use' && m.toolUseId === toolUseId) {
+                  // 只有当 input 为空或键数为 0 时才更新
+                  const currentInput = m.toolInput || {};
+                  const hasEmptyInput = Object.keys(currentInput).length === 0;
+                  if (hasEmptyInput) {
+                    console.log('[SessionStore] Updating toolInput for toolUseId:', toolUseId, 'keys:', Object.keys(toolInput));
+                    return { ...m, toolInput };
+                  }
+                }
+                return m;
+              });
+
+              return {
+                sessions: {
+                  ...state.sessions,
+                  [sessionId]: {
+                    ...existingSession,
+                    messages: updatedMessages,
+                  },
+                },
+              };
+            });
+          }
         } else if (type === 'error') {
           // Flush any pending batches before handling error
           immediateFlushToolBatchForSession(sessionId);
           immediateFlushBufferForSession(sessionId, set);
-          // Handle error
-          get().updateMessage(sessionId, assistantMessageId, {
-            content: `Error: ${eventContent}`,
-            isStreaming: false,
-            isThinking: false,
+
+          // ★★★ 修复：查找并更新所有 streaming 消息，解决并发/监听器替换问题 ★★★
+          set(state => {
+            const existingSession = state.sessions[sessionId];
+            if (!existingSession) return state;
+
+            // 更新所有 streaming 消息，添加错误内容
+            const updatedMessages = existingSession.messages.map(m => {
+              if (m.isStreaming) {
+                return {
+                  ...m,
+                  content: m.content ? `${m.content}\n\nError: ${eventContent}` : `Error: ${eventContent}`,
+                  isStreaming: false,
+                  isThinking: false,
+                };
+              }
+              return m;
+            });
+
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...existingSession,
+                  messages: updatedMessages,
+                },
+              },
+            };
           });
+
           // ★ 重要：结束思考计时器和活动状态
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
@@ -2230,11 +2717,30 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // 使用 void 显式忽略 Promise，因为回调函数不返回 Promise
           void refreshContextUsage(sessionId, set);
 
-          // Mark streaming as complete and thinking as finished
-          get().updateMessage(sessionId, assistantMessageId, {
-            isStreaming: false,
-            isThinking: false,
+          // ★★★ 修复：查找并更新所有 streaming 消息，解决并发/监听器替换问题 ★★★
+          // 不再依赖单个 assistantMessageId，而是批量处理所有 isStreaming 的消息
+          set(state => {
+            const existingSession = state.sessions[sessionId];
+            if (!existingSession) return state;
+
+            const hasStreamingMsg = existingSession.messages.some(m => m.isStreaming);
+            if (!hasStreamingMsg) return state;
+
+            console.log('[SessionStore] Complete: resetting all streaming messages for session:', sessionId);
+
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...existingSession,
+                  messages: existingSession.messages.map(m =>
+                    m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+                  ),
+                },
+              },
+            };
           });
+
           // End thinking timer and clear activity
           useActivityStore.getState().endThinking(sessionId);
           useActivityStore.getState().endActivity(sessionId);
@@ -2309,6 +2815,60 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           } else {
             console.log('[SessionStore] No usageData in complete event');
           }
+
+          // ★★★ Agent 完成检测：检测最后一条 assistant 消息中的 JSON 结果 ★★★
+          // 只要解析出有效 JSON，就认为 Agent 完成
+          for (const [agentCallKey, pendingCall] of pendingAgentCalls) {
+            if (pendingCall.sessionId === sessionId) {
+              console.log('[SessionStore] ★ Agent 完成检测：检查 pending agent call:', agentCallKey);
+
+              const session = get().sessions[sessionId];
+              // 找到最后一条非流式的 assistant 消息
+              const lastAssistantMsg = [...session.messages]
+                .reverse()
+                .find(m => m.role === 'assistant' && !m.isStreaming);
+
+              if (lastAssistantMsg?.content) {
+                const result = parseAgentOutput(lastAssistantMsg.content);
+                console.log('[SessionStore] ★ parseAgentOutput 结果:', result ? `status=${result.status}, success=${result.success}` : 'null');
+
+                // 只要解析出有效 JSON，就认为 Agent 完成
+                if (result) {
+                  console.log('[SessionStore] ★★★ Agent 完成 (JSON 检测) ★★★');
+                  console.log('[SessionStore] ★ agentName:', pendingCall.agentName);
+                  console.log('[SessionStore] ★ toolCallId:', pendingCall.toolCallId);
+                  console.log('[SessionStore] ★ status:', result.status);
+                  console.log('[SessionStore] ★ success:', result.success);
+                  console.log('[SessionStore] ★ summary:', result.summary?.slice(0, 100));
+
+                  // ★ 验证并转换 status 为合法的字面量类型
+                  const validStatuses = ['done', 'failed', 'blocked'] as const;
+                  const normalizedStatus: 'done' | 'failed' | 'blocked' =
+                    validStatuses.includes(result.status as typeof validStatuses[number])
+                      ? (result.status as 'done' | 'failed' | 'blocked')
+                      : (result.success ? 'done' : 'failed');
+
+                  // 发送 Agent 结果给控制器
+                  window.api.controller.sendAgentResult(
+                    sessionId,
+                    pendingCall.agentName,
+                    pendingCall.toolCallId,
+                    {
+                      ...result,
+                      status: normalizedStatus,
+                    }
+                  );
+
+                  // 清理映射表
+                  pendingAgentCalls.delete(agentCallKey);
+                  agentToolCallMap.delete(agentCallKey);
+                  console.log('[SessionStore] ★ 已清理 pendingAgentCalls 和 agentToolCallMap');
+                }
+              } else {
+                console.log('[SessionStore] ★ 未找到有效的 assistant 消息');
+              }
+            }
+          }
         }
       });
 
@@ -2331,16 +2891,33 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         });
       }
 
-      // ★ Step 4: 发送消息
-      console.log(`[TRACE-AI] [FRONTEND] Calling claude.sendMessage IPC | traceId=${traceId}`);
-      console.log('[SessionStore] Sending message...');
-      const sendResult = await window.api.claude.sendMessage(sessionId, finalContent);
+      // ★ Step 4: 发送消息或控制器命令
+      console.log(`[TRACE-AI] [FRONTEND] Step 4 | traceId=${traceId}`);
 
-      if (!sendResult.success) {
-        throw new Error(sendResult.error || 'Failed to send message');
+      if (isControllerCommand && skillName) {
+        // ★ 控制器命令：调用 controller.run 而不是 sendMessage
+        console.log('[SessionStore] Calling controller.run...');
+        const result = await window.api.controller.run({
+          sessionId,
+          projectRoot: project.path,
+          skillName,
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'Controller run failed');
+        }
+        console.log('[SessionStore] Controller started, waiting for Agent calls...');
+      } else {
+        // ★ 普通消息：调用 sendMessage
+        console.log(`[TRACE-AI] [FRONTEND] Calling claude.sendMessage IPC | traceId=${traceId}`);
+        console.log('[SessionStore] Sending message...');
+        const sendResult = await window.api.claude.sendMessage(sessionId, finalContent);
+
+        if (!sendResult.success) {
+          throw new Error(sendResult.error || 'Failed to send message');
+        }
+        console.log('[SessionStore] Message sent, waiting for response...');
       }
-
-      console.log('[SessionStore] Message sent, waiting for response...');
 
       // ★ 启动心跳检测
       startHeartbeatCheck(sessionId, assistantMessageId, set);
@@ -3011,6 +3588,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               pendingPermission: panel.pendingPermission ?? session.interactivePanel?.pendingPermission ?? null,
               pendingQuestion: panel.pendingQuestion ?? session.interactivePanel?.pendingQuestion ?? null,
               pendingApproval: panel.pendingApproval ?? session.interactivePanel?.pendingApproval ?? null,
+              pendingControllerInput: panel.pendingControllerInput ?? session.interactivePanel?.pendingControllerInput ?? null,
             },
           },
         },
@@ -3036,6 +3614,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
               pendingPermission: null,
               pendingQuestion: null,
               pendingApproval: null,
+              pendingControllerInput: null,
             },
           },
         },
@@ -3140,6 +3719,122 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   },
 
   /**
+   * Set controller input request
+   * Called when controller requests user input via IPC
+   * @param sessionId Session ID
+   * @param request Input request data
+   */
+  setControllerInputRequest: (sessionId, request) => {
+    set(state => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            interactivePanel: {
+              pendingPermission: session.interactivePanel?.pendingPermission || null,
+              pendingQuestion: session.interactivePanel?.pendingQuestion || null,
+              pendingApproval: session.interactivePanel?.pendingApproval || null,
+              pendingControllerInput: request,
+            },
+          },
+        },
+      };
+    });
+
+    if (request) {
+      console.log(`[SessionStore] Controller input request set for session: ${sessionId}`);
+    }
+  },
+
+  /**
+   * Clear controller input request
+   * @param sessionId Session ID
+   */
+  clearControllerInputRequest: (sessionId) => {
+    set(state => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      const currentPanel = session.interactivePanel || {
+        pendingPermission: null,
+        pendingQuestion: null,
+        pendingApproval: null,
+        pendingControllerInput: null,
+      };
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            interactivePanel: {
+              pendingPermission: currentPanel.pendingPermission,
+              pendingQuestion: currentPanel.pendingQuestion,
+              pendingApproval: currentPanel.pendingApproval,
+              pendingControllerInput: null,
+            },
+          },
+        },
+      };
+    });
+
+    console.log(`[SessionStore] Controller input request cleared for session: ${sessionId}`);
+  },
+
+  /**
+   * Respond to controller input request
+   * Sends the answer back to the controller via IPC
+   * @param sessionId Session ID
+   * @param requestId Request ID
+   * @param answer User's answer
+   */
+  respondToControllerInput: (sessionId, requestId, answer) => {
+    const { sessions } = get();
+    const session = sessions[sessionId];
+    if (!session) {
+      console.warn(`[SessionStore] Session not found: ${sessionId}`);
+      return;
+    }
+
+    // 防止重复调用：检查请求是否仍然待处理
+    const pendingInput = session.interactivePanel?.pendingControllerInput;
+    if (!pendingInput || pendingInput.requestId !== requestId) {
+      console.warn(`[SessionStore] Controller input already handled or mismatched: ${requestId}`);
+      return;
+    }
+
+    // Send response to controller via IPC
+    window.api.controller.respondToInput(requestId, answer);
+
+    // Clear the pending state
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            interactivePanel: {
+              pendingPermission: existingSession.interactivePanel?.pendingPermission || null,
+              pendingQuestion: existingSession.interactivePanel?.pendingQuestion || null,
+              pendingApproval: existingSession.interactivePanel?.pendingApproval || null,
+              pendingControllerInput: null,
+            },
+          },
+        },
+      };
+    });
+
+    console.log(`[SessionStore] Controller input response sent: ${requestId}`);
+  },
+
+  /**
    * Prepend history messages to the beginning of message list
    * Used when loading older messages from disk for scroll-up history loading
    * @param sessionId Session ID
@@ -3212,10 +3907,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         });
       });
 
-      // 发送 /compact 命令（仅压缩，不发送额外消息）
+      // ★ 压缩指令：保留最近5轮完整对话，更早内容精简摘要
+      const compactInstructions = `永久保留最近5轮完整原始对话不压缩，更早所有对话精简摘要。摘要严格记录：用户硬性约束、已定参数、确定方案、遗留待解决内容。剔除：闲聊、无效试错、冗余日志。`;
+
+      // 发送 /compact 命令（带自定义压缩指令）
       console.log(`[TRACE-AI] [FRONTEND] triggerCompact calling claude.sendMessage('/compact') | sessionId=${sessionId}`);
-      await window.api.claude.sendMessage(sessionId, '/compact');
-      console.log('[SessionStore] /compact command sent');
+      await window.api.claude.sendMessage(sessionId, `/compact ${compactInstructions}`);
+      console.log('[SessionStore] /compact command sent with instructions');
 
       // 等待 compact_boundary 事件或 15 秒超时
       await compactComplete;
@@ -3310,6 +4008,50 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           [sessionId]: {
             ...existingSession,
             autoCompacted: value,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Set session-level Provider override
+   * @param sessionId Session ID
+   * @param providerId Provider ID (null to use global default)
+   */
+  setOverrideProvider: (sessionId, providerId) => {
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            overrideProviderId: providerId || undefined,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Set session-level model override
+   * @param sessionId Session ID
+   * @param model Model ID (null to use Provider default)
+   */
+  setOverrideModel: (sessionId, model) => {
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            overrideModel: model || undefined,
           },
         },
       };

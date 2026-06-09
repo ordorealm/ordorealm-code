@@ -1,0 +1,24 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Windows 图标规范:
+    - 白色背景 + 圆角 rx=180 (Windows 标准约 17.6%)
+    - 图形缩小到 85% 并居中
+  -->
+
+  <!-- 白色圆角矩形背景 -->
+  <rect width="1024" height="1024" rx="180" fill="#FFFFFF"/>
+
+  <!-- 图形组：缩小 85% 并居中 -->
+  <g transform="translate(512, 512) scale(0.85) translate(-512, -512)">
+    <!-- 字母 O - 环形 -->
+    <circle cx="512" cy="460" r="180" fill="none" stroke="#8B5CF6" stroke-width="40"/>
+
+    <!-- O 内部圆点 - 核心 -->
+    <circle cx="512" cy="460" r="60" fill="#3B82F6"/>
+
+    <!-- 底部三条横线 - 代码行 -->
+    <rect x="280" y="700" width="464" height="24" rx="12" fill="#8B5CF6"/>
+    <rect x="340" y="760" width="344" height="24" rx="12" fill="#6366F1"/>
+    <rect x="400" y="820" width="224" height="24" rx="12" fill="#3B82F6"/>
+  </g>
+</svg>

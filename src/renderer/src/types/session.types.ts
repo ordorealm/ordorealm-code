@@ -141,6 +141,8 @@ export interface SessionInitData {
 export interface QuestionOption {
   label: string;
   description?: string;
+  /** Mark this option as custom input trigger - shows input field when selected */
+  isCustom?: boolean;
 }
 
 /**
@@ -151,6 +153,8 @@ export interface Question {
   header?: string;
   options?: QuestionOption[];
   multiSelect?: boolean;
+  /** Allow custom input text after selection */
+  allowCustomInput?: boolean;
 }
 
 /**
@@ -163,6 +167,13 @@ export interface InteractivePanelState {
   pendingQuestion: { questions: Question[]; toolUseId: string } | null;
   /** Pending plan approval from ExitPlanMode tool */
   pendingApproval: { planContent: unknown; toolUseId: string } | null;
+  /** Pending controller input request */
+  pendingControllerInput: {
+    requestId: string;
+    question: string;
+    type: 'text' | 'choice' | 'confirm';
+    options?: Array<{ value: string; label: string }>;
+  } | null;
 }
 
 /**
@@ -205,6 +216,15 @@ export interface Session {
   inputDraft?: string;
   /** Auto-compact triggered flag - prevents repeated auto-compact within same session */
   autoCompacted?: boolean;
+
+  // ===== 会话级配置覆盖（不持久化）=====
+
+  /** Session-level Provider override (takes precedence over global default) */
+  overrideProviderId?: string;
+  /** Session-level model override (takes precedence over Provider default model) */
+  overrideModel?: string;
+  /** Last used Provider ID (for detecting Provider changes that require session rebuild) */
+  lastUsedProviderId?: string;
 }
 
 /**

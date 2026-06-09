@@ -1,9 +1,9 @@
 # Electron Builder Configuration
-# DevFlow IDE
+# OrdoRealm Code - 序境智码
 
-appId: com.devflow.ide
-productName: DevFlow IDE
-copyright: Copyright © 2024 DevFlow
+appId: com.ordorealm.code
+productName: OrdoRealm Code
+copyright: Copyright © 2024 OrdoRealm
 
 # Directories
 directories:
@@ -29,6 +29,7 @@ extraResources:
 # macOS configuration
 mac:
   category: public.app-category.developer-tools
+  icon: resources/icon.icns
   target:
     - target: dmg
       arch:
@@ -40,15 +41,20 @@ mac:
   extraResources:
     - from: electron/runtime/node/darwin-x64
       to: runtime/node/darwin-x64
+    - from: electron/runtime/node/darwin-x64/lib/node_modules
+      to: runtime/node/darwin-x64/lib/node_modules
     - from: electron/runtime/weclaw/darwin-x64
       to: runtime/weclaw/darwin-x64
     - from: electron/runtime/node/darwin-arm64
       to: runtime/node/darwin-arm64
+    - from: electron/runtime/node/darwin-arm64/lib/node_modules
+      to: runtime/node/darwin-arm64/lib/node_modules
     - from: electron/runtime/weclaw/darwin-arm64
       to: runtime/weclaw/darwin-arm64
 
 # Windows configuration
 win:
+  icon: resources/icon-win-256x256.png
   target:
     - target: nsis
       arch:
@@ -57,6 +63,8 @@ win:
   extraResources:
     - from: electron/runtime/node/win-x64
       to: runtime/node/win-x64
+    - from: electron/runtime/node/win-x64/node_modules
+      to: runtime/node/win-x64/node_modules
     - from: electron/runtime/weclaw/win32-x64
       to: runtime/weclaw/win32-x64
     - from: electron/runtime/git/win-x64
@@ -73,7 +81,7 @@ linux:
     - target: deb
       arch:
         - x64
-  maintainer: DevFlow Team
+  maintainer: OrdoRealm Team
 
 # NSIS installer configuration (Windows)
 nsis:
@@ -99,8 +107,8 @@ dmg:
 # Auto-update configuration
 publish:
   provider: github
-  owner: devflow-ide
-  repo: devflow-ide
+  owner: ordorealm
+  repo: ordorealm-code
   releaseType: release
 
 # Before build hooks

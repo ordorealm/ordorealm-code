@@ -1,8 +1,8 @@
 /**
  * Session Toolbar Component
  *
- * Displays skill count, MCP status buttons, and context usage above the chat input.
- * Provides quick access to slash commands and MCP server status.
+ * Displays skill count, MCP status buttons, Provider/Model selector, and context usage above the chat input.
+ * Provides quick access to slash commands, MCP server status, and AI configuration.
  * Skills and MCP are dynamically discovered from SDK init data.
  *
  * @module components/chat/SessionToolbar
@@ -13,9 +13,14 @@ import { useSessionStore } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useFileTreeStore } from '@/stores/filetree-store';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
+import { useProviderStore } from '@/stores/provider-store';
 import { SkillLibrarySelector } from './SkillLibrarySelector';
 import { usePopoverClose } from '@/hooks/usePopoverClose';
-import type { SessionInitData, McpServerInfo, PluginInfo, TokenUsage } from '@/types';
+import {
+  getVendorConfigByUrl,
+  DEFAULT_MODELS_BY_API,
+} from '@/types/provider.types';
+import type { SessionInitData, McpServerInfo, PluginInfo, TokenUsage, Provider } from '@/types';
 
 /**
  * Skill item for display in popover
@@ -570,6 +575,9 @@ export function SessionToolbar({ sessionId, onSkillClick }: SessionToolbarProps)
         onLibraryActivated={handleLibraryActivated}
       />
 
+      {/* Provider/Model Selector */}
+      <ProviderModelSelector sessionId={sessionId} />
+
       {/* Context usage display */}
       <ContextUsage sessionId={sessionId} />
 
@@ -706,12 +714,11 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
 
       {/* Confirm Dialog */}
       {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-bg-primary border border-border rounded-lg shadow-xl p-4 max-w-sm mx-4">
+        <div className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-black/50" style={{ top: 'var(--title-bar-height, 0)' }}>
+          <div className="bg-bg-primary border border-border rounded-lg shadow-xl p-4 w-80 mx-4">
             <h3 className="text-lg font-medium text-text-primary mb-2">压缩会话</h3>
             <p className="text-sm text-text-secondary mb-4">
-              确定要压缩当前会话吗？<br />
-              压缩后会自动重新加载项目的 Claude.md 文件。
+              确定要压缩当前会话吗？
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -731,5 +738,256 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * 获取 Provider 可用的模型列表
+ */
+function getAvailableModels(provider: Provider): Array<{ id: string; label: string }> {
+  // 优先使用厂商配置的模型列表
+  const vendorConfig = getVendorConfigByUrl(provider.baseUrl);
+  if (vendorConfig) {
+    return vendorConfig.models;
+  }
+
+  // 根据 API 类型使用默认模型列表
+  const apiType = provider.apiType || 'anthropic';
+  const defaultModels = DEFAULT_MODELS_BY_API[apiType] || [];
+
+  return defaultModels.map(m => ({ id: m, label: m }));
+}
+
+/**
+ * Provider/Model 选择器组件
+ * 会话级配置，不持久化
+ */
+function ProviderModelSelector({ sessionId }: { sessionId: string }): JSX.Element | null {
+  const { providers, activeProviderId } = useProviderStore();
+  const session = useSessionStore(s => s.sessions[sessionId]);
+  const setOverrideProvider = useSessionStore(s => s.setOverrideProvider);
+  const setOverrideModel = useSessionStore(s => s.setOverrideModel);
+
+  // 弹窗状态
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [customModelInput, setCustomModelInput] = useState('');
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // 弹窗关闭钩子
+  usePopoverClose(popoverOpen, setPopoverOpen, btnRef, popoverRef);
+
+  // 确定当前 Provider
+  const currentProviderId = session?.overrideProviderId || activeProviderId;
+  const currentProvider = providers.find(p => p.id === currentProviderId);
+
+  // 获取可用模型列表
+  const availableModels = useMemo(() => {
+    if (!currentProvider) return [];
+    return getAvailableModels(currentProvider);
+  }, [currentProvider]);
+
+  // 确定当前模型
+  const currentModel = session?.overrideModel || currentProvider?.defaultModel || '';
+
+  // 检查当前模型是否在可用列表中
+  const isCurrentModelInList = availableModels.some(m => m.id === currentModel);
+
+  // 获取当前模型显示名称
+  const currentModelLabel = useMemo(() => {
+    if (!currentModel) return '默认';
+    const found = availableModels.find(m => m.id === currentModel);
+    return found ? found.label : currentModel;
+  }, [currentModel, availableModels]);
+
+  // 处理 Provider 变更
+  const handleProviderChange = useCallback((newProviderId: string) => {
+    setOverrideProvider(sessionId, newProviderId);
+    // 切换 Provider 时清除模型覆盖
+    setOverrideModel(sessionId, null);
+    setShowCustomInput(false);
+    setCustomModelInput('');
+  }, [sessionId, setOverrideProvider, setOverrideModel]);
+
+  // 处理模型变更
+  const handleModelChange = useCallback((newModel: string) => {
+    if (newModel === '__custom__') {
+      setShowCustomInput(true);
+      setCustomModelInput(currentModel);
+      return;
+    }
+
+    const providerDefaultModel = currentProvider?.defaultModel || '';
+    if (newModel === providerDefaultModel) {
+      setOverrideModel(sessionId, null);
+    } else {
+      setOverrideModel(sessionId, newModel);
+    }
+    setShowCustomInput(false);
+  }, [sessionId, currentProvider, setOverrideModel, currentModel]);
+
+  // 确认自定义模型
+  const handleCustomModelConfirm = useCallback(() => {
+    if (customModelInput.trim()) {
+      setOverrideModel(sessionId, customModelInput.trim());
+    }
+    setShowCustomInput(false);
+  }, [sessionId, customModelInput, setOverrideModel]);
+
+  // 无 Provider 时不显示
+  if (providers.length === 0) {
+    return null;
+  }
+
+  // Provider 失效时自动回退
+  if (!currentProvider) {
+    const fallbackProvider = providers.find(p => p.isDefault) || providers[0];
+    if (fallbackProvider) {
+      setTimeout(() => {
+        setOverrideProvider(sessionId, fallbackProvider.id);
+      }, 0);
+    }
+    return null;
+  }
+
+  // 是否有会话级覆盖
+  const hasOverride = session?.overrideProviderId || session?.overrideModel;
+
+  return (
+    <div className="relative flex-shrink-0">
+      <button
+        ref={btnRef}
+        onClick={() => setPopoverOpen(o => !o)}
+        className={`
+          inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs
+          bg-bg-tertiary border text-text-secondary
+          hover:text-text-primary hover:bg-bg-hover
+          transition-colors cursor-pointer select-none
+          ${popoverOpen ? 'border-accent-indigo text-text-primary' : 'border-border'}
+          ${hasOverride ? 'ring-1 ring-accent-indigo/50' : ''}
+        `}
+      >
+        <span>🤖</span>
+        <span className="max-w-[80px] truncate">{currentProvider.name}</span>
+        <span className="text-text-muted">/</span>
+        <span className="max-w-[100px] truncate">{currentModelLabel}</span>
+        {hasOverride && <span className="text-accent-indigo text-[9px]">●</span>}
+        <span className="text-text-muted text-[10px]">▼</span>
+      </button>
+
+      {/* Popover */}
+      {popoverOpen && (
+        <div
+          ref={popoverRef}
+          className="absolute bottom-full left-0 mb-1.5 w-72 bg-bg-primary border border-border rounded-lg shadow-lg py-1.5 z-50"
+        >
+          {/* Provider 选择 */}
+          <div className="px-3 pb-1.5 border-b border-border">
+            <div className="text-[10px] text-text-muted font-medium uppercase tracking-wide mb-1.5">
+              AI 提供商
+            </div>
+            <div className="max-h-32 overflow-y-auto">
+              <div className="grid grid-cols-2 gap-1">
+                {providers.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => handleProviderChange(p.id)}
+                    className={`
+                      px-2 py-1 text-xs rounded text-left transition-colors truncate
+                      ${currentProviderId === p.id
+                        ? 'bg-accent-indigo/10 text-accent-indigo border border-accent-indigo/30'
+                        : 'bg-bg-secondary text-text-secondary hover:bg-bg-hover border border-transparent'
+                      }
+                    `}
+                  >
+                    {p.name}
+                    {p.isDefault && <span className="text-text-muted ml-1">(默认)</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Model 选择 */}
+          <div className="px-3 pt-1.5">
+            <div className="text-[10px] text-text-muted font-medium uppercase tracking-wide mb-1.5">
+              模型
+            </div>
+            {showCustomInput ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={customModelInput}
+                  onChange={(e) => setCustomModelInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCustomModelConfirm();
+                    else if (e.key === 'Escape') setShowCustomInput(false);
+                  }}
+                  placeholder="输入模型名称"
+                  className="flex-1 px-2 py-1 text-xs bg-bg-secondary border border-accent-indigo rounded focus:outline-none text-text-primary"
+                  autoFocus
+                />
+                <button
+                  onClick={handleCustomModelConfirm}
+                  className="p-1 text-accent-green hover:bg-accent-green/10 rounded"
+                  title="确认"
+                >
+                  ✓
+                </button>
+                <button
+                  onClick={() => setShowCustomInput(false)}
+                  className="p-1 text-text-muted hover:bg-bg-hover rounded"
+                  title="取消"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div className="max-h-40 overflow-y-auto space-y-0.5">
+                {availableModels.map(m => (
+                  <button
+                    key={m.id}
+                    onClick={() => handleModelChange(m.id)}
+                    className={`
+                      w-full px-2 py-1 text-xs rounded text-left transition-colors truncate
+                      ${currentModel === m.id
+                        ? 'bg-accent-indigo/10 text-accent-indigo'
+                        : 'bg-bg-secondary text-text-secondary hover:bg-bg-hover'
+                      }
+                    `}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+                {/* 当前值不在列表中 */}
+                {currentModel && !isCurrentModelInList && (
+                  <button
+                    onClick={() => handleModelChange(currentModel)}
+                    className="w-full px-2 py-1 text-xs rounded text-left bg-accent-indigo/10 text-accent-indigo"
+                  >
+                    {currentModel} (自定义)
+                  </button>
+                )}
+                {/* 自定义模型选项 */}
+                <button
+                  onClick={() => handleModelChange('__custom__')}
+                  className="w-full px-2 py-1 text-xs rounded text-left bg-bg-secondary text-text-muted hover:bg-bg-hover"
+                >
+                  ✏️ 自定义模型...
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 覆盖提示 */}
+          {hasOverride && (
+            <div className="px-3 pt-1.5 mt-1 border-t border-border">
+              <span className="text-[10px] text-accent-indigo">📍 当前为会话级覆盖（不持久化）</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

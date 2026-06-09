@@ -6,3 +6,4 @@
 
 export { ConfirmDialog } from './ConfirmDialog';
 export { AgentIcon, AgentBadge, getAgentConfig } from './AgentIcon';
+export { AppIcon } from './AppIcon';

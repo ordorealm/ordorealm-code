@@ -74,6 +74,21 @@ export const DEFAULT_BASE_URLS_BY_API: Record<ApiType, string> = {
 };
 
 /**
+ * Preset base URLs with labels for UI selection
+ */
+export const PRESET_BASE_URLS: Record<ApiType, { url: string; label: string; rechargeUrl?: string }[]> = {
+  anthropic: [
+    { url: 'https://api.deepseek.com/anthropic', label: 'DeepSeek 官方', rechargeUrl: 'https://platform.deepseek.com/' },
+    { url: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic', label: '讯飞星辰 Coding Plan', rechargeUrl: 'https://maas.xfyun.cn/packageSubscription' },
+    { url: 'https://modelservice.jdcloud.com/coding/anthropic', label: '京东云 Coding Plan', rechargeUrl: 'https://www.jdcloud.com/cn/pages/codingplan' },
+    { url: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', label: '阿里云百炼 Coding Plan', rechargeUrl: 'https://www.aliyun.com/benefit/scene/codingplan' },
+  ],
+  openai: [
+    { url: 'https://api.openai.com/v1', label: 'OpenAI 官方' },
+  ],
+};
+
+/**
  * Agent display names
  */
 export const AGENT_DISPLAY_NAMES: Record<AgentType, string> = {
@@ -109,6 +124,9 @@ export const XFYUN_MODELS = [
  * JDCloud (京东云) models configuration
  */
 export const JDCLOUD_MODELS = [
+  { id: 'DeepSeek-V3.2', label: 'DeepSeek V3.2', contextWindow: 200000 },
+  { id: 'GLM-5', label: 'GLM-5', contextWindow: 200000 },
+  { id: 'GLM-4.7', label: 'GLM-4.7', contextWindow: 200000 },
   { id: 'MiniMax-M2.5', label: 'MiniMax M2.5', contextWindow: 200000 },
   { id: 'Kimi-K2.5', label: 'Kimi K2.5', contextWindow: 200000 },
   { id: 'Kimi-K2', label: 'Kimi K2', contextWindow: 200000 },
@@ -119,6 +137,13 @@ export const JDCLOUD_MODELS = [
  * Aliyun (阿里云百炼) models configuration
  */
 export const ALIYUN_MODELS = [
+  { id: 'qwen3.5-plus', label: 'Qwen3.5 Plus', contextWindow: 200000 },
+  { id: 'qwen3-max', label: 'Qwen3 Max', contextWindow: 200000 },
+  { id: 'qwen3-coder-next', label: 'Qwen3 Coder Next', contextWindow: 200000 },
+  { id: 'qwen3-coder-plus', label: 'Qwen3 Coder Plus', contextWindow: 200000 },
+  { id: 'MiniMax-M2.5', label: 'MiniMax M2.5', contextWindow: 200000 },
+  { id: 'GLM-5', label: 'GLM-5', contextWindow: 200000 },
+  { id: 'kimi-k2.5', label: 'Kimi K2.5', contextWindow: 200000 },
   { id: 'GLM-4.7', label: 'GLM-4.7', contextWindow: 200000 },
 ] as const;
 

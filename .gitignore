@@ -73,3 +73,10 @@ electron/runtime/git/
 
 # Debug/test files
 test-*.js
+
+# Development in progress (incomplete)
+src/main/controller/agent-registry.ts
+src/main/controller/debug-logger.ts
+src/main/controller/script-executor.ts
+src/renderer/src/components/chat/ControllerInputDialog.tsx
+.playwright-mcp/

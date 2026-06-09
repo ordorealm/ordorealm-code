@@ -404,6 +404,37 @@ export interface Api {
       running: boolean
       skillName?: string
     }>
+    /** Respond to user input request */
+    respondToInput: (requestId: string, answer: string | string[]) => void
+    /** Send agent result */
+    sendAgentResult: (
+      sessionId: string,
+      agentName: string,
+      toolCallId: string,
+      result: { success: boolean; status: string; modifiedFiles?: string[]; summary?: string; error?: string }
+    ) => void
+    /** Subscribe to controller input requests */
+    onInputRequest: (callback: (data: {
+      sessionId: string
+      requestId: string
+      question: string
+      type: 'text' | 'choice' | 'confirm'
+      options?: Array<{ value: string; label: string }>
+    }) => void) => () => void
+    /** Subscribe to agent calls */
+    onAgentCall: (callback: (data: {
+      sessionId: string
+      agentName: string
+      toolCallId: string
+      prompt: string
+    }) => void) => () => void
+    /** Subscribe to timeout notifications */
+    onTimeout: (callback: (data: {
+      sessionId: string
+      type: 'user_input' | 'agent'
+      agentName?: string
+      question?: string
+    }) => void) => () => void
   }
 }
 

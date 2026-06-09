@@ -748,7 +748,7 @@ function getAvailableModels(provider: Provider): Array<{ id: string; label: stri
   // 优先使用厂商配置的模型列表
   const vendorConfig = getVendorConfigByUrl(provider.baseUrl);
   if (vendorConfig) {
-    return vendorConfig.models;
+    return vendorConfig.models.map(m => ({ id: m.id, label: m.label }));
   }
 
   // 根据 API 类型使用默认模型列表

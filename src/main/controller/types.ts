@@ -1,8 +1,59 @@
 /**
  * Controller Engine Types
- * 类型定义文件
+ * 通用控制器类型定义
  * @module main/controller/types
  */
+
+// ============ 状态类型（通用设计）============
+
+/**
+ * 检查点数据
+ */
+export interface Checkpoint {
+  stepId: string
+  timestamp: string
+  data?: unknown
+}
+
+/**
+ * 错误记录
+ */
+export interface ErrorRecord {
+  timestamp: string
+  message: string
+  context?: Record<string, unknown>
+}
+
+/**
+ * 控制器配置
+ */
+export interface ControllerConfig {
+  max_iterations: number
+  default_agent_timeout_minutes: number
+  default_input_timeout_minutes: number
+}
+
+/**
+ * 控制器元数据
+ */
+export interface ControllerMeta {
+  startedAt: string
+  updatedAt: string
+  errors: ErrorRecord[]
+  checkpoint?: Checkpoint
+}
+
+/**
+ * 控制器状态（通用设计）
+ * - config: 通用配置
+ * - data: 业务数据（由技能编排定义）
+ * - meta: 元数据
+ */
+export interface ControllerState {
+  config: ControllerConfig
+  data: Record<string, unknown>
+  meta: ControllerMeta
+}
 
 // ============ 静态配置类型 ============
 
@@ -21,11 +72,10 @@ export interface ToolParameterDef {
  * 工具效果定义
  */
 export interface ToolEffects {
-  updateTaskState?: boolean
-  updateReviewCount?: boolean
+  updateState?: string
+  incrementCounter?: string
   triggerValidator?: string
-  incrementReviewCount?: boolean
-  blockOnIssues?: boolean
+  blockOnFail?: boolean
 }
 
 /**
@@ -66,21 +116,9 @@ export interface ValidatorDef {
  * 约束定义
  */
 export interface ConstraintsDef {
-  spec_review_min_rounds: number
-  plan_review_min_rounds: number
-  code_review_min_rounds: number
-  code_review_max_rounds: number
+  max_iterations: number
+  default_timeout_minutes: number
   require_tools_for_state_change: boolean
-  timeout_per_task_minutes: number
-}
-
-/**
- * 状态机状态定义
- */
-export interface StateMachineDef {
-  phase_states: string[]
-  task_states: string[]
-  flow_states: string[]
 }
 
 /**
@@ -91,7 +129,6 @@ export interface StaticConfig {
   tools: Record<string, ToolDef>
   validators: Record<string, ValidatorDef>
   constraints: ConstraintsDef
-  stateMachine: StateMachineDef
 }
 
 // ============ 技能编排类型 ============
@@ -121,15 +158,6 @@ export type StepAction =
   | 'return_to_caller'
   | 'interactive_loop'
   | 'generate_document'
-
-/**
- * 步骤条件
- */
-export interface StepCondition {
-  if: string
-  then: string
-  else?: string
-}
 
 /**
  * 工具调用参数
@@ -266,121 +294,6 @@ export interface SkillOrchestration {
   constraints?: Record<string, number | boolean>
 }
 
-// ============ 状态类型 ============
-
-/**
- * 流程状态
- */
-export type FlowState =
-  | 'idle'
-  | 'spec_in_progress'
-  | 'spec_completed'
-  | 'plan_in_progress'
-  | 'plan_completed'
-  | 'dev_in_progress'
-  | 'dev_completed'
-  | 'review_in_progress'
-  | 'review_completed'
-  | 'error'
-  | 'aborted'
-
-/**
- * 任务状态
- */
-export type TaskStatus =
-  | 'pending'
-  | 'in_progress'
-  | 'done'
-  | 'failed'
-  | 'blocked'
-
-/**
- * Phase 状态
- */
-export type PhaseStatus =
-  | 'pending'
-  | 'in_progress'
-  | 'in_review'
-  | 'in_test'
-  | 'completed'
-  | 'failed'
-
-/**
- * 审查状态
- */
-export type ReviewStatus =
-  | 'pending'
-  | 'in_progress'
-  | 'passed'
-  | 'needs_fix'
-  | 'max_exceeded'
-
-/**
- * 任务定义
- */
-export interface Task {
-  id: string
-  name: string
-  spec: string
-  status: TaskStatus
-  dependencies: string[]
-  acceptance_criteria?: string[]
-  startedAt?: string
-  completedAt?: string
-  error?: string
-  modifiedFiles?: string[]
-  summary?: string
-}
-
-/**
- * Phase 定义
- */
-export interface Phase {
-  id: string
-  name: string
-  status: PhaseStatus
-  tasks: string[]
-  dependencies: string[]
-  startedAt?: string
-  completedAt?: string
-  review?: {
-    count: number
-    maxCount: number
-    status: ReviewStatus
-    issues?: Issue[]
-  }
-}
-
-/**
- * 问题定义
- */
-export interface Issue {
-  severity: 'critical' | 'major' | 'minor'
-  location: string
-  description: string
-  suggestion?: string
-}
-
-/**
- * 控制器状态
- */
-export interface ControllerState {
-  flow: FlowState
-  currentPhase?: string
-  currentTask?: string
-  phases: Phase[]
-  tasks: Task[]
-  reviewCount: number
-  errors: Array<{
-    timestamp: string
-    message: string
-    phaseId?: string
-    taskId?: string
-  }>
-  startedAt?: string
-  updatedAt?: string
-}
-
 // ============ 执行结果类型 ============
 
 /**
@@ -391,9 +304,13 @@ export interface AgentResult {
   status: 'done' | 'failed' | 'blocked'
   modifiedFiles: string[]
   summary: string
-  issues?: Issue[]
   error?: string
 }
+
+/**
+ * 脚本 Agent 执行结果（AgentResult 的别名）
+ */
+export type ScriptAgentResult = AgentResult
 
 /**
  * 工具调用结果
@@ -425,6 +342,16 @@ export interface ValidationResult {
 }
 
 /**
+ * 问题定义
+ */
+export interface Issue {
+  severity: 'critical' | 'major' | 'minor'
+  location: string
+  description: string
+  suggestion?: string
+}
+
+/**
  * 文档审核结果
  */
 export interface DocReviewResult {
@@ -450,23 +377,6 @@ export interface TaskCompleteParams {
   status: 'done' | 'failed' | 'blocked'
   modifiedFiles: string[]
   summary: string
-  issues?: Issue[]
-}
-
-/**
- * review_complete 工具参数
- */
-export interface ReviewCompleteParams {
-  issues: Issue[]
-  verdict: 'pass' | 'needs_fix'
-}
-
-/**
- * phase_complete 工具参数
- */
-export interface PhaseCompleteParams {
-  phaseId: string
-  status: 'completed' | 'failed'
 }
 
 /**
@@ -486,6 +396,62 @@ export interface RequestInputParams {
 export const CONTROLLER_CONFIG_PATH = '.claude/controller/config.json'
 export const SKILLS_DIR = '.claude/skills'
 export const AGENTS_DIR = '.claude/agents'
-export const STATE_FILE_PATH = '.superspec/state.json'
+export const STATE_FILE_PATH = '.superspec/runtime/state.json'
 export const PRODUCT_SPEC_PATH = '.superspec/Product-Spec.md'
 export const DEV_PLAN_PATH = '.superspec/DEV-PLAN.md'
+
+// ============ 脚本执行器类型 ============
+
+/**
+ * 脚本检查点接口
+ */
+export interface ScriptCheckpoint {
+  save: (data: Record<string, unknown>) => void
+  restore: () => Record<string, unknown> | null
+  clear: () => void
+}
+
+/**
+ * 脚本 Agent 注册表接口
+ */
+export interface ScriptAgentRegistry {
+  get: (name: string) => unknown
+  run: (name: string, input: Record<string, unknown>) => Promise<AgentResult>
+  has: (name: string) => boolean
+  list: () => string[]
+}
+
+/**
+ * 脚本配置
+ */
+export interface ScriptConfig {
+  projectRoot: string
+  skillName: string
+  maxRetries: number
+  timeout: number
+}
+
+/**
+ * 脚本输入选项
+ */
+export interface ScriptInputOptions {
+  type?: 'text' | 'choice' | 'confirm'
+  options?: Array<{ value: string; label: string }>
+}
+
+/**
+ * 控制器上下文
+ */
+export interface ControllerContext {
+  state: ControllerState
+  agents: ScriptAgentRegistry
+  checkpoint: ScriptCheckpoint
+  output: (message: string) => void
+  input: (question: string, options?: ScriptInputOptions) => Promise<string | string[] | undefined>
+  config: ScriptConfig
+}
+
+/**
+ * 脚本控制器函数类型
+ */
+export type ScriptControllerFunction = (ctx: ControllerContext) => Promise<void>

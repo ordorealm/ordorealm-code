@@ -28,6 +28,7 @@
     "src/**/*.tsx"
   ],
   "exclude": [
-    "src/main/**"
+    "src/main/**",
+    "src/renderer/src/components/chat/ControllerInputDialog.tsx"
   ]
 }

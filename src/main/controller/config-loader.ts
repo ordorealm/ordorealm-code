@@ -7,10 +7,29 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { Logger } from '../utils/logger'
-import type { StaticConfig } from './types'
+import type { StaticConfig, ToolEffects, ConstraintsDef } from './types'
 import { CONTROLLER_CONFIG_PATH } from './types'
 
 const logger = new Logger('ConfigLoader')
+
+/**
+ * 默认工具效果
+ */
+const DEFAULT_TOOL_EFFECTS: ToolEffects = {
+  updateState: undefined,
+  incrementCounter: undefined,
+  triggerValidator: undefined,
+  blockOnFail: undefined
+}
+
+/**
+ * 默认约束
+ */
+const DEFAULT_CONSTRAINTS: ConstraintsDef = {
+  max_iterations: 100,
+  default_timeout_minutes: 30,
+  require_tools_for_state_change: true
+}
 
 /**
  * 默认配置
@@ -23,11 +42,11 @@ const DEFAULT_CONFIG: StaticConfig = {
       parameters: {
         status: { type: 'string', enum: ['done', 'failed', 'blocked'], required: true },
         modifiedFiles: { type: 'array', required: true },
-        summary: { type: 'string', required: true },
-        issues: { type: 'array', required: false }
+        summary: { type: 'string', required: true }
       },
       effects: {
-        updateTaskState: true,
+        ...DEFAULT_TOOL_EFFECTS,
+        updateState: 'task',
         triggerValidator: 'hallucination_check'
       }
     },
@@ -38,18 +57,9 @@ const DEFAULT_CONFIG: StaticConfig = {
         verdict: { type: 'string', enum: ['pass', 'needs_fix'], required: true }
       },
       effects: {
-        incrementReviewCount: true,
-        blockOnIssues: true
-      }
-    },
-    phase_complete: {
-      description: 'Phase 完成时调用',
-      parameters: {
-        phaseId: { type: 'string', required: true },
-        status: { type: 'string', enum: ['completed', 'failed'], required: true }
-      },
-      effects: {
-        updateTaskState: true
+        ...DEFAULT_TOOL_EFFECTS,
+        incrementCounter: 'review_count',
+        blockOnFail: true
       }
     },
     request_input: {
@@ -73,19 +83,7 @@ const DEFAULT_CONFIG: StaticConfig = {
       onFail: 'block_and_report'
     }
   },
-  constraints: {
-    spec_review_min_rounds: 3,
-    plan_review_min_rounds: 3,
-    code_review_min_rounds: 3,
-    code_review_max_rounds: 5,
-    require_tools_for_state_change: true,
-    timeout_per_task_minutes: 30
-  },
-  stateMachine: {
-    phase_states: ['pending', 'in_progress', 'in_review', 'in_test', 'completed', 'failed'],
-    task_states: ['pending', 'in_progress', 'done', 'failed', 'blocked'],
-    flow_states: ['idle', 'spec_in_progress', 'spec_completed', 'plan_in_progress', 'plan_completed', 'dev_in_progress', 'dev_completed', 'review_in_progress', 'review_completed', 'error', 'aborted']
-  }
+  constraints: DEFAULT_CONSTRAINTS
 }
 
 /**
@@ -131,8 +129,7 @@ export async function loadConfig(projectRoot: string): Promise<StaticConfig> {
       ...config,
       tools: { ...DEFAULT_CONFIG.tools, ...config.tools },
       validators: { ...DEFAULT_CONFIG.validators, ...config.validators },
-      constraints: { ...DEFAULT_CONFIG.constraints, ...config.constraints },
-      stateMachine: { ...DEFAULT_CONFIG.stateMachine, ...config.stateMachine }
+      constraints: { ...DEFAULT_CONSTRAINTS, ...config.constraints }
     }
 
     logger.info(`Config loaded successfully, version: ${cachedConfig.version}`)

@@ -956,6 +956,18 @@ export const IPC_CHANNELS = {
   MCP_STATUS_CHANGE: 'mcp:status-change' as const,
   /** MCP output event */
   MCP_OUTPUT: 'mcp:output' as const,
+
+  // Controller channels
+  /** Controller input request (waiting for user input) */
+  CONTROLLER_INPUT_REQUEST: 'controller:input-request' as const,
+  /** Controller input response (user provided input) */
+  CONTROLLER_INPUT_RESPONSE: 'controller:input-response' as const,
+  /** Controller agent call (call AI agent) */
+  CONTROLLER_AGENT_CALL: 'controller:agent-call' as const,
+  /** Controller agent result (AI agent completed) */
+  CONTROLLER_AGENT_RESULT: 'controller:agent-result' as const,
+  /** Controller timeout notification */
+  CONTROLLER_TIMEOUT: 'controller:timeout' as const,
 } as const
 
 /**

@@ -532,6 +532,58 @@ const api = {
       running: boolean
       skillName?: string
     }> => ipcRenderer.invoke('controller:status', sessionId),
+
+    /** Respond to user input request */
+    respondToInput: (requestId: string, answer: string | string[]) => {
+      ipcRenderer.send('controller:input-response', { requestId, answer })
+    },
+
+    /** Send agent result (includes toolCallId for precise matching) */
+    sendAgentResult: (
+      sessionId: string,
+      agentName: string,
+      toolCallId: string,
+      result: { success: boolean; status: string; modifiedFiles?: string[]; summary?: string; error?: string }
+    ) => {
+      ipcRenderer.send('controller:agent-result', { sessionId, agentName, toolCallId, result })
+    },
+
+    /** Subscribe to controller input requests */
+    onInputRequest: (callback: (data: {
+      sessionId: string
+      requestId: string
+      question: string
+      type: 'text' | 'choice' | 'confirm'
+      options?: Array<{ value: string; label: string }>
+    }) => void) => {
+      const listener = (_: unknown, data: unknown) => callback(data as Parameters<typeof callback>[0])
+      ipcRenderer.on('controller:input-request', listener)
+      return () => ipcRenderer.removeListener('controller:input-request', listener)
+    },
+
+    /** Subscribe to agent calls */
+    onAgentCall: (callback: (data: {
+      sessionId: string
+      agentName: string
+      toolCallId: string
+      prompt: string
+    }) => void) => {
+      const listener = (_: unknown, data: unknown) => callback(data as Parameters<typeof callback>[0])
+      ipcRenderer.on('controller:agent-call', listener)
+      return () => ipcRenderer.removeListener('controller:agent-call', listener)
+    },
+
+    /** Subscribe to timeout notifications */
+    onTimeout: (callback: (data: {
+      sessionId: string
+      type: 'user_input' | 'agent'
+      agentName?: string
+      question?: string
+    }) => void) => {
+      const listener = (_: unknown, data: unknown) => callback(data as Parameters<typeof callback>[0])
+      ipcRenderer.on('controller:timeout', listener)
+      return () => ipcRenderer.removeListener('controller:timeout', listener)
+    },
   },
 }
 

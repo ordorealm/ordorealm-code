@@ -1,20 +1,13 @@
 /**
  * State Manager
  * 状态管理器（控制器独占）
+ * 通用设计，不包含业务相关字段
  * @module main/controller/state-manager
  */
 
 import { Logger } from '../utils/logger'
-import type {
-  ControllerState,
-  Phase,
-  Task,
-  TaskStatus,
-  PhaseStatus,
-  FlowState,
-  Issue
-} from './types'
 import { SessionApi } from './session-api'
+import type { Checkpoint, ErrorRecord, ControllerConfig, ControllerMeta, ControllerState } from './types'
 
 const logger = new Logger('StateManager')
 
@@ -26,6 +19,8 @@ export class StateManager {
   private sessionApi: SessionApi
   private state: ControllerState | null = null
   private lock: Promise<void> = Promise.resolve()
+  private lockAcquired: boolean = true
+  private _releaseLock: () => void = () => {}
 
   constructor(sessionApi: SessionApi) {
     this.sessionApi = sessionApi
@@ -37,14 +32,19 @@ export class StateManager {
   async initialize(): Promise<void> {
     logger.info('Initializing state manager')
 
-    // 加载现有状态
     const existingState = await this.sessionApi.getState()
 
     if (existingState) {
-      this.state = existingState
-      logger.info(`Loaded existing state, flow: ${this.state.flow}`)
+      // 检查是否需要迁移旧版结构
+      if (!existingState.config) {
+        logger.info('Migrating old state structure to new format')
+        this.state = this.migrateState(existingState as unknown as Record<string, unknown>)
+        await this.sessionApi.saveState(this.state)
+      } else {
+        this.state = existingState
+        logger.info('Loaded existing state')
+      }
     } else {
-      // 创建初始状态
       this.state = this.createInitialState()
       await this.sessionApi.saveState(this.state)
       logger.info('Created initial state')
@@ -54,15 +54,40 @@ export class StateManager {
   /**
    * 创建初始状态
    */
-  private createInitialState(): ControllerState {
+  createInitialState(): ControllerState {
     return {
-      flow: 'idle',
-      phases: [],
-      tasks: [],
-      reviewCount: 0,
-      errors: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      config: {
+        max_iterations: 100,
+        default_agent_timeout_minutes: 30,
+        default_input_timeout_minutes: 5
+      },
+      data: {},
+      meta: {
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        errors: []
+      }
+    }
+  }
+
+  /**
+   * 迁移旧版 state.json 到新结构
+   * 兼容旧版无 config/meta 分层的 state.json
+   */
+  migrateState(oldState: Record<string, unknown>): ControllerState {
+    return {
+      config: {
+        max_iterations: 100,
+        default_agent_timeout_minutes: 30,
+        default_input_timeout_minutes: 5
+      },
+      data: (oldState.data as Record<string, unknown>) || {},
+      meta: {
+        startedAt: (oldState.startedAt as string) || new Date().toISOString(),
+        updatedAt: (oldState.updatedAt as string) || new Date().toISOString(),
+        checkpoint: oldState.checkpoint as Checkpoint | undefined,
+        errors: (oldState.errors as ErrorRecord[]) || []
+      }
     }
   }
 
@@ -77,372 +102,113 @@ export class StateManager {
   }
 
   /**
-   * 更新流程状态
-   * @param flow 新的流程状态
+   * 更新整个状态
+   * @param newState 新状态
    */
-  async updateFlowState(flow: FlowState): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        this.state = this.createInitialState()
-      }
-
-      const previousFlow = this.state.flow
-      this.state.flow = flow
-      this.state.updatedAt = new Date().toISOString()
-
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Flow state updated: ${previousFlow} -> ${flow}`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 更新任务状态（工具调用）
-   * @param taskId 任务 ID
-   * @param status 新状态
-   * @param summary 摘要
-   * @param modifiedFiles 修改的文件
-   */
-  async updateTaskStatus(
-    taskId: string,
-    status: TaskStatus,
-    summary?: string,
-    modifiedFiles?: string[]
-  ): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      const task = this.state.tasks.find(t => t.id === taskId)
-      if (!task) {
-        logger.warn(`Task not found: ${taskId}`)
-        return
-      }
-
-      task.status = status
-      if (summary) task.summary = summary
-      if (modifiedFiles) task.modifiedFiles = modifiedFiles
-
-      if (status === 'in_progress') {
-        task.startedAt = new Date().toISOString()
-      } else if (status === 'done' || status === 'failed') {
-        task.completedAt = new Date().toISOString()
-      }
-
-      this.state.updatedAt = new Date().toISOString()
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Task ${taskId} status updated: ${status}`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 更新 Phase 状态
-   * @param phaseId Phase ID
-   * @param status 新状态
-   */
-  async updatePhaseStatus(phaseId: string, status: PhaseStatus): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      const phase = this.state.phases.find(p => p.id === phaseId)
-      if (!phase) {
-        logger.warn(`Phase not found: ${phaseId}`)
-        return
-      }
-
-      phase.status = status
-
-      if (status === 'in_progress') {
-        phase.startedAt = new Date().toISOString()
-      } else if (status === 'completed' || status === 'failed') {
-        phase.completedAt = new Date().toISOString()
-      }
-
-      this.state.updatedAt = new Date().toISOString()
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Phase ${phaseId} status updated: ${status}`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 增加审查轮次
-   * @returns 当前轮次
-   */
-  async incrementReviewCount(): Promise<number> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      this.state.reviewCount++
-      this.state.updatedAt = new Date().toISOString()
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Review count incremented: ${this.state.reviewCount}`)
-      return this.state.reviewCount
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 记录审查问题
-   * @param phaseId Phase ID
-   * @param issues 问题列表
-   */
-  async recordReviewIssues(phaseId: string, issues: Issue[]): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      const phase = this.state.phases.find(p => p.id === phaseId)
-      if (!phase) {
-        logger.warn(`Phase not found: ${phaseId}`)
-        return
-      }
-
-      if (!phase.review) {
-        phase.review = {
-          count: 0,
-          maxCount: 5,
-          status: 'pending'
+  async updateState(newState: ControllerState): Promise<void> {
+    return this.withLock(async () => {
+      this.state = {
+        ...newState,
+        meta: {
+          ...newState.meta,
+          updatedAt: new Date().toISOString()
         }
       }
-
-      phase.review.issues = issues
-      this.state.updatedAt = new Date().toISOString()
       await this.sessionApi.saveState(this.state)
-      logger.info(`Review issues recorded for phase ${phaseId}: ${issues.length} issues`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 设置当前 Phase
-   * @param phaseId Phase ID
-   */
-  async setCurrentPhase(phaseId: string): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      this.state.currentPhase = phaseId
-      this.state.updatedAt = new Date().toISOString()
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Current phase set: ${phaseId}`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 设置当前任务
-   * @param taskId 任务 ID
-   */
-  async setCurrentTask(taskId: string): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      this.state.currentTask = taskId
-      this.state.updatedAt = new Date().toISOString()
-      await this.sessionApi.saveState(this.state)
-      logger.info(`Current task set: ${taskId}`)
-    } finally {
-      this.releaseLock()
-    }
+      logger.info('State updated')
+    })
   }
 
   /**
    * 添加错误记录
    * @param message 错误消息
-   * @param phaseId Phase ID
-   * @param taskId 任务 ID
+   * @param context 可选的上下文信息
    */
-  async addError(message: string, phaseId?: string, taskId?: string): Promise<void> {
-    await this.acquireLock()
-
-    try {
+  async addError(message: string, context?: Record<string, unknown>): Promise<void> {
+    return this.withLock(async () => {
       if (!this.state) {
         throw new Error('State not initialized')
       }
-
-      this.state.errors.push({
+      if (!this.state.meta.errors) {
+        this.state.meta.errors = []
+      }
+      this.state.meta.errors.push({
         timestamp: new Date().toISOString(),
         message,
-        phaseId,
-        taskId
+        context
       })
-
-      this.state.updatedAt = new Date().toISOString()
+      this.state.meta.updatedAt = new Date().toISOString()
       await this.sessionApi.saveState(this.state)
       logger.error(`Error recorded: ${message}`)
-    } finally {
-      this.releaseLock()
-    }
+    })
   }
 
   /**
-   * 添加 Phase
-   * @param phase Phase 定义
+   * 创建检查点（用于错误恢复）
+   * @param stepId 当前步骤 ID
+   * @param data 可选的检查点数据
    */
-  async addPhase(phase: Phase): Promise<void> {
-    await this.acquireLock()
-
-    try {
+  async createCheckpoint(stepId: string, data?: unknown): Promise<void> {
+    return this.withLock(async () => {
       if (!this.state) {
         throw new Error('State not initialized')
       }
-
-      this.state.phases.push(phase)
-      this.state.updatedAt = new Date().toISOString()
+      this.state.meta.checkpoint = {
+        stepId,
+        timestamp: new Date().toISOString(),
+        data
+      }
+      this.state.meta.updatedAt = new Date().toISOString()
       await this.sessionApi.saveState(this.state)
-      logger.info(`Phase added: ${phase.id}`)
-    } finally {
-      this.releaseLock()
-    }
+      logger.info(`Checkpoint created at step: ${stepId}`)
+    })
   }
 
   /**
-   * 添加任务
-   * @param task 任务定义
+   * 获取检查点
+   * @returns 检查点数据或 null
    */
-  async addTask(task: Task): Promise<void> {
-    await this.acquireLock()
+  getCheckpoint(): Checkpoint | null {
+    if (!this.state || !this.state.meta.checkpoint) return null
+    return this.state.meta.checkpoint
+  }
 
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
-      }
-
-      this.state.tasks.push(task)
-      this.state.updatedAt = new Date().toISOString()
+  /**
+   * 清除检查点
+   */
+  async clearCheckpoint(): Promise<void> {
+    return this.withLock(async () => {
+      if (!this.state) return
+      this.state.meta.checkpoint = undefined
+      this.state.meta.updatedAt = new Date().toISOString()
       await this.sessionApi.saveState(this.state)
-      logger.info(`Task added: ${task.id}`)
-    } finally {
-      this.releaseLock()
-    }
+      logger.info('Checkpoint cleared')
+    })
   }
 
   /**
-   * 批量添加 Phases 和 Tasks
-   * @param phases Phase 列表
-   * @param tasks 任务列表
+   * 从错误恢复（回滚到检查点）
+   * @returns 检查点步骤 ID 或 null
    */
-  async addPhasesAndTasks(phases: Phase[], tasks: Task[]): Promise<void> {
-    await this.acquireLock()
-
-    try {
-      if (!this.state) {
-        throw new Error('State not initialized')
+  async recoverFromError(): Promise<string | null> {
+    return this.withLock(async () => {
+      if (!this.state || !this.state.meta.checkpoint) {
+        logger.warn('No checkpoint available for recovery')
+        return null
       }
-
-      this.state.phases.push(...phases)
-      this.state.tasks.push(...tasks)
-      this.state.updatedAt = new Date().toISOString()
+      const checkpointStepId = this.state.meta.checkpoint.stepId
+      logger.info(`Recovering from error, returning to step: ${checkpointStepId}`)
+      this.state.meta.checkpoint = undefined
+      this.state.meta.updatedAt = new Date().toISOString()
       await this.sessionApi.saveState(this.state)
-      logger.info(`Added ${phases.length} phases and ${tasks.length} tasks`)
-    } finally {
-      this.releaseLock()
-    }
-  }
-
-  /**
-   * 获取下一个待执行的 Phase
-   * @returns Phase 或 null
-   */
-  getNextPendingPhase(): Phase | null {
-    if (!this.state) return null
-
-    return this.state.phases.find(p => {
-      // 状态为 pending
-      if (p.status !== 'pending') return false
-
-      // 所有依赖都已完成
-      for (const depId of p.dependencies) {
-        const dep = this.state!.phases.find(d => d.id === depId)
-        if (!dep || dep.status !== 'completed') return false
-      }
-
-      return true
-    }) || null
-  }
-
-  /**
-   * 获取下一个待执行的任务（在当前 Phase 内）
-   * @param phaseId Phase ID
-   * @returns 任务或 null
-   */
-  getNextPendingTask(phaseId: string): Task | null {
-    if (!this.state) return null
-
-    const phase = this.state.phases.find(p => p.id === phaseId)
-    if (!phase) return null
-
-    for (const taskId of phase.tasks) {
-      const task = this.state!.tasks.find(t => t.id === taskId)
-      if (!task) continue
-
-      // 状态为 pending
-      if (task.status !== 'pending') continue
-
-      // 所有依赖都已完成
-      for (const depId of task.dependencies) {
-        const dep = this.state!.tasks.find(t => t.id === depId)
-        if (!dep || dep.status !== 'done') continue
-      }
-
-      return task
-    }
-
-    return null
-  }
-
-  /**
-   * 检查 Phase 是否所有任务都已完成
-   * @param phaseId Phase ID
-   */
-  isPhaseTasksAllDone(phaseId: string): boolean {
-    if (!this.state) return false
-
-    const phase = this.state.phases.find(p => p.id === phaseId)
-    if (!phase) return false
-
-    for (const taskId of phase.tasks) {
-      const task = this.state.tasks.find(t => t.id === taskId)
-      if (!task || task.status !== 'done') return false
-    }
-
-    return true
+      logger.info('Recovered from error, checkpoint cleared')
+      return checkpointStepId
+    })
   }
 
   /**
    * 获取锁
+   * 使用 Promise 链实现简单的异步锁
    */
   private async acquireLock(): Promise<void> {
     const oldLock = this.lock
@@ -453,6 +219,7 @@ export class StateManager {
     })
 
     await oldLock
+    this.lockAcquired = false
     this._releaseLock = releaseLock!
   }
 
@@ -461,9 +228,125 @@ export class StateManager {
    */
   private releaseLock(): void {
     if (this._releaseLock) {
-      this._releaseLock()
+      try {
+        this._releaseLock()
+      } catch (error) {
+        logger.error(`Failed to release lock: ${error}`)
+      }
+      this._releaseLock = () => {}
+      this.lockAcquired = true
     }
   }
 
-  private _releaseLock: () => void = () => {}
+  /**
+   * 带锁执行操作（公共方法）
+   * 确保无论成功或失败都会释放锁
+   */
+  async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquireLock()
+    try {
+      return await fn()
+    } finally {
+      this.releaseLock()
+    }
+  }
+
+  /**
+   * 按路径更新状态字段
+   * 支持嵌套路径如 "data.field.status" 或 "data.items[0].status"
+   * @param path 状态路径
+   * @param value 新值
+   */
+  async updateStateByPath(path: string, value: unknown): Promise<void> {
+    return this.withLock(async () => {
+      if (!this.state) {
+        throw new Error('State not initialized')
+      }
+      const keys = this.parsePath(path)
+      // 使用类型断言处理状态对象
+      let current: Record<string, unknown> = this.state as unknown as Record<string, unknown>
+      for (let i = 0; i < keys.length - 1; i++) {
+        const key = keys[i] as string
+        if (current[key] === undefined) {
+          const nextKey = keys[i + 1]
+          current[key] = typeof nextKey === 'number' ? [] : {}
+        }
+        current = current[key] as Record<string, unknown>
+      }
+      const lastKey = keys[keys.length - 1] as string
+      current[lastKey] = value
+      this.state.meta.updatedAt = new Date().toISOString()
+      await this.sessionApi.saveState(this.state)
+      logger.info(`State updated: ${path} = ${JSON.stringify(value)?.slice(0, 100)}`)
+    })
+  }
+
+  /**
+   * 解析路径字符串
+   * 支持 "a.b.c" 和 "a[0].b" 格式
+   */
+  private parsePath(path: string): (string | number)[] {
+    const result: (string | number)[] = []
+    const parts = path.split('.')
+
+    for (const part of parts) {
+      const arrayMatch = part.match(/^(\w+)\[(\d+)\]$/)
+      if (arrayMatch) {
+        result.push(arrayMatch[1])
+        result.push(parseInt(arrayMatch[2], 10))
+      } else {
+        result.push(part)
+      }
+    }
+    return result
+  }
+
+  /**
+   * 增加指定路径的计数器
+   * @param counterPath 计数器路径
+   */
+  async incrementCounter(counterPath: string): Promise<number> {
+    return this.withLock(async () => {
+      if (!this.state) {
+        throw new Error('State not initialized')
+      }
+      const keys = this.parsePath(counterPath)
+      // 使用类型断言处理状态对象
+      let current: Record<string, unknown> = this.state as unknown as Record<string, unknown>
+      for (const key of keys.slice(0, -1)) {
+        const keyStr = key as string
+        if (current[keyStr] === undefined) {
+          current[keyStr] = {}
+        }
+        current = current[keyStr] as Record<string, unknown>
+      }
+      const lastKey = keys[keys.length - 1] as string
+      const currentValue = typeof current[lastKey] === 'number'
+        ? current[lastKey] as number
+        : 0
+      const newValue = currentValue + 1
+      current[lastKey] = newValue
+      this.state.meta.updatedAt = new Date().toISOString()
+      await this.sessionApi.saveState(this.state)
+      logger.info(`Counter incremented: ${counterPath} = ${newValue}`)
+      return newValue
+    })
+  }
+
+  /**
+   * 尝试获取锁（带超时）
+   * @param timeoutMs 超时时间（毫秒）
+   * @returns 是否成功获取锁
+   */
+  async tryAcquireLock(timeoutMs: number = 5000): Promise<boolean> {
+    const startTime = Date.now()
+    while (Date.now() - startTime < timeoutMs) {
+      if (this.lockAcquired) {
+        await this.acquireLock()
+        return true
+      }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    return false
+  }
 }

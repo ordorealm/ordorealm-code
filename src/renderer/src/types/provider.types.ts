@@ -91,6 +91,87 @@ export const API_TYPE_DISPLAY_NAMES: Record<ApiType, string> = {
 };
 
 /**
+ * DeepSeek models configuration
+ */
+export const DEEPSEEK_MODELS = [
+  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', contextWindow: 1000000 },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', contextWindow: 1000000 },
+] as const;
+
+/**
+ * XFYun (讯飞星辰) models configuration
+ */
+export const XFYUN_MODELS = [
+  { id: 'astron-code-latest', label: 'Astron Code (自动切换)', contextWindow: 200000 },
+] as const;
+
+/**
+ * JDCloud (京东云) models configuration
+ */
+export const JDCLOUD_MODELS = [
+  { id: 'MiniMax-M2.5', label: 'MiniMax M2.5', contextWindow: 200000 },
+  { id: 'Kimi-K2.5', label: 'Kimi K2.5', contextWindow: 200000 },
+  { id: 'Kimi-K2', label: 'Kimi K2', contextWindow: 200000 },
+  { id: 'Qwen3-Coder', label: 'Qwen3 Coder', contextWindow: 200000 },
+] as const;
+
+/**
+ * Aliyun (阿里云百炼) models configuration
+ */
+export const ALIYUN_MODELS = [
+  { id: 'GLM-4.7', label: 'GLM-4.7', contextWindow: 200000 },
+] as const;
+
+/**
+ * Vendor configuration type
+ */
+export interface VendorConfig {
+  baseUrlPattern: string;
+  models: readonly { id: string; label: string; contextWindow: number }[];
+  rechargeUrl: string;
+}
+
+/**
+ * Vendor configurations for known providers
+ */
+export const VENDOR_CONFIGS: Record<string, VendorConfig> = {
+  deepseek: {
+    baseUrlPattern: 'deepseek.com',
+    models: DEEPSEEK_MODELS,
+    rechargeUrl: 'https://platform.deepseek.com/',
+  },
+  xfyun: {
+    baseUrlPattern: 'xf-yun.com',
+    models: XFYUN_MODELS,
+    rechargeUrl: 'https://maas.xfyun.cn/packageSubscription',
+  },
+  jdcloud: {
+    baseUrlPattern: 'jdcloud.com',
+    models: JDCLOUD_MODELS,
+    rechargeUrl: 'https://www.jdcloud.com/cn/pages/codingplan',
+  },
+  aliyun: {
+    baseUrlPattern: 'aliyuncs.com',
+    models: ALIYUN_MODELS,
+    rechargeUrl: 'https://www.aliyun.com/benefit/scene/codingplan',
+  },
+};
+
+/**
+ * Get vendor configuration by base URL
+ * @param baseUrl The base URL to check
+ * @returns The vendor configuration if found, undefined otherwise
+ */
+export function getVendorConfigByUrl(baseUrl: string): VendorConfig | undefined {
+  for (const config of Object.values(VENDOR_CONFIGS)) {
+    if (baseUrl.includes(config.baseUrlPattern)) {
+      return config;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Provider entity representing an API provider configuration
  * Now includes agentType to indicate which agent this provider is for
  */

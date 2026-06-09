@@ -78,9 +78,10 @@ export class SessionApi {
    * 调用 Agent（通过发送消息触发）
    * @param agentName Agent 名称
    * @param input 输入
+   * @param timeoutMs 超时时间（毫秒）
    * @returns Agent 结果
    */
-  async callAgent(agentName: string, input: Record<string, unknown>): Promise<AgentResult> {
+  async callAgent(agentName: string, input: Record<string, unknown>, timeoutMs?: number): Promise<AgentResult> {
     logger.info(`[${this.sessionId.slice(0, 8)}] Calling agent: ${agentName}`)
 
     // 构建 Agent 调用消息
@@ -189,7 +190,7 @@ ${inputStr}
     await fs.promises.mkdir(dir, { recursive: true })
 
     // 更新时间戳
-    state.updatedAt = new Date().toISOString()
+    state.meta.updatedAt = new Date().toISOString()
 
     await fs.promises.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8')
   }
@@ -226,6 +227,101 @@ ${inputStr}
   async fileExists(filePath: string): Promise<boolean> {
     const fullPath = path.join(this.projectRoot, filePath)
     return fs.existsSync(fullPath)
+  }
+
+  /**
+   * 请求用户输入（阻塞等待）
+   * @param question 问题
+   * @param type 输入类型
+   * @param options 选项（用于 choice 类型）
+   * @param timeout 超时时间（毫秒），默认 300000 (5分钟)
+   * @returns 用户输入
+   */
+  async requestUserInput(
+    question: string,
+    type: 'text' | 'choice' | 'confirm',
+    options?: Array<{ value: string; label: string }>,
+    timeout: number = 300000
+  ): Promise<{ success: boolean; answer?: string | string[]; error?: string }> {
+    logger.info(`Requesting user input: ${question}`)
+    return new Promise((resolve) => {
+      const requestId = `${this.sessionId}-${Date.now()}`
+      let resolved = false
+      let timeoutId: NodeJS.Timeout | null = null
+      let listener: ((_: unknown, channel: string, ...args: unknown[]) => void) | null = null
+
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          timeoutId = null
+        }
+        if (listener) {
+          this.webContents.removeListener('ipc-message', listener)
+          listener = null
+        }
+      }
+
+      timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          cleanup()
+          this.webContents.send(IPC_CHANNELS.CONTROLLER_TIMEOUT, {
+            sessionId: this.sessionId,
+            type: 'user_input',
+            question,
+            timeout
+          })
+          resolve({
+            success: false,
+            error: 'User input timeout'
+          })
+        }
+      }, timeout)
+
+      listener = (_: unknown, channel: string, ...args: unknown[]) => {
+        if (channel === IPC_CHANNELS.CONTROLLER_INPUT_RESPONSE && !resolved) {
+          const response = args[0] as { requestId: string; answer?: string | string[]; error?: string }
+          if (response.requestId === requestId) {
+            resolved = true
+            cleanup()
+            if (response.error) {
+              resolve({ success: false, error: response.error })
+            } else {
+              resolve({ success: true, answer: response.answer })
+            }
+          }
+        }
+      }
+
+      this.webContents.on('ipc-message', listener)
+      this.webContents.send(IPC_CHANNELS.CONTROLLER_INPUT_REQUEST, {
+        requestId,
+        sessionId: this.sessionId,
+        question,
+        type,
+        options
+      })
+    })
+  }
+
+  /**
+   * 请求 Agent 调用（通知前端）
+   * @param agentName Agent 名称
+   * @param toolCallId 工具调用 ID
+   * @param prompt 提示内容
+   */
+  async requestAgentCall(
+    agentName: string,
+    toolCallId: string,
+    prompt: string
+  ): Promise<void> {
+    logger.info(`Requesting agent call: ${agentName}`)
+    this.webContents.send(IPC_CHANNELS.CONTROLLER_AGENT_CALL, {
+      sessionId: this.sessionId,
+      agentName,
+      toolCallId,
+      prompt
+    })
   }
 
   /**

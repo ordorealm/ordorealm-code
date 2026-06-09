@@ -1,10 +1,18 @@
 {
-  "name": "devflow-ide",
+  "name": "ordorealm-code",
   "version": "0.0.1",
-  "description": "A developer workflow IDE built with Electron and React",
+  "description": "OrdoRealm Code - An AI-powered developer workflow IDE built with Electron and React",
   "main": "./out/main/index.js",
-  "author": "devflow-ide",
-  "homepage": "https://github.com/devflow-ide/devflow-ide",
+  "author": "OrdoRealm",
+  "license": "MIT",
+  "homepage": "https://github.com/ordorealm/ordorealm-code",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ordorealm/ordorealm-code.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ordorealm/ordorealm-code/issues"
+  },
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx",

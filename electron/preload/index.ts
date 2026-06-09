@@ -276,8 +276,8 @@ const api = {
       const listener = (_: unknown, data: unknown) => {
         callback(data)
       }
-      ipcRenderer.on('conversation:message', listener)
-      return () => ipcRenderer.removeListener('conversation:message', listener)
+      ipcRenderer.on('conversation-message', listener)
+      return () => ipcRenderer.removeListener('conversation-message', listener)
     },
 
     /** Listen for activity events (multi-channel) */

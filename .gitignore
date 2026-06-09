@@ -53,14 +53,10 @@ Product-Spec.md
 
 # Runtime binaries (downloaded via npm run download-runtime)
 # Keep directory structure but ignore binaries
-electron/runtime/node/win-x64/*
-electron/runtime/node/darwin-x64/*
-electron/runtime/node/darwin-arm64/*
-electron/runtime/git/win-x64/*
-!electron/runtime/node/win-x64/.gitkeep
-!electron/runtime/node/darwin-x64/.gitkeep
-!electron/runtime/node/darwin-arm64/.gitkeep
-!electron/runtime/git/win-x64/.gitkeep
+electron/runtime/node/
+electron/runtime/git/
+!electron/runtime/.gitignore
+!electron/runtime/README.md
 
 # Debug/test files
 test-*.js

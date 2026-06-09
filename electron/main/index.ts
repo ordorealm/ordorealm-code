@@ -684,6 +684,28 @@ async function getOrCreateSession(
         type: 'preset',
         preset: 'claude_code',
         append: `
+## ⚡ 代码查询优先级规则（必须遵守）
+
+**在读取任何代码文件之前，必须先尝试使用 CodeGraph 工具！**
+
+### CodeGraph (mcp__codegraph__*) - 代码知识图谱
+CodeGraph 是预索引的代码知识图谱，读取速度亚毫秒级，比 Read/Grep 快 100 倍以上。
+
+**使用场景：**
+- 理解代码架构、查找符号定义、分析调用关系
+- "X 是什么"、"X 在哪里定义"、"谁调用了 X"
+- "X 如何工作"、"从 X 到 Y 的流程"
+
+**工具选择：**
+- \`codegraph_explore\`: 主要工具，回答大多数问题（返回相关符号源码）
+- \`codegraph_search\`: 仅查找符号位置（无代码）
+- \`codegraph_callers\` / \`codegraph_callees\`: 查找调用关系
+- \`codegraph_impact\`: 分析修改影响范围
+
+**重要：** 除非 CodeGraph 没有索引或找不到，否则不要使用 Read/Grep 读取代码文件。
+
+---
+
 ## 内置 MCP 工具使用指南
 
 当用户询问以下内容时，请自动调用相应的 MCP 工具：

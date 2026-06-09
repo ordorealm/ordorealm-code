@@ -285,6 +285,36 @@ export interface MCPConfig {
  * 内置 MCP 定义列表
  */
 export const BUILTIN_MCPS: MCPDefinition[] = [
+  // 查询类 - CodeGraph (代码知识图谱)
+  {
+    id: 'codegraph',
+    name: 'CodeGraph',
+    description: '代码知识图谱，预索引代码库，大幅提升 AI 理解代码效率，减少 57% Token 消耗',
+    category: 'query',
+    packageName: '@colbymchenry/codegraph',
+    version: '0.9.9',
+    platforms: [],
+    builtin: false,
+    defaultEnabled: false,
+    downloadSize: 15 * 1024 * 1024, // ~15MB
+    runtimeSize: 50 * 1024 * 1024, // ~50MB
+    argsTemplate: ['serve', '--mcp'],
+    mirrors: [
+      {
+        name: 'npmmirror',
+        url: 'https://registry.npmmirror.com/{package}/-/{package}-{version}.tgz',
+        region: 'cn',
+        priority: 1
+      },
+      {
+        name: 'npm',
+        url: 'https://registry.npmjs.org/{package}/-/{package}-{version}.tgz',
+        region: 'global',
+        priority: 2
+      }
+    ]
+  },
+
   // 查询类 - Open WebSearch
   {
     id: 'open-websearch',

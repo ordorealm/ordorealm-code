@@ -10,15 +10,27 @@ import { useState, useEffect, useMemo } from 'react';
 import type { Provider, AgentType, ApiType } from '@/types';
 import {
   AGENT_API_COMPATIBILITY,
-  DEFAULT_MODELS_BY_API,
   DEFAULT_BASE_URLS_BY_API,
+  PRESET_BASE_URLS,
   AGENT_DISPLAY_NAMES,
   API_TYPE_DISPLAY_NAMES,
   AGENT_TO_ADAPTER,
+  VENDOR_CONFIGS,
+  getVendorConfigByUrl,
+  DEEPSEEK_MODELS,
+  XFYUN_MODELS,
+  JDCLOUD_MODELS,
+  ALIYUN_MODELS,
 } from '@/types/provider.types';
 import { validateKeyFormat, validateProviderConnection } from '@/services/provider-validator';
 import type { ValidationResult, KeyFormatCheckResult } from '@/services/provider-validator';
 import { checkAgentInstalled, type AgentInstallStatus } from '@/services/agent-detector';
+
+/** 上下文窗口选项 */
+const CONTEXT_WINDOW_OPTIONS = [
+  { value: 200000, label: '200K' },
+  { value: 1000000, label: '1M' },
+];
 
 interface AddProviderDialogProps {
   isOpen: boolean;
@@ -55,6 +67,10 @@ export function AddProviderDialog({
   // API Key visibility state
   const [showApiKey, setShowApiKey] = useState(false);
 
+  // Custom input state for Base URL and Model
+  const [isCustomBaseUrl, setIsCustomBaseUrl] = useState(false);
+  const [isCustomModel, setIsCustomModel] = useState(false);
+
   // Agent installation state
   const [agentInstallStatuses, setAgentInstallStatuses] = useState<Record<AgentType, AgentInstallStatus | null>>({
     'claude-code': null,
@@ -68,11 +84,6 @@ export function AddProviderDialog({
   const compatibleApiTypes = useMemo(() => {
     return AGENT_API_COMPATIBILITY[agentType];
   }, [agentType]);
-
-  // Get available models for selected API type
-  const availableModels = useMemo(() => {
-    return DEFAULT_MODELS_BY_API[apiType];
-  }, [apiType]);
 
   // Initialize form when editing
   useEffect(() => {
@@ -131,9 +142,13 @@ export function AddProviderDialog({
   // Update defaults when API type changes
   useEffect(() => {
     if (!isEditMode && isOpen) {
-      setBaseUrl(DEFAULT_BASE_URLS_BY_API[apiType]);
-      // 默认模型留空，让用户自行填写
+      // 使用预设 URL 的第一个选项
+      const presets = PRESET_BASE_URLS[apiType];
+      setBaseUrl(presets[0]?.url || DEFAULT_BASE_URLS_BY_API[apiType]);
+      setIsCustomBaseUrl(false);
+      // 默认模型留空，让用户自行选择
       setDefaultModel('');
+      setIsCustomModel(false);
     }
   }, [apiType, isEditMode, isOpen]);
 
@@ -142,8 +157,11 @@ export function AddProviderDialog({
     setAgentType('claude-code');
     setApiType('anthropic');
     setApiKey('');
-    setBaseUrl(DEFAULT_BASE_URLS_BY_API.anthropic);
+    const presets = PRESET_BASE_URLS.anthropic;
+    setBaseUrl(presets[0]?.url || DEFAULT_BASE_URLS_BY_API.anthropic);
+    setIsCustomBaseUrl(false);
     setDefaultModel('');
+    setIsCustomModel(false);
     setContextWindow(200000);
     setIsDefault(false);
     setValidationResult(null);
@@ -437,13 +455,68 @@ export function AddProviderDialog({
                 Base URL
               </span>
             </label>
-            <input
-              type="url"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={DEFAULT_BASE_URLS_BY_API[apiType]}
-              className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
-            />
+            {isCustomBaseUrl ? (
+              <input
+                type="url"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder={DEFAULT_BASE_URLS_BY_API[apiType]}
+                className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
+              />
+            ) : (
+              <select
+                value={baseUrl}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setIsCustomBaseUrl(true);
+                    setBaseUrl('');
+                  } else {
+                    setBaseUrl(e.target.value);
+                  }
+                }}
+                className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none text-sm bg-bg-primary text-text-primary"
+              >
+                {PRESET_BASE_URLS[apiType].map((preset) => (
+                  <option key={preset.url} value={preset.url}>{preset.label}</option>
+                ))}
+                <option value="__custom__">自定义...</option>
+              </select>
+            )}
+            {/* 充值链接 */}
+            {!isCustomBaseUrl && (() => {
+              const preset = PRESET_BASE_URLS[apiType].find((p) => p.url === baseUrl);
+              if (preset?.rechargeUrl) {
+                return (
+                  <a
+                    href={preset.rechargeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1.5 inline-flex items-center gap-1 text-xs text-accent-indigo hover:underline"
+                  >
+                    <span>💳</span>
+                    <span>官方充值 API 额度</span>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                );
+              }
+              return null;
+            })()}
+            {/* 切换回预设选项按钮 */}
+            {isCustomBaseUrl && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCustomBaseUrl(false);
+                  const presets = PRESET_BASE_URLS[apiType];
+                  setBaseUrl(presets[0]?.url || DEFAULT_BASE_URLS_BY_API[apiType]);
+                }}
+                className="mt-1 text-xs text-accent-indigo hover:underline"
+              >
+                切换回预设选项
+              </button>
+            )}
           </div>
 
           {/* Step 6: Default Model */}
@@ -457,15 +530,106 @@ export function AddProviderDialog({
                 <span className="text-text-muted font-normal">(可选)</span>
               </span>
             </label>
-            <input
-              type="text"
-              value={defaultModel}
-              onChange={(e) => setDefaultModel(e.target.value)}
-              placeholder={availableModels[0] || '输入模型名称'}
-              className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
-            />
+            {isCustomModel ? (
+              <input
+                type="text"
+                value={defaultModel}
+                onChange={(e) => setDefaultModel(e.target.value)}
+                placeholder="输入模型名称"
+                className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none font-mono text-sm bg-bg-primary text-text-primary"
+              />
+            ) : (
+              <select
+                value={defaultModel}
+                onChange={(e) => {
+                  const selectedModel = e.target.value;
+                  if (selectedModel === '__custom__') {
+                    setIsCustomModel(true);
+                    setDefaultModel('');
+                  } else {
+                    setDefaultModel(selectedModel);
+                    // 根据模型自动设置上下文窗口
+                    const vendorConfig = getVendorConfigByUrl(baseUrl);
+                    if (vendorConfig) {
+                      const model = vendorConfig.models.find((m) => m.id === selectedModel);
+                      if (model) {
+                        setContextWindow(model.contextWindow);
+                      }
+                    }
+                  }
+                }}
+                className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none text-sm bg-bg-primary text-text-primary"
+              >
+                <option value="">选择模型...</option>
+                {(() => {
+                  const vendorConfig = getVendorConfigByUrl(baseUrl);
+                  if (vendorConfig) {
+                    // 根据 baseUrl 匹配的厂商显示对应模型
+                    const vendorName = Object.entries(VENDOR_CONFIGS).find(
+                      ([, config]) => config.baseUrlPattern === vendorConfig.baseUrlPattern
+                    )?.[0];
+                    const vendorLabels: Record<string, string> = {
+                      deepseek: 'DeepSeek V4',
+                      xfyun: '讯飞星辰',
+                      jdcloud: '京东云',
+                      aliyun: '阿里云百炼',
+                    };
+                    return (
+                      <optgroup label={vendorLabels[vendorName || ''] || '模型列表'}>
+                        {vendorConfig.models.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))}
+                      </optgroup>
+                    );
+                  }
+                  // 未匹配时显示所有厂商模型
+                  return (
+                    <>
+                      <optgroup label="DeepSeek V4">
+                        {DEEPSEEK_MODELS.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="讯飞星辰">
+                        {XFYUN_MODELS.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="京东云">
+                        {JDCLOUD_MODELS.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="阿里云百炼">
+                        {ALIYUN_MODELS.map((model) => (
+                          <option key={model.id} value={model.id}>{model.label}</option>
+                        ))}
+                      </optgroup>
+                    </>
+                  );
+                })()}
+                <option value="__custom__">自定义...</option>
+              </select>
+            )}
+            {/* 切换回预设选项按钮 */}
+            {isCustomModel && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCustomModel(false);
+                  setDefaultModel('');
+                }}
+                className="mt-1 text-xs text-accent-indigo hover:underline"
+              >
+                切换回预设选项
+              </button>
+            )}
             <p className="mt-1 text-xs text-text-muted">
-              留空则使用 API 默认模型
+              {defaultModel === 'deepseek-v4-pro'
+                ? 'DeepSeek V4 Pro 默认 1M 上下文'
+                : defaultModel === 'deepseek-v4-flash'
+                ? 'DeepSeek V4 Flash 默认 1M 上下文'
+                : '选择模型后自动设置推荐值'}
             </p>
           </div>
 
@@ -485,13 +649,11 @@ export function AddProviderDialog({
                 onChange={(e) => setContextWindow(parseInt(e.target.value))}
                 className="flex-1 px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-accent-indigo focus:border-accent-indigo outline-none text-sm bg-bg-primary text-text-primary"
               >
-                <option value={200000}>200K (默认)</option>
-                <option value={1000000}>1M (仅 Sonnet 4/4.5)</option>
+                {CONTEXT_WINDOW_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
             </div>
-            <p className="mt-1 text-xs text-text-muted">
-              200K 为模型默认值；1M 仅支持 Claude Sonnet 4/4.5 模型
-            </p>
           </div>
 
           {/* Set as Default */}

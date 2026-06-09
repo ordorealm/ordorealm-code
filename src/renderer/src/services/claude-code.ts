@@ -26,7 +26,7 @@ export interface ToolCallResult {
 
 /** 进度事件数据 */
 export interface ProgressEvent {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'remote_user_message';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_use_update' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'remote_user_message';
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;

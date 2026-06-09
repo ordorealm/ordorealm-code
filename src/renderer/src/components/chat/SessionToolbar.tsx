@@ -9,7 +9,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useSessionStore } from '@/stores/session-store';
+import { useSessionStore, COMPACT_COOLDOWN_MS } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useFileTreeStore } from '@/stores/filetree-store';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
@@ -658,11 +658,20 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
 
   // ★ 自动压缩去重：使用 store 状态（而非 useRef），与 complete 事件处理共享
   const autoCompacted = session?.autoCompacted ?? false;
+  const lastCompactAt = session?.lastCompactAt;
   const isStreaming = session?.messages?.some(m => m.isStreaming) ?? false;
 
   // ★ Auto-compact when > 80%（降低阈值，提前预防）
+  // 使用冷却时间机制（60秒）避免频繁触发
   useEffect(() => {
-    if (percentage > 80 && session?.tokenUsage && !autoCompacted && !isStreaming) {
+    // ★ 冷却时间检查：距离上次压缩至少 60 秒
+    // 使用从 session-store 导出的常量，确保与 store 层一致
+    const now = Date.now();
+    // ★ 防御性检查：lastCompactAt 为 null/undefined 时，视为无冷却
+    const lastCompactTime = lastCompactAt ? new Date(lastCompactAt).getTime() : 0;
+    const inCooldown = lastCompactTime > 0 && (now - lastCompactTime) < COMPACT_COOLDOWN_MS;
+
+    if (percentage > 80 && session?.tokenUsage && !autoCompacted && !isStreaming && !inCooldown) {
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
       setAutoCompacted(sessionId, true);
       triggerCompact(sessionId);
@@ -671,7 +680,7 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     if (percentage < 60 && autoCompacted) {
       setAutoCompacted(sessionId, false);
     }
-  }, [percentage, sessionId, session?.tokenUsage, autoCompacted, setAutoCompacted, triggerCompact, isStreaming]);
+  }, [percentage, sessionId, session?.tokenUsage, autoCompacted, lastCompactAt, setAutoCompacted, triggerCompact, isStreaming]);
 
   // Handle click to show confirmation
   const handleClick = useCallback(() => {

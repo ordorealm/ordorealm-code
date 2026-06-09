@@ -141,7 +141,7 @@ interface ClaudeExecuteOptions {
 interface ProgressEvent {
   /** 会话 ID，用于前端按会话过滤事件 */
   sessionId?: string
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'keepalive' | 'remote_user_message'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_use_update' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit' | 'keepalive' | 'remote_user_message'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>
@@ -1367,13 +1367,14 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             } else if (block.type === 'tool_use') {
               // ★ 标记有工具调用
               session.hasToolCalls = true
+              // ★ 使用 tool_use_update 更新已有消息的 input（content_block_start 时 input 可能为空）
               mainWindow.webContents.send('claude:progress', {
                 sessionId: session.id,
-                type: 'tool_use',
+                type: 'tool_use_update',
                 content: `Tool: ${block.name}`,
                 toolName: block.name,
                 toolInput: block.input,
-                toolUseId: block.id,  // ✅ 添加 toolUseId 用于匹配 tool_result
+                toolUseId: block.id,
               } as ProgressEvent)
             }
           }

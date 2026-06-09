@@ -4,8 +4,9 @@
  * @module components/chat/StreamingIndicator
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useActivityStore, formatThinkingTime } from '@/stores/activity-store';
+import { useSessionStore } from '@/stores/session-store';
 
 interface StreamingIndicatorProps {
   /** Session ID for activity tracking */
@@ -19,6 +20,7 @@ interface StreamingIndicatorProps {
 /**
  * Streaming Indicator Component
  * Shows thinking timer, live progress text, and stop button
+ * Also displays connection notice (e.g., "响应缓慢...", "连接已断开")
  */
 export function StreamingIndicator({
   sessionId,
@@ -34,6 +36,11 @@ export function StreamingIndicator({
   // Current activity detail
   const currentActivity = useActivityStore(
     state => state.sessions[sessionId]?.current
+  );
+
+  // ★ Connection notice from session (for streaming activity check)
+  const connectionNotice = useSessionStore(
+    state => state.sessions[sessionId]?.connectionNotice
   );
 
   // Update thinking timer every second
@@ -57,14 +64,18 @@ export function StreamingIndicator({
     return null;
   }
 
-  // Get progress text from current activity
-  const progressText = currentActivity?.detail || '正在思考...';
+  // Get progress text: prefer connection notice, then activity detail
+  const progressText = connectionNotice || currentActivity?.detail || '正在思考...';
+
+  // ★ Determine text color based on notice type
+  const isWarning = connectionNotice?.includes('缓慢') || connectionNotice?.includes('断开');
+  const textColorClass = isWarning ? 'text-amber-500' : 'text-accent-indigo';
 
   return (
     <div className="flex items-center justify-center gap-3 py-2 px-4 bg-bg-secondary border-t border-border animate-in fade-in slide-in-from-bottom-2 duration-200 ease-out">
       {/* Spinner */}
       <svg
-        className="w-4 h-4 animate-spin text-accent-indigo"
+        className={`w-4 h-4 animate-spin ${isWarning ? 'text-amber-500' : 'text-accent-indigo'}`}
         viewBox="0 0 24 24"
         fill="none"
       >
@@ -83,14 +94,14 @@ export function StreamingIndicator({
         />
       </svg>
 
-      {/* Progress text */}
-      <span className="text-sm text-accent-indigo flex-1 text-center">
+      {/* Progress text (includes connection notice) */}
+      <span className={`text-sm flex-1 text-center ${textColorClass}`}>
         {progressText}
       </span>
 
       {/* Thinking timer */}
       {thinkingSeconds > 0 && (
-        <span className="text-xs text-accent-indigo/70 font-mono animate-pulse">
+        <span className={`text-xs font-mono animate-pulse ${isWarning ? 'text-amber-500/70' : 'text-accent-indigo/70'}`}>
           {formatThinkingTime(thinkingSeconds)}
         </span>
       )}

@@ -216,6 +216,8 @@ export interface Session {
   inputDraft?: string;
   /** Auto-compact triggered flag - prevents repeated auto-compact within same session */
   autoCompacted?: boolean;
+  /** Last auto-compact timestamp (ISO8601) - for cooldown mechanism */
+  lastCompactAt?: string;
 
   // ===== 会话级配置覆盖（不持久化）=====
 

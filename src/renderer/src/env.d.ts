@@ -28,7 +28,7 @@ import type {
 export type ProgressCallback = (data: {
   /** 会话 ID，用于前端按会话过滤事件（修复会话内容串扰问题） */
   sessionId?: string
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_use_update' | 'tool_result' | 'error' | 'complete' | 'init' | 'status' | 'rate_limit'
   content: string
   toolName?: string
   toolInput?: Record<string, unknown>

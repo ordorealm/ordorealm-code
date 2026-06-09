@@ -510,6 +510,30 @@ const connectionNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** ★ 上下文使用量刷新定时器（per-session，多会话并发隔离） */
 const contextUsageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** ★ 流活跃检测配置 */
+const STREAMING_ACTIVITY_CHECK_INTERVAL = 30000; // 30秒检测一次
+const STREAMING_ACTIVITY_IDLE_THRESHOLD = 2; // 连续2次无新内容才查询后端
+
+/** ★ 自动压缩冷却时间（60秒）- 防止频繁触发自动压缩 */
+export const COMPACT_COOLDOWN_MS = 60000;
+
+/** ★ 流活跃状态（用于检测流断开但无 error/complete 事件的情况） */
+interface StreamingActivity {
+  /** 上次事件时间 */
+  lastEventTime: number;
+  /** 上次内容长度 */
+  lastContentLength: number;
+  /** 连续空闲计数 */
+  idleCount: number;
+  /** 检测定时器 */
+  checkTimer: ReturnType<typeof setInterval> | null;
+  /** 是否正在执行 pingSession 检查（防止并发） */
+  isChecking: boolean;
+}
+
+/** ★ 多会话流活跃状态 Map */
+const streamingActivities = new Map<string, StreamingActivity>();
+
 /** ★ 自适应心跳超时（退火策略）：第 1 次 10 分钟，第 2 次 20 分钟，第 3 次起 30 分钟 */
 const HEARTBEAT_TIMEOUTS = [600000, 1200000, 1800000]; // 10min, 20min, 30min
 
@@ -914,6 +938,9 @@ function performHeartbeatAbort(
     listenerInfo.heartbeatTimer = null;
   }
 
+  // ★ 停止流活跃检测
+  stopStreamingActivityCheck(sessionId);
+
   (async () => {
     try {
       await window.api.claude.abort(sessionId);
@@ -949,6 +976,199 @@ function performHeartbeatAbort(
   useActivityStore.getState().endActivity(sessionId);
   // ★ 修复：只清理该会话的监听器
   cleanupProgressListenerForSession(sessionId);
+}
+
+/**
+ * ★ 流活跃检测：启动检测定时器
+ * 每 30 秒检查是否有新内容，如果连续无新内容则查询后端状态
+ */
+function startStreamingActivityCheck(
+  sessionId: string,
+  set: SetFunction
+): void {
+  // 获取或创建活跃状态
+  let activity = streamingActivities.get(sessionId);
+  if (!activity) {
+    activity = {
+      lastEventTime: Date.now(),
+      lastContentLength: 0,
+      idleCount: 0,
+      checkTimer: null,
+      isChecking: false,
+    };
+    streamingActivities.set(sessionId, activity);
+  }
+
+  // 清理旧定时器
+  if (activity.checkTimer) {
+    clearInterval(activity.checkTimer);
+  }
+
+  console.log(`[SessionStore] Starting streaming activity check for session: ${sessionId}`);
+
+  activity.checkTimer = setInterval(async () => {
+    const currentActivity = streamingActivities.get(sessionId);
+    if (!currentActivity) {
+      return;
+    }
+
+    const session = get().sessions[sessionId];
+    if (!session) {
+      stopStreamingActivityCheck(sessionId);
+      return;
+    }
+
+    // 找到 streaming 的消息
+    const streamingMsg = session.messages.find(m => m.isStreaming);
+    if (!streamingMsg) {
+      // 没有 streaming 消息，停止检测
+      console.log(`[SessionStore] No streaming message, stopping activity check`);
+      stopStreamingActivityCheck(sessionId);
+      return;
+    }
+
+    const currentContentLength = streamingMsg.content?.length ?? 0;
+    const timeSinceLastEvent = Date.now() - currentActivity.lastEventTime;
+
+    // 检查是否有新内容
+    if (currentContentLength > currentActivity.lastContentLength || timeSinceLastEvent < STREAMING_ACTIVITY_CHECK_INTERVAL) {
+      // 有新内容或最近有事件，重置计数
+      currentActivity.lastContentLength = currentContentLength;
+      currentActivity.idleCount = 0;
+      console.log(`[SessionStore] Streaming activity detected, content length: ${currentContentLength}`);
+    } else {
+      // 无新内容
+      currentActivity.idleCount++;
+      const idleTime = currentActivity.idleCount * STREAMING_ACTIVITY_CHECK_INTERVAL / 1000;
+
+      console.warn(`[SessionStore] Streaming idle for ${idleTime}s, count: ${currentActivity.idleCount}`);
+
+      if (currentActivity.idleCount === 1) {
+        // 第一次空闲：显示提示
+        set(state => {
+          const s = state.sessions[sessionId];
+          if (!s) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...s,
+                connectionNotice: '响应缓慢，请稍候...'
+              }
+            }
+          };
+        });
+      } else if (currentActivity.idleCount >= STREAMING_ACTIVITY_IDLE_THRESHOLD) {
+        // 达到阈值：查询后端状态
+        // ★ 防止并发：如果上一次检查还未完成，跳过本次
+        if (currentActivity.isChecking) {
+          console.log(`[SessionStore] Activity check already in progress, skipping`);
+          return;
+        }
+        currentActivity.isChecking = true;
+        console.log(`[SessionStore] Checking backend status via pingSession...`);
+
+        try {
+          const result = await window.api.claude.pingSession(sessionId);
+          console.log(`[SessionStore] pingSession result:`, result);
+
+          if (!result.alive) {
+            // 后端已死，强制同步状态
+            console.warn(`[SessionStore] Backend stream is dead, forcing sync`);
+
+            set(state => {
+              const existingSession = state.sessions[sessionId];
+              if (!existingSession) return state;
+
+              return {
+                sessions: {
+                  ...state.sessions,
+                  [sessionId]: {
+                    ...existingSession,
+                    messages: existingSession.messages.map(m =>
+                      m.isStreaming
+                        ? { ...m, isStreaming: false, isThinking: false, content: m.content + '\n\n⚠️ 连接已断开，请重新发送消息。' }
+                        : m
+                    ),
+                    connectionNotice: '连接已断开',
+                  },
+                },
+              };
+            });
+
+            useActivityStore.getState().endThinking(sessionId);
+            useActivityStore.getState().endActivity(sessionId);
+            stopStreamingActivityCheck(sessionId);
+            cleanupProgressListenerForSession(sessionId);
+          } else {
+            // 后端还活着，显示检查结果
+            set(state => {
+              const s = state.sessions[sessionId];
+              if (!s) return state;
+              return {
+                sessions: {
+                  ...state.sessions,
+                  [sessionId]: {
+                    ...s,
+                    connectionNotice: `后端正常，等待响应中... (${Math.round((Date.now() - result.lastActivity) / 1000)}s前活跃)`
+                  }
+                }
+              };
+            });
+          }
+        } catch (err) {
+          console.error('[SessionStore] pingSession failed:', err);
+        } finally {
+          // ★ 重置检查标志
+          const finalActivity = streamingActivities.get(sessionId);
+          if (finalActivity) {
+            finalActivity.isChecking = false;
+          }
+        }
+      }
+    }
+  }, STREAMING_ACTIVITY_CHECK_INTERVAL);
+}
+
+/**
+ * ★ 流活跃检测：停止检测定时器
+ */
+function stopStreamingActivityCheck(sessionId: string): void {
+  const activity = streamingActivities.get(sessionId);
+  if (activity) {
+    if (activity.checkTimer) {
+      clearInterval(activity.checkTimer);
+      activity.checkTimer = null;
+    }
+    streamingActivities.delete(sessionId);
+    console.log(`[SessionStore] Stopped streaming activity check for session: ${sessionId}`);
+  }
+}
+
+/**
+ * ★ 流活跃检测：更新活跃状态（在 text/thinking 事件时调用）
+ */
+function updateStreamingActivity(sessionId: string, contentLength: number): void {
+  const activity = streamingActivities.get(sessionId);
+  if (activity) {
+    activity.lastEventTime = Date.now();
+    activity.lastContentLength = contentLength;
+    // 有新事件，重置空闲计数
+    if (activity.idleCount > 0) {
+      activity.idleCount = 0;
+      // 清除警告提示
+      const session = get().sessions[sessionId];
+      if (session?.connectionNotice?.includes('响应缓慢') || session?.connectionNotice?.includes('等待响应')) {
+        set(state => {
+          const s = state.sessions[sessionId];
+          if (!s) return state;
+          return {
+            sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } }
+          };
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -1178,6 +1398,8 @@ interface SessionActions {
   updateInputDraft: (sessionId: string, draft: string) => void;
   /** Set auto-compacted flag - prevents repeated auto-compact within same session */
   setAutoCompacted: (sessionId: string, value: boolean) => void;
+  /** Set last compact timestamp - for cooldown mechanism */
+  setLastCompactAt: (sessionId: string, timestamp: string | null) => void;
   /** Set session-level Provider override */
   setOverrideProvider: (sessionId: string, providerId: string | null) => void;
   /** Set session-level model override */
@@ -2089,6 +2311,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     // ★ 检测 Provider 变更，中止当前流式响应
     if (session?.lastUsedProviderId && session.lastUsedProviderId !== providerId) {
       console.log('[SessionStore] Provider changed from', session.lastUsedProviderId, 'to', providerId, '- aborting current turn');
+      // ★ 停止流活跃检测
+      stopStreamingActivityCheck(sessionId);
       try {
         await window.api.claude.abort(sessionId);
       } catch (err) {
@@ -2303,6 +2527,32 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                   detail: '等待用户操作...',
                   timestamp: Date.now(),
                 });
+              } else if (statusData.sessionState === 'idle') {
+                // ★ SDK 已空闲，检查前端是否还在 streaming（状态不同步）
+                const currentSession = get().sessions[sessionId];
+                const hasStreaming = currentSession?.messages.some(m => m.isStreaming);
+                if (hasStreaming) {
+                  console.warn('[SessionStore] SDK idle but frontend still streaming, forcing sync');
+                  // 强制同步状态
+                  set(state => {
+                    const existingSession = state.sessions[sessionId];
+                    if (!existingSession) return state;
+                    return {
+                      sessions: {
+                        ...state.sessions,
+                        [sessionId]: {
+                          ...existingSession,
+                          messages: existingSession.messages.map(m =>
+                            m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+                          ),
+                        },
+                      },
+                    };
+                  });
+                  useActivityStore.getState().endThinking(sessionId);
+                  useActivityStore.getState().endActivity(sessionId);
+                  stopStreamingActivityCheck(sessionId);
+                }
               }
               // 注意：Agent 完成检测已移到 complete 事件处理中（通过 JSON status 字段检测）
               break;
@@ -2429,6 +2679,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             detail: '正在回复...',
             timestamp: Date.now(),
           });
+          // ★ 流活跃检测：更新活跃状态
+          const session = get().sessions[sessionId];
+          const streamingMsg = session?.messages.find(m => m.id === assistantMessageId);
+          if (streamingMsg) {
+            updateStreamingActivity(sessionId, streamingMsg.content?.length ?? 0);
+          }
           // ★ 增量保存：流式文本每 2 秒保存一次
           triggerIncrementalSave(sessionId);
         } else if (type === 'thinking') {
@@ -2468,6 +2724,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             detail: '正在思考...',
             timestamp: Date.now(),
           });
+          // ★ 流活跃检测：thinking 事件也更新活跃状态
+          const thinkingSession = get().sessions[sessionId];
+          const thinkingMsg = thinkingSession?.messages.find(m => m.id === assistantMessageId);
+          if (thinkingMsg) {
+            updateStreamingActivity(sessionId, thinkingMsg.content?.length ?? 0);
+          }
         } else if (type === 'tool_use' && toolName) {
           // ★ SpectrAI Architecture: Create independent ToolUseMessage
           // Instead of embedding toolCalls in assistant message, add as independent message
@@ -2629,6 +2891,27 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                   },
                 };
               });
+            } else if (toolName === 'ExitPlanMode' && toolInput) {
+              // ★ 特殊处理：ExitPlanMode 工具需要更新 pendingApproval
+              console.log('[SessionStore] ExitPlanMode tool_use_update - setting pendingApproval');
+              set(state => {
+                const existingSession = state.sessions[sessionId];
+                if (!existingSession) return state;
+                return {
+                  sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                      ...existingSession,
+                      interactivePanel: {
+                        pendingPermission: existingSession.interactivePanel?.pendingPermission || null,
+                        pendingQuestion: existingSession.interactivePanel?.pendingQuestion || null,
+                        pendingApproval: { planContent: toolInput, toolUseId },
+                        pendingControllerInput: existingSession.interactivePanel?.pendingControllerInput || null,
+                      },
+                    },
+                  },
+                };
+              });
             }
 
             // 更新已有的 tool_use 消息的 toolInput
@@ -2661,6 +2944,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             });
           }
         } else if (type === 'error') {
+          // ★ 流活跃检测：停止检测
+          stopStreamingActivityCheck(sessionId);
+
           // Flush any pending batches before handling error
           immediateFlushToolBatchForSession(sessionId);
           immediateFlushBufferForSession(sessionId, set);
@@ -2709,6 +2995,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // ★ 修复：只清理该会话的监听器
           cleanupProgressListenerForSession(sessionId);
         } else if (type === 'complete') {
+          // ★ 流活跃检测：停止检测
+          stopStreamingActivityCheck(sessionId);
+
           // Flush any pending batches before marking complete
           immediateFlushToolBatchForSession(sessionId);
           immediateFlushBufferForSession(sessionId, set);
@@ -2784,11 +3073,16 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
             // ★ 流式传输结束后检查是否需要自动压缩
             // 使用共享的 autoCompacted 状态，避免与 SessionToolbar 重复触发
+            // 使用冷却时间机制（60秒）避免频繁触发
             const latestSession = get().sessions[sessionId];
             const latestUsage = latestSession?.tokenUsage;
             const alreadyCompacted = latestSession?.autoCompacted ?? false;
+            const lastCompactAt = latestSession?.lastCompactAt;
+            // ★ 防御性检查：lastCompactAt 为 null/undefined 时，视为无冷却
+            const lastCompactTime = lastCompactAt ? new Date(lastCompactAt).getTime() : 0;
+            const inCooldown = lastCompactTime > 0 && (Date.now() - lastCompactTime) < COMPACT_COOLDOWN_MS;
 
-            if (latestUsage && !alreadyCompacted) {
+            if (latestUsage && !alreadyCompacted && !inCooldown) {
               const newPercentage = (latestUsage.inputTokens / latestUsage.contextWindow) * 100;
               if (newPercentage > 80) {
                 console.log('[SessionStore] Auto-compact needed after message, percentage:', newPercentage.toFixed(1), '%');
@@ -2797,9 +3091,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 // 延迟触发，避免阻塞当前响应
                 setTimeout(() => {
                   const currentSession = get().sessions[sessionId];
-                  // 再次检查，确保仍需要压缩
+                  // 再次检查，确保仍需要压缩且不在冷却期
                   const currentUsage = currentSession?.tokenUsage;
-                  if (currentUsage) {
+                  const currentLastCompactAt = currentSession?.lastCompactAt;
+                  const currentLastCompactTime = currentLastCompactAt ? new Date(currentLastCompactAt).getTime() : 0;
+                  const currentInCooldown = currentLastCompactTime > 0 && (Date.now() - currentLastCompactTime) < COMPACT_COOLDOWN_MS;
+
+                  if (currentUsage && !currentInCooldown) {
                     const pct = (currentUsage.inputTokens / currentUsage.contextWindow) * 100;
                     if (pct > 80) {
                       console.log('[SessionStore] Triggering delayed auto-compact, percentage:', pct.toFixed(1), '%');
@@ -2921,6 +3219,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       // ★ 启动心跳检测
       startHeartbeatCheck(sessionId, assistantMessageId, set);
+
+      // ★ 启动流活跃检测（30秒级）
+      startStreamingActivityCheck(sessionId, set);
 
       // ★ 启动上下文使用量刷新（每 5 秒），支持自动压缩检测
       startContextUsageRefresh(sessionId, set);
@@ -3358,6 +3659,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     // ★ 取消增量保存定时器
     cancelIncrementalSave(sessionId);
 
+    // ★ 停止流活跃检测定时器
+    stopStreamingActivityCheck(sessionId);
+
     // Remove from state and update index
     set(state => {
       const { [sessionId]: _, ...remainingSessions } = state.sessions;
@@ -3527,6 +3831,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
     // ★ 取消增量保存定时器
     cancelIncrementalSave(sessionId);
+
+    // ★ 停止流活跃检测定时器
+    stopStreamingActivityCheck(sessionId);
 
     // ★ 修复：先将所有 streaming 消息标记为完成，解锁 sendMessage 轮询 Promise
     set(state => {
@@ -3925,17 +4232,24 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       // ★ 新增：验证压缩效果
       const updatedSession = get().sessions[sessionId];
       const usage = updatedSession?.tokenUsage;
+
+      // ★ 无论压缩效果如何，都更新压缩时间戳（用于冷却机制）
+      const now = new Date().toISOString();
+      get().setLastCompactAt(sessionId, now);
+
       if (usage) {
         const newPercentage = (usage.inputTokens / usage.contextWindow) * 100;
         console.log('[SessionStore] After compact, percentage:', newPercentage.toFixed(1), '%');
 
-        // 如果压缩后仍 > 80%，记录警告
+        // ★ 无论压缩效果如何，都重置 autoCompacted 标志
+        // 通过冷却时间机制（60秒）控制触发频率，而非一次性标志
+        get().setAutoCompacted(sessionId, false);
+
         if (newPercentage > 80) {
           console.warn('[SessionStore] ⚠️ Compact ineffective, still at', newPercentage.toFixed(1), '%');
+          console.log('[SessionStore] Will allow retry after 60s cooldown');
         } else {
           console.log('[SessionStore] ✅ Compact effective, reduced to', newPercentage.toFixed(1), '%');
-          // ★ 压缩成功，重置 autoCompacted 标志，允许后续再次触发自动压缩
-          get().setAutoCompacted(sessionId, false);
         }
       }
 
@@ -4008,6 +4322,28 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           [sessionId]: {
             ...existingSession,
             autoCompacted: value,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Set last compact timestamp - for cooldown mechanism
+   * @param sessionId Session ID
+   * @param timestamp ISO8601 timestamp (null to clear)
+   */
+  setLastCompactAt: (sessionId, timestamp) => {
+    set(state => {
+      const existingSession = state.sessions[sessionId];
+      if (!existingSession) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...existingSession,
+            lastCompactAt: timestamp ?? undefined,
           },
         },
       };

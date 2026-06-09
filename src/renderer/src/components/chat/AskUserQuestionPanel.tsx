@@ -43,10 +43,15 @@ export function AskUserQuestionPanel({
 }: AskUserQuestionPanelProps): JSX.Element | null {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [multiAnswers, setMultiAnswers] = useState<Record<string, string[]>>({});
+  const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
 
   const setAnswer = useCallback((idx: number, value: string) => {
     setAnswers(prev => ({ ...prev, [String(idx)]: value }));
+  }, []);
+
+  const setCustomInput = useCallback((idx: number, value: string) => {
+    setCustomInputs(prev => ({ ...prev, [String(idx)]: value }));
   }, []);
 
   const toggleMultiAnswer = useCallback((idx: number, value: string, question: Question) => {
@@ -75,8 +80,20 @@ export function AskUserQuestionPanel({
   const handleSubmit = useCallback(() => {
     if (disabled || submitted) return;
     setSubmitted(true);
-    onSubmit(answers);
-  }, [disabled, submitted, answers, onSubmit]);
+
+    // 拼接额外描述到答案后面
+    const finalAnswers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(answers)) {
+      const customInput = customInputs[key];
+      if (customInput && customInput.trim()) {
+        finalAnswers[key] = `${value}：${customInput.trim()}`;
+      } else {
+        finalAnswers[key] = value;
+      }
+    }
+
+    onSubmit(finalAnswers);
+  }, [disabled, submitted, answers, customInputs, onSubmit]);
 
   const isQuestionAnswered = useCallback((idx: number, question: Question) => {
     const key = String(idx);
@@ -168,6 +185,24 @@ export function AskUserQuestionPanel({
                   placeholder="请输入您的答案..."
                   className="
                     w-full h-8 px-3 rounded-lg text-sm
+                    bg-bg-primary border border-border
+                    text-text-primary placeholder:text-text-muted
+                    focus:outline-none focus:border-accent-indigo focus:ring-1 focus:ring-accent-indigo/30
+                    disabled:opacity-40 disabled:cursor-not-allowed
+                  "
+                />
+              )}
+
+              {/* 额外描述输入框 */}
+              {q.options && q.options.length > 0 && (
+                <input
+                  type="text"
+                  value={customInputs[String(idx)] || ''}
+                  onChange={e => setCustomInput(idx, e.target.value)}
+                  disabled={disabled}
+                  placeholder="补充说明（可选）..."
+                  className="
+                    w-full h-8 px-3 rounded-lg text-sm mt-2
                     bg-bg-primary border border-border
                     text-text-primary placeholder:text-text-muted
                     focus:outline-none focus:border-accent-indigo focus:ring-1 focus:ring-accent-indigo/30

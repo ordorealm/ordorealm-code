@@ -305,6 +305,7 @@ export interface AgentResult {
   modifiedFiles: string[]
   summary: string
   error?: string
+  output?: Record<string, unknown>
 }
 
 /**

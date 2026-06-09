@@ -33,11 +33,11 @@ export class ControllerEngine {
   private sessionId: string
   private projectRoot: string
   private skillName: string
-  private sessionApi: SessionApi | null = null
-  private stateManager: StateManager | null = null
-  private abortController: AbortController | null = null
-  private isRunning: boolean = false
-  private externalAbortSignal?: AbortSignal
+  sessionApi: SessionApi | null = null
+  stateManager: StateManager | null = null
+  abortController: AbortController | null = null
+  isRunning: boolean = false
+  externalAbortSignal?: AbortSignal
 
   constructor(config: ControllerEngineConfig) {
     this.sessionId = config.sessionId
@@ -169,7 +169,7 @@ export class ControllerEngine {
   /**
    * 查找 JS 脚本文件
    */
-  private findScriptFile(): string | null {
+  findScriptFile(): string | null {
     const skillflowDir = path.join(this.projectRoot, '.claude', 'skillflow')
 
     if (!fs.existsSync(skillflowDir)) {
@@ -190,7 +190,7 @@ export class ControllerEngine {
   /**
    * 创建 Agent 注册表
    */
-  private createAgentRegistry(): AgentRegistry {
+  createAgentRegistry(): AgentRegistry {
     const agentRegistry = new AgentRegistry()
 
     // 发现可用 Agent

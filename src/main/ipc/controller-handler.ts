@@ -30,17 +30,29 @@ export function registerControllerHandlers(): void {
     ): Promise<{ success: boolean; error?: string }> => {
       const { sessionId, projectRoot, skillName } = options
 
+      console.log(`[ControllerHandler] ★★★ controller:run START ★★★`)
+      console.log(`[ControllerHandler] sessionId: ${sessionId}`)
+      console.log(`[ControllerHandler] projectRoot: ${projectRoot}`)
+      console.log(`[ControllerHandler] skillName: ${skillName}`)
+
       logger.info(`Running controller: ${skillName}`)
       logger.info(`Session: ${sessionId}`)
       logger.info(`Project: ${projectRoot}`)
 
       try {
-        // 检查是否已有控制器在运行
+        // 检查是否已有控制器在运行，如果有则中止旧控制器
         if (runningControllers.has(sessionId)) {
-          return {
-            success: false,
-            error: 'A controller is already running for this session'
+          const oldEngine = runningControllers.get(sessionId)
+          if (oldEngine) {
+            try {
+              oldEngine.abort()
+              // 等待旧控制器完全停止
+              await new Promise(resolve => setTimeout(resolve, 1000))
+            } catch (e) {
+              logger.warn(`Failed to abort old controller: ${e}`)
+            }
           }
+          runningControllers.delete(sessionId)
         }
 
         // 创建并运行控制器

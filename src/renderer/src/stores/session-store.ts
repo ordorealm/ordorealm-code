@@ -485,6 +485,9 @@ type SetFunction = (
   partial: StoreState | Partial<StoreState> | ((state: StoreState) => StoreState | Partial<StoreState>)
 ) => void;
 
+/** Zustand get function type for helper functions */
+type GetFunction = () => StoreState;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 进度事件监听器（参考 SpectrAI 的 sessionStore 模式）
 // ★ 修复：使用 Map 支持多会话并发，每个会话独立监听器
@@ -516,6 +519,14 @@ const STREAMING_ACTIVITY_IDLE_THRESHOLD = 2; // 连续2次无新内容才查询�
 
 /** ★ 自动压缩冷却时间（60秒）- 防止频繁触发自动压缩 */
 export const COMPACT_COOLDOWN_MS = 60000;
+
+/** ★ 安全解析日期时间戳，处理无效日期返回 0 */
+function safeParseTimestamp(dateStr: string | number | null | undefined): number {
+  if (!dateStr) return 0;
+  const timestamp = typeof dateStr === 'number' ? dateStr : new Date(dateStr).getTime();
+  // NaN 检查：无效日期字符串会返回 NaN
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
 
 /** ★ 流活跃状态（用于检测流断开但无 error/complete 事件的情况） */
 interface StreamingActivity {
@@ -984,11 +995,18 @@ function performHeartbeatAbort(
  */
 function startStreamingActivityCheck(
   sessionId: string,
-  set: SetFunction
+  set: SetFunction,
+  get: GetFunction
 ): void {
   // 获取或创建活跃状态
   let activity = streamingActivities.get(sessionId);
-  if (!activity) {
+  if (activity) {
+    // ★ 复用已有对象时，重置关键状态字段，避免继承旧的高空闲计数
+    activity.lastEventTime = Date.now();
+    activity.lastContentLength = 0;
+    activity.idleCount = 0;
+    activity.isChecking = false;
+  } else {
     activity = {
       lastEventTime: Date.now(),
       lastContentLength: 0,
@@ -1019,7 +1037,7 @@ function startStreamingActivityCheck(
     }
 
     // 找到 streaming 的消息
-    const streamingMsg = session.messages.find(m => m.isStreaming);
+    const streamingMsg = session.messages.find((m: Message) => m.isStreaming);
     if (!streamingMsg) {
       // 没有 streaming 消息，停止检测
       console.log(`[SessionStore] No streaming message, stopping activity check`);
@@ -1030,14 +1048,24 @@ function startStreamingActivityCheck(
     const currentContentLength = streamingMsg.content?.length ?? 0;
     const timeSinceLastEvent = Date.now() - currentActivity.lastEventTime;
 
-    // 检查是否有新内容
-    if (currentContentLength > currentActivity.lastContentLength || timeSinceLastEvent < STREAMING_ACTIVITY_CHECK_INTERVAL) {
-      // 有新内容或最近有事件，重置计数
+    // ★ 优化空闲检测逻辑：只有当内容有新内容时才重置空闲计数
+    // 避免事件频繁触发但内容无变化时误判为活动状态
+    const hasNewContent = currentContentLength > currentActivity.lastContentLength;
+    const hasRecentEvent = timeSinceLastEvent < STREAMING_ACTIVITY_CHECK_INTERVAL;
+
+    if (hasNewContent) {
+      // 有新内容，重置计数
       currentActivity.lastContentLength = currentContentLength;
+      currentActivity.lastEventTime = Date.now();
       currentActivity.idleCount = 0;
       console.log(`[SessionStore] Streaming activity detected, content length: ${currentContentLength}`);
+    } else if (hasRecentEvent) {
+      // 最近有事件但无新内容，只更新时间，不重置计数
+      // 这种情况可能是流正在处理但尚未输出新内容
+      currentActivity.lastEventTime = Date.now();
+      console.log(`[SessionStore] Recent event but no new content, keeping idle count: ${currentActivity.idleCount}`);
     } else {
-      // 无新内容
+      // 无新内容且无最近事件
       currentActivity.idleCount++;
       const idleTime = currentActivity.idleCount * STREAMING_ACTIVITY_CHECK_INTERVAL / 1000;
 
@@ -1143,12 +1171,30 @@ function stopStreamingActivityCheck(sessionId: string): void {
     streamingActivities.delete(sessionId);
     console.log(`[SessionStore] Stopped streaming activity check for session: ${sessionId}`);
   }
+
+  // ★ 修复：清除该会话的 connectionNotice，避免残留显示
+  const store = useSessionStore.getState();
+  const session = store.sessions[sessionId];
+  if (session && session.connectionNotice) {
+    useSessionStore.setState(state => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...state.sessions[sessionId], connectionNotice: null }
+      }
+    }));
+    console.log(`[SessionStore] Cleared connectionNotice for session: ${sessionId}`);
+  }
 }
 
 /**
  * ★ 流活跃检测：更新活跃状态（在 text/thinking 事件时调用）
  */
-function updateStreamingActivity(sessionId: string, contentLength: number): void {
+function updateStreamingActivity(
+  sessionId: string,
+  contentLength: number,
+  set: SetFunction,
+  get: GetFunction
+): void {
   const activity = streamingActivities.get(sessionId);
   if (activity) {
     activity.lastEventTime = Date.now();
@@ -1156,18 +1202,22 @@ function updateStreamingActivity(sessionId: string, contentLength: number): void
     // 有新事件，重置空闲计数
     if (activity.idleCount > 0) {
       activity.idleCount = 0;
-      // 清除警告提示
-      const session = get().sessions[sessionId];
-      if (session?.connectionNotice?.includes('响应缓慢') || session?.connectionNotice?.includes('等待响应')) {
-        set(state => {
-          const s = state.sessions[sessionId];
-          if (!s) return state;
-          return {
-            sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } }
-          };
-        });
-      }
     }
+  }
+
+  // ★ 修复：无论 idleCount 值如何，只要有新内容到达就清除 connectionNotice
+  // 这样正常对话内容可以覆盖掉残留的提示信息
+  const session = get().sessions[sessionId];
+  if (session?.connectionNotice) {
+    // 清除所有类型的 connectionNotice（响应缓慢、等待响应、连接已断开等）
+    set(state => {
+      const s = state.sessions[sessionId];
+      if (!s || !s.connectionNotice) return state;
+      return {
+        sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } }
+      };
+    });
+    console.log(`[SessionStore] Cleared connectionNotice on activity update for session: ${sessionId}`);
   }
 }
 
@@ -2244,6 +2294,18 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     console.log(`[TRACE-AI] [FRONTEND] sendMessage ENTRY | traceId=${traceId} | content="${content.substring(0, 50)}"`);
     console.log(`[TRACE-AI] ========================================`);
 
+    // ★ 清除残留的 connectionNotice，确保新会话不会显示旧的提示
+    if (session.connectionNotice) {
+      set(state => {
+        const s = state.sessions[sessionId];
+        if (!s) return state;
+        return {
+          sessions: { ...state.sessions, [sessionId]: { ...s, connectionNotice: null } }
+        };
+      });
+      console.log(`[SessionStore] Cleared residual connectionNotice for session: ${sessionId}`);
+    }
+
     // ★ 并发防护：递增代数，旧 send 检测到代数不匹配后会自行退出
     const sendGen = (sendGenerations.get(sessionId) || 0) + 1;
     sendGenerations.set(sessionId, sendGen);
@@ -2683,7 +2745,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           const session = get().sessions[sessionId];
           const streamingMsg = session?.messages.find(m => m.id === assistantMessageId);
           if (streamingMsg) {
-            updateStreamingActivity(sessionId, streamingMsg.content?.length ?? 0);
+            updateStreamingActivity(sessionId, streamingMsg.content?.length ?? 0, set, get);
           }
           // ★ 增量保存：流式文本每 2 秒保存一次
           triggerIncrementalSave(sessionId);
@@ -2728,7 +2790,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           const thinkingSession = get().sessions[sessionId];
           const thinkingMsg = thinkingSession?.messages.find(m => m.id === assistantMessageId);
           if (thinkingMsg) {
-            updateStreamingActivity(sessionId, thinkingMsg.content?.length ?? 0);
+            updateStreamingActivity(sessionId, thinkingMsg.content?.length ?? 0, set, get);
           }
         } else if (type === 'tool_use' && toolName) {
           // ★ SpectrAI Architecture: Create independent ToolUseMessage
@@ -3077,9 +3139,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             const latestSession = get().sessions[sessionId];
             const latestUsage = latestSession?.tokenUsage;
             const alreadyCompacted = latestSession?.autoCompacted ?? false;
-            const lastCompactAt = latestSession?.lastCompactAt;
-            // ★ 防御性检查：lastCompactAt 为 null/undefined 时，视为无冷却
-            const lastCompactTime = lastCompactAt ? new Date(lastCompactAt).getTime() : 0;
+            // ★ 使用安全日期解析，处理无效日期
+            const lastCompactTime = safeParseTimestamp(latestSession?.lastCompactAt);
             const inCooldown = lastCompactTime > 0 && (Date.now() - lastCompactTime) < COMPACT_COOLDOWN_MS;
 
             if (latestUsage && !alreadyCompacted && !inCooldown) {
@@ -3093,11 +3154,13 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                   const currentSession = get().sessions[sessionId];
                   // 再次检查，确保仍需要压缩且不在冷却期
                   const currentUsage = currentSession?.tokenUsage;
-                  const currentLastCompactAt = currentSession?.lastCompactAt;
-                  const currentLastCompactTime = currentLastCompactAt ? new Date(currentLastCompactAt).getTime() : 0;
+                  // ★ 使用安全日期解析，处理无效日期
+                  const currentLastCompactTime = safeParseTimestamp(currentSession?.lastCompactAt);
                   const currentInCooldown = currentLastCompactTime > 0 && (Date.now() - currentLastCompactTime) < COMPACT_COOLDOWN_MS;
+                  // ★ 竞态防护：再次检查 autoCompacted，防止与 SessionToolbar 同时触发
+                  const currentAutoCompacted = currentSession?.autoCompacted ?? false;
 
-                  if (currentUsage && !currentInCooldown) {
+                  if (currentUsage && !currentInCooldown && !currentAutoCompacted) {
                     const pct = (currentUsage.inputTokens / currentUsage.contextWindow) * 100;
                     if (pct > 80) {
                       console.log('[SessionStore] Triggering delayed auto-compact, percentage:', pct.toFixed(1), '%');
@@ -3221,7 +3284,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       startHeartbeatCheck(sessionId, assistantMessageId, set);
 
       // ★ 启动流活跃检测（30秒级）
-      startStreamingActivityCheck(sessionId, set);
+      startStreamingActivityCheck(sessionId, set, get);
 
       // ★ 启动上下文使用量刷新（每 5 秒），支持自动压缩检测
       startContextUsageRefresh(sessionId, set);

@@ -1105,6 +1105,7 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
                 status: 'task_started',
                 taskId: msg.task_id,
                 subagentType: msg.subagent_type,
+                description: msg.description,  // ★ 新增：前端需要此字段显示子任务名称
               },
             } as ProgressEvent)
           } else if (msg.subtype === 'task_progress') {

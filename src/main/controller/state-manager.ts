@@ -285,7 +285,7 @@ export class StateManager {
    * 解析路径字符串
    * 支持 "a.b.c" 和 "a[0].b" 格式
    */
-  private parsePath(path: string): (string | number)[] {
+  parsePath(path: string): (string | number)[] {
     const result: (string | number)[] = []
     const parts = path.split('.')
 

@@ -286,6 +286,8 @@ export function ChatPanel(): JSX.Element {
 
     try {
       await window.api.claude.abort(sessionId);
+      // ★ 同时中止控制器引擎，停止 Agent 结果监听和超时定时器
+      await window.api.controller.abort(sessionId);
     } catch (err) {
       console.error('[ChatPanel] Failed to abort:', err);
     }

@@ -667,9 +667,10 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     // ★ 冷却时间检查：距离上次压缩至少 60 秒
     // 使用从 session-store 导出的常量，确保与 store 层一致
     const now = Date.now();
-    // ★ 防御性检查：lastCompactAt 为 null/undefined 时，视为无冷却
+    // ★ 防御性检查：使用安全日期解析，处理无效日期（null/undefined/NaN）
     const lastCompactTime = lastCompactAt ? new Date(lastCompactAt).getTime() : 0;
-    const inCooldown = lastCompactTime > 0 && (now - lastCompactTime) < COMPACT_COOLDOWN_MS;
+    const validLastCompactTime = Number.isFinite(lastCompactTime) ? lastCompactTime : 0;
+    const inCooldown = validLastCompactTime > 0 && (now - validLastCompactTime) < COMPACT_COOLDOWN_MS;
 
     if (percentage > 80 && session?.tokenUsage && !autoCompacted && !isStreaming && !inCooldown) {
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);

@@ -858,18 +858,17 @@ Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储
       const mcpConfigSnapshot = { ...sdkOptions.mcpServers }
 
       // ★ 设置模型（通过 SDK 的 model 选项）
+      // >= 1M 上下文时，在模型 ID 后追加 [1m] 后缀
       if (model) {
-        sdkOptions.model = model
-        console.log('[Claude SDK] Model set in SDK options:', model)
+        if (contextWindow && contextWindow >= 1000000 && !model.includes('[1m]')) {
+          sdkOptions.model = `${model}[1m]`
+          console.log('[Claude SDK] Model with 1M context:', sdkOptions.model)
+        } else {
+          sdkOptions.model = model
+          console.log('[Claude SDK] Model set in SDK options:', model)
+        }
       } else {
         console.log('[Claude SDK] No model specified, SDK will use default')
-      }
-
-      // ★ 设置上下文窗口：>= 1M 时追加 context-1m beta（不覆盖已有 betas）
-      if (contextWindow && contextWindow >= 1000000) {
-        const existingBetas = (sdkOptions.betas as string[]) || [];
-        sdkOptions.betas = [...existingBetas, 'context-1m-2025-08-07']
-        console.log('[Claude SDK] Enabled 1M context window, total betas:', sdkOptions.betas)
       }
 
       console.log('[Claude SDK] Final sdkOptions.model:', sdkOptions.model || 'not set')

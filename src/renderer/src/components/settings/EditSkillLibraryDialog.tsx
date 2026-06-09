@@ -82,7 +82,7 @@ export function EditSkillLibraryDialog({
   if (!isOpen || !library) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center" style={{ top: 'var(--title-bar-height, 0)' }}>
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"

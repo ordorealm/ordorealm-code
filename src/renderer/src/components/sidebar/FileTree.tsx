@@ -1059,7 +1059,7 @@ export function FileTree({ onFileSelect }: FileTreeProps = {}): JSX.Element {
 
       {/* New Item Dialog */}
       {newItemDialog.isVisible && createPortal(
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="fixed left-0 right-0 bottom-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" style={{ top: 'var(--title-bar-height, 0)' }}>
           <div className="bg-bg-primary rounded-lg shadow-xl p-4 w-96 min-w-[300px]">
             <h3 className="text-lg font-medium mb-1 text-text-primary">
               新建{newItemDialog.type === 'file' ? '文件' : '文件夹'}
@@ -1118,7 +1118,7 @@ export function FileTree({ onFileSelect }: FileTreeProps = {}): JSX.Element {
 
       {/* Rename Dialog */}
       {renameDialog.isVisible && createPortal(
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="fixed left-0 right-0 bottom-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" style={{ top: 'var(--title-bar-height, 0)' }}>
           <div className="bg-bg-primary rounded-lg shadow-xl p-4 w-96">
             <h3 className="text-lg font-medium mb-2 text-text-primary">重命名</h3>
             {/* Show original name */}
@@ -1174,7 +1174,7 @@ export function FileTree({ onFileSelect }: FileTreeProps = {}): JSX.Element {
 
       {/* Confirm Dialog */}
       {confirmDialog.isVisible && createPortal(
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="fixed left-0 right-0 bottom-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" style={{ top: 'var(--title-bar-height, 0)' }}>
           <div className="bg-bg-primary rounded-lg shadow-xl p-4 w-80">
             <h3 className="text-lg font-medium mb-2 text-text-primary">{confirmDialog.title}</h3>
             <p className="text-sm text-text-muted mb-4 whitespace-pre-line">{confirmDialog.message}</p>

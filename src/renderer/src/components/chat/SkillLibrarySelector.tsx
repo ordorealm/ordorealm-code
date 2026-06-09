@@ -287,7 +287,7 @@ export function SkillLibrarySelector({
 
       {/* Confirmation Dialog */}
       {showConfirmDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-black/50" style={{ top: 'var(--title-bar-height, 0)' }}>
           <div className="bg-bg-primary border border-border rounded-lg shadow-xl p-4 max-w-sm mx-4">
             {/* Header */}
             <div className="flex items-center gap-2 mb-3">

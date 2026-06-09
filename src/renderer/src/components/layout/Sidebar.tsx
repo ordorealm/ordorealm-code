@@ -355,7 +355,8 @@ export function Sidebar({ isMobileOpen = true, onMobileClose, onOpenNewProject, 
       {/* Mobile overlay backdrop */}
       {isMobileOpen && (
         <div
-          className="md:hidden fixed inset-0 bg-black/50 z-40"
+          className="md:hidden fixed left-0 right-0 bottom-0 bg-black/50 z-40"
+          style={{ top: 'var(--title-bar-height, 0)' }}
           onClick={onMobileClose}
         />
       )}

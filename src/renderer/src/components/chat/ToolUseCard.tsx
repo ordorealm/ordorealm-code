@@ -354,7 +354,7 @@ export function ToolUseCard({ toolCall, compact = false }: ToolUseCardProps): JS
 
       {/* Click outside to close context menu */}
       {contextMenu.visible && (
-        <div className="fixed inset-0 z-40" onClick={closeContextMenu} />
+        <div className="fixed left-0 right-0 bottom-0 z-40" style={{ top: 'var(--title-bar-height, 0)' }} onClick={closeContextMenu} />
       )}
     </div>
   );

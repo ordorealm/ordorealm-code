@@ -36,7 +36,8 @@ function DeletedContentDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      style={{ top: 'var(--title-bar-height, 0)' }}
       onClick={onClose}
       role="dialog"
       aria-modal="true"

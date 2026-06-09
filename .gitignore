@@ -48,8 +48,21 @@ pnpm-workspace.yaml
 DEV-PLAN.md
 Product-Spec.md
 
-# Playwright test temp files
-.playwright-mcp/
+# Tests (not needed for open source)
+tests/
+coverage/
+
+# Code graph index
+.codegraph/
+
+# Development docs
+docs/
+
+# Development scripts
+scripts/
+
+# Root level temp files
+icon.ico
 
 # Runtime binaries (downloaded via npm run download-runtime)
 # Keep directory structure but ignore binaries

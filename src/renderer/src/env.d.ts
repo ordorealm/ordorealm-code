@@ -153,6 +153,16 @@ export interface Api {
     /** Write text to clipboard */
     writeText: (text: string) => Promise<void>
   }
+  project: {
+    /** Notify main process that a project was opened (for CodeGraph initialization) */
+    opened: (projectPath: string) => Promise<void>
+    /** Notify main process that a project was created (for CodeGraph initialization) */
+    created: (projectPath: string) => Promise<void>
+  }
+  theme: {
+    /** Notify main process that theme changed (for titleBarOverlay sync on Windows) */
+    changed: (theme: 'light' | 'dark') => void
+  }
   shell: {
     /** Open path in file manager */
     openPath: (path: string) => Promise<void>

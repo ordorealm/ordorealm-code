@@ -102,6 +102,20 @@ const api = {
     writeText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:writeText', text),
   },
 
+  // Project APIs
+  project: {
+    /** Notify main process that a project was opened (for CodeGraph initialization) */
+    opened: (projectPath: string): Promise<void> => ipcRenderer.invoke('project:opened', projectPath),
+    /** Notify main process that a project was created (for CodeGraph initialization) */
+    created: (projectPath: string): Promise<void> => ipcRenderer.invoke('project:created', projectPath),
+  },
+
+  // Theme APIs
+  theme: {
+    /** Notify main process that theme changed (for titleBarOverlay sync on Windows) */
+    changed: (theme: 'light' | 'dark'): void => ipcRenderer.send('theme:changed', theme),
+  },
+
   // Shell APIs
   shell: {
     /** Open path in file manager */

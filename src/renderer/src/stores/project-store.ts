@@ -100,6 +100,11 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 自动保存
     await saveProjects();
 
+    // 通知主进程项目创建（用于 CodeGraph 初始化）
+    window.api.project.created(path).catch(
+      (err) => console.warn('[ProjectStore] CodeGraph 初始化通知失败:', err)
+    );
+
     console.log(`[ProjectStore] 项目创建成功: ${name} (${path})`);
     return { success: true, project: newProject };
   },
@@ -152,6 +157,11 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     saveProjects().catch(err => console.error('[ProjectStore] 保存失败:', err));
 
     console.log(`[ProjectStore] 项目已打开: ${project.name}`);
+
+    // 通知主进程项目打开（用于 CodeGraph 初始化）
+    window.api.project.opened(project.path).catch(
+      (err) => console.warn('[ProjectStore] CodeGraph 初始化通知失败:', err)
+    );
 
     // Release lock after a short delay (allow effects to settle)
     setTimeout(() => {
@@ -351,6 +361,16 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
           activeProjectId: activeId,
         });
         console.log(`[ProjectStore] 已加载 ${data.projects?.length || 0} 个项目 from ${projectsPath}`);
+
+        // 通知主进程恢复激活项目（用于 CodeGraph 初始化）
+        if (activeId) {
+          const activeProject = (data.projects || []).find(p => p.id === activeId);
+          if (activeProject) {
+            window.api.project.opened(activeProject.path).catch(
+              (err) => console.warn('[ProjectStore] CodeGraph 初始化通知失败:', err)
+            );
+          }
+        }
       } else {
         // 文件不存在，初始化空状态
         set({ projects: [], recentProjects: [], activeProjectId: null });

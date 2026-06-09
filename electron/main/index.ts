@@ -3,7 +3,7 @@ import { join } from 'path'
 import * as fs from 'fs/promises'
 import * as fsSync from 'fs'
 import * as pathModule from 'path'
-import { execSync } from 'child_process'
+import { execSync, spawn } from 'child_process'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { AsyncIterableQueue } from '../shared/async-queue'
 import { SecureStorage } from './secure-storage'
@@ -1907,6 +1907,173 @@ function registerShellHandlers(): void {
 }
 
 /**
+ * 注册项目 IPC handlers
+ * 用于 CodeGraph 自动初始化
+ */
+function registerProjectHandlers(): void {
+  const initializingProjects = new Set<string>()
+
+  ipcMain.handle('project:opened', async (_, projectPath: string) => {
+    await ensureCodeGraphInitialized(projectPath, initializingProjects)
+  })
+
+  ipcMain.handle('project:created', async (_, projectPath: string) => {
+    await ensureCodeGraphInitialized(projectPath, initializingProjects)
+  })
+}
+
+/**
+ * 注册主题 IPC handlers
+ * 用于 Windows 标题栏颜色同步
+ */
+function registerThemeHandlers(): void {
+  ipcMain.on('theme:changed', (_event, theme: 'light' | 'dark') => {
+    // macOS 不需要同步标题栏颜色
+    if (process.platform === 'darwin') return
+
+    const mainWindow = BrowserWindow.getAllWindows()[0]
+    if (!mainWindow || mainWindow.isDestroyed()) return
+
+    mainWindow.setTitleBarOverlay({
+      color: theme === 'dark' ? '#0d1117' : '#ffffff',
+      symbolColor: theme === 'dark' ? '#e6edf3' : '#1a1a2e',
+      height: 38
+    })
+  })
+}
+
+/**
+ * 注册窗口 IPC handlers
+ */
+function registerWindowHandlers(): void {
+  ipcMain.handle('window:isMaximized', () => {
+    const mainWindow = BrowserWindow.getAllWindows()[0]
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    return mainWindow.isMaximized() || mainWindow.isFullScreen()
+  })
+}
+
+/**
+ * 确保 CodeGraph 已初始化
+ * 自动启用、启动 CodeGraph 并初始化项目索引
+ */
+async function ensureCodeGraphInitialized(
+  projectPath: string,
+  initializingProjects: Set<string>
+): Promise<void> {
+  try {
+    // 防止重复初始化
+    if (initializingProjects.has(projectPath)) {
+      console.log(`[CodeGraph] 项目正在初始化中，跳过: ${projectPath}`)
+      return
+    }
+
+    const mcpManager = getMCPManager()
+    const codegraphInstance = mcpManager.getInstance('codegraph')
+
+    // 检查 CodeGraph 是否存在
+    if (!codegraphInstance) {
+      console.log('[CodeGraph] CodeGraph 实例不存在，跳过初始化')
+      return
+    }
+
+    // 检查是否已下载
+    if (codegraphInstance.downloadStatus !== 'ready') {
+      console.log('[CodeGraph] CodeGraph 未安装，跳过初始化')
+      return
+    }
+
+    // 自动启用 CodeGraph
+    if (!mcpManager.isEnabled('codegraph')) {
+      console.log('[CodeGraph] 自动启用 CodeGraph...')
+      await mcpManager.enable('codegraph')
+    }
+
+    // 自动启动 CodeGraph
+    if (codegraphInstance.status !== 'running') {
+      console.log('[CodeGraph] 自动启动 CodeGraph...')
+      try {
+        await mcpManager.start('codegraph')
+      } catch (startErr) {
+        console.error('[CodeGraph] 启动失败，跳过初始化:', startErr)
+        return
+      }
+    }
+
+    // 检查项目是否已初始化
+    const codegraphDir = pathModule.join(projectPath, '.codegraph')
+    if (fsSync.existsSync(codegraphDir)) {
+      console.log('[CodeGraph] 项目已初始化，跳过')
+      return
+    }
+
+    // 标记正在初始化
+    initializingProjects.add(projectPath)
+
+    // 获取 CodeGraph 安装路径
+    const mcpRoot = pathModule.join(app.getPath('userData'), 'mcp-packages')
+    const codegraphPath = pathModule.join(mcpRoot, 'codegraph')
+
+    if (!fsSync.existsSync(codegraphPath)) {
+      console.log('[CodeGraph] CodeGraph 安装路径不存在，跳过初始化')
+      return
+    }
+
+    console.log(`[CodeGraph] 开始初始化项目: ${projectPath}`)
+
+    // 获取 Node.js 路径
+    if (!runtimeManager) {
+      console.log('[CodeGraph] runtimeManager 未初始化，跳过')
+      return
+    }
+    const nodePath = runtimeManager.getNodePath()
+    const entryPoint = pathModule.join(codegraphPath, 'npm-shim.js')
+
+    // 执行 codegraph init
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(nodePath, [entryPoint, 'init', '-i'], {
+        cwd: projectPath,
+        stdio: 'pipe',
+        env: { ...process.env, NODE_ENV: 'production' }
+      })
+
+      let stdout = ''
+      let stderr = ''
+
+      proc.stdout?.on('data', (data) => {
+        stdout += data.toString()
+      })
+
+      proc.stderr?.on('data', (data) => {
+        stderr += data.toString()
+      })
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          console.log('[CodeGraph] 初始化完成')
+          resolve()
+        } else {
+          console.error(`[CodeGraph] 初始化失败: exit code ${code}`)
+          console.error(`[CodeGraph] stdout: ${stdout}`)
+          console.error(`[CodeGraph] stderr: ${stderr}`)
+          reject(new Error(`codegraph init 失败: exit code ${code}`))
+        }
+      })
+
+      proc.on('error', (err) => {
+        console.error('[CodeGraph] 初始化错误:', err)
+        reject(err)
+      })
+    })
+
+  } catch (err) {
+    console.error('[CodeGraph] 初始化失败，但不阻塞项目切换:', err)
+  } finally {
+    initializingProjects.delete(projectPath)
+  }
+}
+
+/**
  * 注册加密 IPC handlers
  * 提供 API Key 等敏感数据的加密/解密功能
  */
@@ -3366,6 +3533,9 @@ app.whenReady().then(async () => {
   registerDialogHandlers()
   registerClipboardHandlers()
   registerShellHandlers()
+  registerProjectHandlers()
+  registerThemeHandlers()
+  registerWindowHandlers()
   registerCryptoHandlers()
   registerClaudeHandlers()
   registerFileWatcherHandlers()

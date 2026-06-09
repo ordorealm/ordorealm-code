@@ -44,6 +44,11 @@ const applyTheme = (effectiveTheme: 'light' | 'dark'): void => {
   if (metaThemeColor) {
     metaThemeColor.setAttribute('content', effectiveTheme === 'dark' ? '#1f2937' : '#ffffff');
   }
+
+  // 通知主进程主题变化（用于 Windows 标题栏同步）
+  if (typeof window !== 'undefined' && window.api?.theme?.changed) {
+    window.api.theme.changed(effectiveTheme);
+  }
 };
 
 export const useAppearanceStore = create<AppearanceState>((set, get) => ({

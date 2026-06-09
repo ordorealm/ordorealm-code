@@ -168,6 +168,9 @@ export function AskUserQuestionPanel({
                           </svg>
                         )}
                         <span className="max-w-[300px]">{opt.label}</span>
+                        {opt.isCustom && (
+                          <span className="text-[10px] text-accent-indigo/70 ml-0.5">(可输入)</span>
+                        )}
                         {isMultiSelect && (
                           <span className="text-[10px] text-accent-indigo/70 ml-0.5">(多选)</span>
                         )}

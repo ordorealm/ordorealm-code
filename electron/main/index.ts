@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog, clipboard } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, clipboard, nativeTheme } from 'electron'
 import { join } from 'path'
 import * as fs from 'fs/promises'
 import * as fsSync from 'fs'
@@ -3486,6 +3486,9 @@ async function initializeRemoteControl(): Promise<void> {
 }
 
 function createWindow(): void {
+  // 获取系统主题
+  const isDarkMode = nativeTheme.shouldUseDarkColors
+
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -3493,10 +3496,19 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
+    // 统一隐藏标题栏，各平台自定义控制按钮
+    titleBarStyle: 'hidden',
     ...(process.platform === 'darwin' ? {
-      titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 20, y: 18 }
-    } : {}),
+      // macOS: 红绿灯位置（向上调整）
+      trafficLightPosition: { x: 20, y: 12 }
+    } : {
+      // Windows/Linux: 显示原生窗口控制按钮，颜色跟随系统主题
+      titleBarOverlay: {
+        color: isDarkMode ? '#0d1117' : '#ffffff',
+        symbolColor: isDarkMode ? '#e6edf3' : '#1a1a2e',
+        height: 38
+      }
+    }),
     ...(process.platform === 'linux' ? { icon: join(__dirname, '../../resources/icon.png') } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -3509,6 +3521,20 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
     if (isDev) mainWindow.webContents.openDevTools()
+  })
+
+  // 窗口状态事件 - 通知渲染进程
+  mainWindow.on('maximize', () => {
+    mainWindow.webContents.send('window:maximized', true)
+  })
+  mainWindow.on('unmaximize', () => {
+    mainWindow.webContents.send('window:maximized', false)
+  })
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow.webContents.send('window:maximized', true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow.webContents.send('window:maximized', false)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {

@@ -54,6 +54,9 @@
   --accent-indigo: #6366f1;
 
   --color-border-value: #e9ecef;
+
+  /* Title bar height for Windows/Linux overlay */
+  --title-bar-height: 38px;
 }
 
 /* ===== Dark Theme (GitHub Dark) ===== */

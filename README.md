@@ -5,150 +5,219 @@
 </p>
 
 <p align="center">
-  <strong>AI-Powered Developer Workflow IDE</strong>
+  <strong>AI 驱动的开发者工作流 IDE</strong>
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#development">Development</a> •
-  <a href="#license">License</a>
+  <a href="#功能特性">功能特性</a> •
+  <a href="#安装">安装</a> •
+  <a href="#开发">开发</a> •
+  <a href="#技术栈">技术栈</a> •
+  <a href="#许可证">许可证</a>
 </p>
 
 ---
 
-## Features
+## 功能特性
 
-### 🤖 Multi-Agent Support
-- **Claude Code** - Anthropic's official Claude coding assistant
-- **Codex** - OpenAI's coding agent
-- **OpenCode** - Open-source coding assistant
+### 🤖 多智能体支持
 
-### 💬 Intelligent Chat Interface
-- Real-time streaming responses
-- Tool use visualization
-- File change tracking
-- Message grouping for better readability
+| 智能体 | 状态 | 说明 |
+|--------|------|------|
+| **Claude Code** | ✅ 已支持 | Anthropic 官方 Claude 编程助手 |
+| **Codex** | 🚧 计划中 | OpenAI 编程助手 |
+| **OpenCode** | 🚧 计划中 | 开源编程助手 |
 
-### 🔧 MCP (Model Context Protocol) Integration
-- Built-in MCP server management
-- Support for external MCP servers
-- Easy configuration and monitoring
+### 💬 智能对话界面
 
-### 📁 Project Management
-- Multi-project workspace
-- File tree navigation
-- Code preview with syntax highlighting
-- Session persistence per project
+- 实时流式响应
+- 工具调用可视化
+- 文件变更追踪
+- 消息分组显示
 
-### 🎨 Modern UI
-- Dark/Light theme support
-- Responsive design
-- Customizable provider/model selection per session
+### 🔧 MCP (模型上下文协议) 集成
 
-## Screenshots
+- 内置 MCP 服务器管理
+- 支持外部 MCP 服务器
+- 便捷的配置与监控
 
-<p align="center">
-  <em>Coming soon...</em>
-</p>
+### 📁 项目管理
 
-## Installation
+- 多项目工作区
+- 文件树导航
+- 代码预览（语法高亮）
+- 项目级会话持久化
 
-### Prerequisites
+### 🎨 现代化界面
+
+- 深色/浅色主题支持
+- 响应式设计
+- 会话级 Provider/Model 选择
+
+---
+
+## 安装
+
+### 系统要求
+
 - **Node.js** >= 18.0.0
 - **npm** >= 9.0.0
-- **Claude Code CLI** (optional, for Claude agent)
 
-### Download
+### 下载安装
 
-Download the latest release from [GitHub Releases](https://github.com/ordorealm/ordorealm-code/releases).
+从 [GitHub Releases](https://github.com/ordorealm/ordorealm-code/releases) 下载最新版本。
 
-### Build from Source
+### 从源码构建
 
 ```bash
-# Clone the repository
+# 克隆仓库
 git clone https://github.com/ordorealm/ordorealm-code.git
 cd ordorealm-code
 
-# Install dependencies
+# 安装依赖
 npm install
 
-# Download runtime dependencies (Node.js, Git)
+# 下载运行时依赖 (Node.js, Git, Weclaw)
 npm run download-runtime
+npm run download-weclaw
 
-# Development mode
+# 开发模式
 npm run dev
 
-# Build for production
+# 生产构建
 npm run build:mac   # macOS
 npm run build:win   # Windows
 npm run build:linux # Linux
 ```
 
-## Development
+---
+
+## 开发
 
 ```bash
-# Run in development mode
+# 开发模式
 npm run dev
 
-# Type checking
+# 类型检查
 npm run typecheck
 
-# Run tests
-npm run test
-
-# Format code
+# 代码格式化
 npm run format
 ```
 
-## Project Structure
+---
+
+## 项目结构
 
 ```
 ordorealm-code/
-├── electron/           # Electron main process
-│   ├── main/          # Main process entry
-│   ├── preload/       # Preload scripts
-│   └── adapters/      # Agent adapters
+├── electron/           # Electron 主进程
+│   ├── main/          # 主进程入口
+│   ├── preload/       # 预加载脚本
+│   └── adapters/      # 智能体适配器
 ├── src/
-│   ├── main/          # Main process logic
-│   ├── renderer/      # React renderer
-│   └── shared/        # Shared types
-├── resources/         # App resources (icons, etc.)
-└── build/            # Build configuration
+│   ├── main/          # 主进程逻辑
+│   ├── renderer/      # React 渲染进程
+│   └── shared/        # 共享类型定义
+├── resources/         # 应用资源（图标等）
+└── build/            # 构建配置
 ```
 
-## Technology Stack
+---
 
-- **Electron** - Cross-platform desktop app
-- **React** - UI framework
-- **TypeScript** - Type-safe JavaScript
-- **Tailwind CSS** - Utility-first CSS
-- **Zustand** - State management
-- **Monaco Editor** - Code editor
-- **Vite** - Build tool
+## 技术栈
 
-## Contributing
+| 技术 | 用途 |
+|------|------|
+| [Electron](https://www.electronjs.org/) | 跨平台桌面应用 |
+| [React](https://react.dev/) | UI 框架 |
+| [TypeScript](https://www.typescriptlang.org/) | 类型安全的 JavaScript |
+| [Tailwind CSS](https://tailwindcss.com/) | 原子化 CSS |
+| [Zustand](https://zustand-demo.pmnd.rs/) | 状态管理 |
+| [Monaco Editor](https://microsoft.github.io/monaco-editor/) | 代码编辑器 |
+| [Vite](https://vitejs.dev/) | 构建工具 |
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+---
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## 贡献
 
-## License
+欢迎提交 Pull Request！
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 提交 Pull Request
 
-## Acknowledgments
+---
 
-- [Anthropic](https://www.anthropic.com/) for Claude and Claude Code
-- [Electron](https://www.electronjs.org/) for the cross-platform framework
-- [React](https://react.dev/) for the UI framework
+## 许可证
+
+本项目基于 [MIT 许可证](LICENSE) 开源。
+
+---
+
+## 致谢
+
+- [Anthropic](https://www.anthropic.com/) - Claude 和 Claude Code
+- [Electron](https://www.electronjs.org/) - 跨平台框架
+- [React](https://react.dev/) - UI 框架
 
 ---
 
 <p align="center">
-  Made with ❤️ by <a href="https://github.com/ordorealm">OrdoRealm</a>
+  由 <a href="https://github.com/ordorealm">OrdoRealm</a> 用 ❤️ 制作
 </p>
+
+---
+
+## English
+
+### Features
+
+#### 🤖 Multi-Agent Support
+
+| Agent | Status | Description |
+|-------|--------|-------------|
+| **Claude Code** | ✅ Supported | Anthropic's official Claude coding assistant |
+| **Codex** | 🚧 Planned | OpenAI's coding agent |
+| **OpenCode** | 🚧 Planned | Open-source coding assistant |
+
+#### 💬 Intelligent Chat Interface
+- Real-time streaming responses
+- Tool use visualization
+- File change tracking
+- Message grouping
+
+#### 🔧 MCP Integration
+- Built-in MCP server management
+- External MCP server support
+
+#### 📁 Project Management
+- Multi-project workspace
+- File tree navigation
+- Code preview with syntax highlighting
+
+#### 🎨 Modern UI
+- Dark/Light theme
+- Responsive design
+- Per-session Provider/Model selection
+
+### Installation
+
+Download from [GitHub Releases](https://github.com/ordorealm/ordorealm-code/releases).
+
+### Build from Source
+
+```bash
+git clone https://github.com/ordorealm/ordorealm-code.git
+cd ordorealm-code
+npm install
+npm run download-runtime
+npm run download-weclaw
+npm run dev
+```
+
+### License
+
+[MIT License](LICENSE)

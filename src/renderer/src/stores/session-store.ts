@@ -4277,8 +4277,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         });
       });
 
-      // ★ 压缩指令：保留最近5轮完整对话，更早内容精简摘要
-      const compactInstructions = `永久保留最近5轮完整原始对话不压缩，更早所有对话精简摘要。摘要严格记录：用户硬性约束、已定参数、确定方案、遗留待解决内容。剔除：闲聊、无效试错、冗余日志。`;
+      // ★ 压缩指令：保留最近3轮完整对话，更早内容精简摘要
+      const compactInstructions = `永久保留最近3轮完整原始对话不压缩，更早所有对话精简摘要。摘要严格记录：用户硬性约束、已定参数、确定方案、遗留待解决内容。剔除：闲聊、无效试错、冗余日志。`;
 
       // 发送 /compact 命令（带自定义压缩指令）
       console.log(`[TRACE-AI] [FRONTEND] triggerCompact calling claude.sendMessage('/compact') | sessionId=${sessionId}`);
@@ -4296,20 +4296,32 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       const updatedSession = get().sessions[sessionId];
       const usage = updatedSession?.tokenUsage;
 
-      // ★ 无论压缩效果如何，都更新压缩时间戳（用于冷却机制）
-      const now = new Date().toISOString();
-      get().setLastCompactAt(sessionId, now);
-
       if (usage) {
         const newPercentage = (usage.inputTokens / usage.contextWindow) * 100;
         console.log('[SessionStore] After compact, percentage:', newPercentage.toFixed(1), '%');
 
-        // ★ 无论压缩效果如何，都重置 autoCompacted 标志
-        // 通过冷却时间机制（60秒）控制触发频率，而非一次性标志
+        // ★ 关键修改：压缩后 >90% 时自动重置会话
+        if (newPercentage > 90) {
+          console.warn('[SessionStore] ⚠️ Compact ineffective (>90%), auto-resetting session');
+          // 复用现有的 resetSession 方法，它会：
+          // 1. 提取最近5轮对话
+          // 2. 构建上下文摘要
+          // 3. 关闭旧会话，创建新会话
+          // 4. 更新 activeSessionId
+          await get().resetSession(sessionId);
+          // resetSession 会创建新会话，旧 sessionId 已失效，直接返回
+          return;
+        }
+
+        // ★ 只有未重置时才更新时间戳和标志
+        const now = new Date().toISOString();
+        get().setLastCompactAt(sessionId, now);
+
+        // 重置 autoCompacted 标志，允许后续再次触发压缩
         get().setAutoCompacted(sessionId, false);
 
         if (newPercentage > 80) {
-          console.warn('[SessionStore] ⚠️ Compact ineffective, still at', newPercentage.toFixed(1), '%');
+          console.warn('[SessionStore] ⚠️ Compact partial, still at', newPercentage.toFixed(1), '%');
           console.log('[SessionStore] Will allow retry after 60s cooldown');
         } else {
           console.log('[SessionStore] ✅ Compact effective, reduced to', newPercentage.toFixed(1), '%');

@@ -397,7 +397,7 @@ export interface RequestInputParams {
 export const CONTROLLER_CONFIG_PATH = '.claude/controller/config.json'
 export const SKILLS_DIR = '.claude/skills'
 export const AGENTS_DIR = '.claude/agents'
-export const STATE_FILE_PATH = '.superspec/runtime/state.json'
+export const STATE_FILE_PATH = '.claude/runtime/state.json'
 export const PRODUCT_SPEC_PATH = '.superspec/Product-Spec.md'
 export const DEV_PLAN_PATH = '.superspec/DEV-PLAN.md'
 

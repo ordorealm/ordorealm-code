@@ -228,8 +228,24 @@ export function groupMessages(messages: ChatMessage[]): GroupedMessage[] {
         const toolResult = toolResultMap.get(message.toolUseId);
         if (toolResult) {
           toolCall.output = toolResult.toolResult || toolResult.content;
-          toolCall.status = toolResult.isError ? 'error' : 'completed';
-          toolCall.isError = toolResult.isError;
+
+          // ★ 特殊处理：AskUserQuestion 的 "deny" 实际上是用户回答，不是错误
+          // SDK 的 canUseTool 返回 { behavior: 'deny', message: '用户答案' } 时
+          // 会标记为 isError，但这对于 AskUserQuestion 来说不是真正的错误
+          if (toolResult.isError) {
+            if (toolCall.name === 'AskUserQuestion' &&
+                (toolCall.output?.includes('用户已回答') ||
+                 toolCall.output?.includes('User answered'))) {
+              // 用户回答了问题，这是成功状态
+              toolCall.status = 'completed';
+              toolCall.isError = false;
+            } else {
+              toolCall.status = 'error';
+              toolCall.isError = true;
+            }
+          } else {
+            toolCall.status = 'completed';
+          }
           processedIds.add(toolResult.id); // Mark tool_result as processed
         }
       } else {

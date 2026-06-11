@@ -9,7 +9,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useSessionStore, COMPACT_COOLDOWN_MS } from '@/stores/session-store';
+import { useSessionStore, COMPACT_COOLDOWN_MS, OUTPUT_TOKEN_RESERVE } from '@/stores/session-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useFileTreeStore } from '@/stores/filetree-store';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
@@ -633,10 +633,9 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     }
 
     const total = usage.contextWindow || 200000;
-    // ★ 修正：inputTokens 已是 SDK 返回的真实总使用量，不需要再加 outputTokens
-    // 避免重复计算导致 >100%
-    const used = usage.inputTokens;
-    const pct = (used / total) * 100;
+    // ★ 有效使用量：输入 + 输出预留空间（32K）
+    const effectiveUsed = usage.inputTokens + OUTPUT_TOKEN_RESERVE;
+    const pct = (effectiveUsed / total) * 100;
 
     // Determine color based on percentage
     let color: string;
@@ -649,7 +648,7 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
     }
 
     return {
-      usedK: Math.round(used / 1000 * 10) / 10, // One decimal place
+      usedK: Math.round(effectiveUsed / 1000 * 10) / 10, // 显示 输入 + 预留
       totalK: Math.round(total / 1000),
       percentage: Math.round(pct * 10) / 10,
       colorClass: color,

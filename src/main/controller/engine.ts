@@ -216,12 +216,13 @@ export class ControllerEngine {
     logger.info(`Agent timeout: ${timeoutMinutes} minutes (${timeoutMs}ms)`)
 
     // 注册 Agent
+    const abortSignal = this.abortController?.signal
     for (const agentName of availableAgents) {
       agentRegistry.register(agentName, {
         name: agentName,
         description: `Agent: ${agentName}`,
         execute: async (input: Record<string, unknown>) => {
-          return await this.sessionApi!.callAgent(agentName, input, timeoutMs)
+          return await this.sessionApi!.callAgent(agentName, input, timeoutMs, abortSignal)
         }
       })
     }

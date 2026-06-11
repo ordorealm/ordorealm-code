@@ -155,7 +155,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
    */
   const handleSend = useCallback(() => {
     const trimmedValue = value.trim();
-    if (!trimmedValue || isLoading || disabled) return;
+    if (!trimmedValue || isLoading || isStreaming || disabled) return;
 
     onSend(trimmedValue);
     setValue('');
@@ -165,7 +165,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [value, isLoading, disabled, onSend, onValueChange]);
+  }, [value, isLoading, isStreaming, disabled, onSend, onValueChange]);
 
   /**
    * Handle keyboard shortcuts
@@ -219,7 +219,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
     }
   }, [isLoading, isStreaming]);
 
-  const canSend = value.trim().length > 0 && !isLoading && !disabled;
+  const canSend = value.trim().length > 0 && !isLoading && !isStreaming && !disabled;
 
   return (
     <div className="flex items-end gap-2 p-3 bg-bg-primary border-t border-border">
@@ -233,7 +233,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(
           onCompositionStart={handleCompositionStart}
           onCompositionEnd={handleCompositionEnd}
           placeholder={placeholder}
-          disabled={disabled || isLoading}
+          disabled={disabled || isLoading || isStreaming}
           rows={1}
           className={`
             w-full resize-none rounded-lg border border-border

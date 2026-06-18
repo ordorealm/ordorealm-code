@@ -545,7 +545,7 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
             <span>🗑️</span>
             <div className="flex flex-col">
               <span>会话重置</span>
-              <span className="text-xs text-accent-red/70">清空历史，新建会话</span>
+              <span className="text-xs text-accent-red/70">保留前5轮会话，新建会话</span>
             </div>
           </button>
         </div>
@@ -558,7 +558,7 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
         message={
           sessionActionDialog.action === 'restart'
             ? `确定要重启会话吗？这将断开当前 Agent 连接并重新建立连接，历史消息将保留。`
-            : `确定要重置会话吗？这将清空所有历史消息并创建新的会话，此操作不可撤销。`
+            : `确定要重置会话吗？这将保留前5轮对话历史并创建新的会话，此操作不可撤销。`
         }
         confirmText={sessionActionDialog.action === 'restart' ? '确认重启' : '确认重置'}
         cancelText="取消"

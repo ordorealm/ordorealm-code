@@ -684,98 +684,60 @@ async function getOrCreateSession(
         type: 'preset',
         preset: 'claude_code',
         append: `
-## ⚡ 代码查询优先级规则（必须遵守）
+## 可用 MCP 工具
 
-**在读取任何代码文件之前，必须先尝试使用 CodeGraph 工具！**
+### 代码相关
+- **CodeGraph** (\`mcp__codegraph__*\`): 代码知识图谱，理解代码时优先使用 \`codegraph_explore\`
 
-### CodeGraph (mcp__codegraph__*) - 代码知识图谱
-CodeGraph 是预索引的代码知识图谱，读取速度亚毫秒级，比 Read/Grep 快 100 倍以上。
+### 网络相关
+- **Open WebSearch** (\`mcp__open-websearch__search\`): 网络搜索，免费无需 API Key
+- **Fetch** (\`mcp__fetch__get_markdown\`): 网页内容抓取
 
-**使用场景：**
-- 理解代码架构、查找符号定义、分析调用关系
-- "X 是什么"、"X 在哪里定义"、"谁调用了 X"
-- "X 如何工作"、"从 X 到 Y 的流程"
+### 浏览器自动化
+- **Playwright** (\`mcp__playwright__*\`): 独立浏览器实例，适合测试验证
+- **MCPBrowser** (\`mcp__mcpbrowser__*\`): 复用用户浏览器，适合需要登录的操作
 
-**工具选择：**
-- \`codegraph_explore\`: 主要工具，回答大多数问题（返回相关符号源码）
-- \`codegraph_search\`: 仅查找符号位置（无代码）
-- \`codegraph_callers\` / \`codegraph_callees\`: 查找调用关系
-- \`codegraph_impact\`: 分析修改影响范围
-
-**重要：** 除非 CodeGraph 没有索引或找不到，否则不要使用 Read/Grep 读取代码文件。
-
----
-
-## 内置 MCP 工具使用指南
-
-当用户询问以下内容时，请自动调用相应的 MCP 工具：
-
-### 1. 网络搜索 (mcp__open-websearch__search)
-用于搜索网络信息，包括但不限于：
-- 天气查询：用户问"今天天气"、"北京天气"等，调用 search 工具
-- 新闻资讯：用户问"最新新闻"、"科技新闻"等
-- 知识查询：用户问"什么是..."、"如何..."等需要搜索的问题
-
-### 2. 网页内容抓取 (mcp__fetch__get_markdown)
-用于获取网页内容：
-- 用户需要查看某个网页的内容时
-- 用户提供了 URL 并希望获取其内容时
-
-### 3. 浏览器自动化
-**Playwright** (mcp__playwright__*): 侧重测试，独立浏览器实例，适合页面交互验证
-**MCPBrowser** (mcp__mcpbrowser__*): 侧重自动化，复用用户浏览器保持Cookie，适合登录操作
-
-常用流程：browser_fetch_webpage → browser_detect_forms → browser_type_text → browser_click_element
-
+### 系统自动化
 ${process.platform === 'win32'
-  ? `### 4. 桌面控制 (mcp__desktop-touch__*)
-用于 Windows 桌面自动化，提供以下工具：
-
-**截图工具：**
-- bot_screenshot: 截取指定进程窗口截图
-- bot_screenshot_fullscreen: 截取整个屏幕
-
-**鼠标操作：**
-- bot_click: 点击指定位置（支持 bbox 归一化坐标）
-- bot_move_mouse: 移动鼠标
-- bot_drag: 拖拽操作
-- bot_scroll: 滚动
-- bot_get_mouse_position: 获取鼠标位置
-
-**键盘操作：**
-- bot_type_text: 输入文本
-- bot_hotkey: 快捷键组合（如 Ctrl+C）
-- bot_press_key / bot_release_key: 按键控制
-
-**窗口管理：**
-- bot_list_windows: 列出所有窗口
-- bot_activate_window: 激活窗口
-- bot_get_window_info: 获取窗口信息
-
-**使用流程：**
-1. 先用 bot_list_windows 查看可用窗口
-2. 用 bot_screenshot 截图并获取 windowBounds
-3. 根据截图内容用 bot_click 点击（传入 windowBounds）`
-  : `### 4. macOS 自动化 (mcp__macos-automator__*)
-用于 macOS 系统自动化：
-- 执行 AppleScript、运行快捷指令、系统控制`
+  ? `- **Desktop Control** (\`mcp__desktop-touch__*\`): Windows 桌面自动化（鼠标键盘、窗口管理、截图）`
+  : `- **macOS Automator** (\`mcp__macos-automator__*\`): AppleScript、快捷指令、系统控制`
 }
 
-### 5. 知识记忆系统 (mcp__memory__*) - 重要！
-Memory MCP 是跨会话持久化记忆系统，AI 必须主动使用它来存储和查询重要信息。
+### 记忆系统
+- **Memory** (\`mcp__memory__*\`): 跨会话知识记忆
+  - \`read_graph\`: 读取全部记忆
+  - \`search_nodes(query)\`: 搜索记忆
+  - \`create_entities\`: 创建实体
+  - \`add_observations\`: 添加观察
 
-**什么时候必须存储记忆？**
-- 用户说"记住..."、"别忘了..."、"记下来..."
-- 用户提供了重要的个人信息（姓名、偏好、联系方式等）
-- 用户明确要求下次记住某些设置
+## 开发工作流程
 
-**什么时候必须查询记忆？**
-- 每次对话开始时，先查询历史记忆
-- 用户问"之前说的..."、"上次提到的..."
+### 功能开发
+1. **先了解再动手**：使用 CodeGraph 全面理解业务代码和架构
+2. **先计划再确认**：输出实现方案（含文件列表、关键改动），等用户确认后再编码
+3. **禁止猜测**：不确定的地方必须先问用户或使用 Open WebSearch 查询线上资料文档
 
-**重要**：当用户的问题可以通过上述工具解决时，请主动调用工具，不要询问用户是否需要使用工具。
-`}
+### 问题修复
+1. **先定位根因**：通过日志、错误栈、代码分析找到根本原因
+2. **先方案再确认**：输出修复方案（含根因分析、修复步骤），等用户确认后再修改
+3. **禁止盲目修改**：不能"试试看"式修复
 
+### 功能测试
+1. **端到端测试**：使用 Playwright/MCPBrowser 自动测试完整流程
+2. **主动获取日志**：通过后台日志、浏览器控制台、前端日志自动收集信息
+3. **禁止问用户要日志**：你有工具能力，自己获取
+
+### 完成标准
+1. **代码复核**：开发完成后必须复核一遍代码，确保逻辑正确、无遗漏
+2. **提交 Git**：复核通过后，提交代码到当前 Git 分支，写清楚 commit message
+
+## 核心规则
+
+1. **代码优先 CodeGraph**：理解代码时先用 \`codegraph_explore\`，仅无索引时用 Read
+2. **主动使用记忆**：会话开始读 \`read_graph\`，发现重要信息存 \`create_entities\`
+3. **主动调用 MCP 工具**：用户问题可用 MCP 工具解决时，直接调用不询问
+`
+      }
       // ★ 集成内置 MCP 服务
       try {
         const mcpConnector = getMCPConnector()

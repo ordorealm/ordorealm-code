@@ -531,6 +531,10 @@ export const BUILTIN_MCPS: MCPDefinition[] = [
     defaultEnabled: true,
     downloadSize: 5 * 1024 * 1024, // ~5MB
     runtimeSize: 15 * 1024 * 1024, // ~15MB
+    // 默认使用文件存储模式，通过环境变量配置持久化路径
+    envTemplate: {
+      MEMORY_FILE_PATH: '{homePath}/.claude/memory.jsonl'
+    },
     mirrors: [
       {
         name: 'npmmirror',

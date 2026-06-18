@@ -194,13 +194,24 @@ export class MCPLauncher implements MCPLauncherInterface {
 
   /**
    * 构建启动参数
+   * 支持占位符替换：
+   * - {homePath} -> 用户主目录
+   * - {userDataPath} -> 应用用户数据目录
    */
   private buildArgs(definition: MCPDefinition, entryPoint: string): string[] {
     const args: string[] = [entryPoint]
 
     // 添加 MCP 特定参数
     if (definition.argsTemplate) {
-      args.push(...definition.argsTemplate)
+      const homePath = app.getPath('home')
+      const userDataPath = app.getPath('userData')
+
+      // 替换占位符
+      const processedArgs = definition.argsTemplate.map(arg =>
+        arg.replace(/{homePath}/g, homePath)
+           .replace(/{userDataPath}/g, userDataPath)
+      )
+      args.push(...processedArgs)
     }
 
     return args
@@ -208,6 +219,9 @@ export class MCPLauncher implements MCPLauncherInterface {
 
   /**
    * 构建环境变量
+   * 支持占位符替换：
+   * - {homePath} -> 用户主目录
+   * - {userDataPath} -> 应用用户数据目录
    */
   private buildEnv(definition: MCPDefinition): Record<string, string> {
     const env: Record<string, string> = {
@@ -218,7 +232,16 @@ export class MCPLauncher implements MCPLauncherInterface {
 
     // 添加 MCP 特定环境变量
     if (definition.envTemplate) {
-      Object.assign(env, definition.envTemplate)
+      const homePath = app.getPath('home')
+      const userDataPath = app.getPath('userData')
+
+      // 替换占位符
+      for (const [key, value] of Object.entries(definition.envTemplate)) {
+        const processedValue = value
+          .replace(/{homePath}/g, homePath)
+          .replace(/{userDataPath}/g, userDataPath)
+        env[key] = processedValue
+      }
     }
 
     return env

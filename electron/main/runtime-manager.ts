@@ -473,11 +473,133 @@ export class RuntimeManager {
       }
     }
 
-    // Add system PATH
-    const systemPath = process.env.PATH || '';
+    // Add system PATH (Windows: use triple fallback, macOS/Linux: use process.env)
+    const systemPath = process.platform === 'win32'
+      ? this.getWindowsSystemPath()
+      : (process.env.PATH || '');
     paths.push(systemPath);
 
     return paths.join(path.delimiter);
+  }
+
+  /**
+   * Get Windows system PATH with triple fallback
+   * Priority: Registry → CMD → process.env.PATH
+   */
+  private getWindowsSystemPath(): string {
+    const { execSync } = require('child_process');
+
+    // Method 1: Read from Windows Registry (most reliable)
+    try {
+      const regPaths: string[] = [];
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const regExe = `${systemRoot}\\System32\\reg.exe`;
+
+      // System-level PATH (HKLM)
+      try {
+        const systemResult = execSync(
+          `"${regExe}" query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v PATH`,
+          { encoding: 'utf8', timeout: 5000 }
+        );
+        const systemPath = this.parseRegPathOutput(systemResult);
+        if (systemPath) {
+          regPaths.push(systemPath);
+        }
+      } catch { /* ignore */ }
+
+      // User-level PATH (HKCU)
+      try {
+        const userResult = execSync(
+          `"${regExe}" query "HKCU\\Environment" /v PATH`,
+          { encoding: 'utf8', timeout: 5000 }
+        );
+        const userPath = this.parseRegPathOutput(userResult);
+        if (userPath) {
+          regPaths.push(userPath);
+        }
+      } catch { /* ignore */ }
+
+      if (regPaths.length > 0) {
+        // Expand environment variables (e.g., %USERPROFILE%, %SystemRoot%)
+        const full = this.expandEnvVars(regPaths.join(';'));
+        console.log('[RuntimeManager] Windows PATH from registry, length:', full.length);
+        return full;
+      }
+    } catch (err) {
+      console.warn('[RuntimeManager] Registry method failed:', err);
+    }
+
+    // Method 2: Get from CMD (fallback)
+    try {
+      const cmdPath = execSync(
+        'cmd /c "echo %PATH%"',
+        { encoding: 'utf8', timeout: 5000 }
+      ).trim();
+      if (cmdPath && cmdPath.length > 0) {
+        console.log('[RuntimeManager] Windows PATH from CMD, length:', cmdPath.length);
+        return cmdPath;
+      }
+    } catch (err) {
+      console.warn('[RuntimeManager] CMD method failed:', err);
+    }
+
+    // Method 3: Fallback to process.env.PATH
+    console.log('[RuntimeManager] Using process.env.PATH as fallback');
+    return process.env.PATH || '';
+  }
+
+  /**
+   * Parse reg.exe output to extract PATH value
+   * Handles different output formats across Windows versions
+   */
+  private parseRegPathOutput(output: string): string | null {
+    // Remove line breaks for easier parsing
+    const normalized = output.replace(/\r?\n/g, ' ').trim();
+
+    // Pattern 1: Standard format "PATH    REG_SZ    value" or "PATH    REG_EXPAND_SZ    value"
+    // The value may contain spaces and special characters
+    const match1 = normalized.match(/PATH\s+REG_(?:EXPAND_)?SZ\s+(.+?)(?:\s*$|\s{2,})/i);
+    if (match1 && match1[1]) {
+      return match1[1].trim();
+    }
+
+    // Pattern 2: Alternative format with different spacing
+    const match2 = normalized.match(/PATH\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+    if (match2 && match2[1]) {
+      // Remove trailing whitespace or control characters
+      return match2[1].trim();
+    }
+
+    return null;
+  }
+
+  /**
+   * Expand Windows environment variables in a path string
+   * E.g., %USERPROFILE%\bin -> C:\Users\username\bin
+   */
+  private expandEnvVars(pathStr: string): string {
+    // Common environment variables to expand
+    const envVars: Record<string, string> = {
+      '%USERPROFILE%': process.env.USERPROFILE || '',
+      '%SystemRoot%': process.env.SystemRoot || 'C:\\Windows',
+      '%ProgramFiles%': process.env.ProgramFiles || 'C:\\Program Files',
+      '%ProgramFiles(x86)%': process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+      '%APPDATA%': process.env.APPDATA || '',
+      '%LOCALAPPDATA%': process.env.LOCALAPPDATA || '',
+      '%ProgramData%': process.env.ProgramData || 'C:\\ProgramData',
+      '%COMSPEC%': process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe',
+    };
+
+    let result = pathStr;
+    for (const [varName, varValue] of Object.entries(envVars)) {
+      if (varValue) {
+        // Case-insensitive replacement
+        const regex = new RegExp(varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        result = result.replace(regex, varValue);
+      }
+    }
+
+    return result;
   }
 
   /**

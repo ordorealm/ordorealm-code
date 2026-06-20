@@ -73,7 +73,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
   constructor() {
     super()
     this.claudeExecutablePath = this.findClaudeExecutable()
-    console.log(`[ClaudeSdkAdapter] Executable path: ${this.claudeExecutablePath}`)
   }
 
   /**
@@ -82,10 +81,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
   setRuntimeManager(runtimeManager: RuntimeManager): void {
     this.runtimeManager = runtimeManager
     this.runtimeEnvConfig = runtimeManager.getEnvConfig()
-    console.log('[ClaudeSdkAdapter] Runtime manager configured')
-    console.log('[ClaudeSdkAdapter] Node.js:', this.runtimeEnvConfig.nodePath)
-    console.log('[ClaudeSdkAdapter] Git:', this.runtimeEnvConfig.gitPath)
-    console.log('[ClaudeSdkAdapter] Shell:', this.runtimeEnvConfig.shell)
   }
 
   /**
@@ -108,7 +103,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
     if (!this.sdkModule) {
       try {
         this.sdkModule = await import('@anthropic-ai/claude-agent-sdk')
-        console.log('[ClaudeSdkAdapter] SDK loaded successfully')
       } catch (err) {
         console.error('[ClaudeSdkAdapter] Failed to load SDK:', err)
         throw new Error(
@@ -124,7 +118,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
   // ── Public Interface ───────────────────────────────────────────────────────
 
   async startSession(sessionId: string, config: AdapterSessionConfig): Promise<void> {
-    console.log(`[ClaudeSdkAdapter] Starting session: ${sessionId}`)
 
     // Create session context
     const session: ClaudeSession = {
@@ -232,7 +225,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
       const mcpCount = Object.keys(mcpServerConfigs).length
 
       if (mcpCount > 0) {
-        console.log(`[ClaudeSdkAdapter] 集成 ${mcpCount} 个内置 MCP 服务`)
         // 合并到现有 mcpServers 配置中
         sdkOptions.mcpServers = {
           ...sdkOptions.mcpServers,
@@ -243,7 +235,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
       console.warn('[ClaudeSdkAdapter] 获取 MCP 服务配置失败:', err)
     }
 
-    console.log('[ClaudeSdkAdapter] Starting query with model:', config.model || 'default')
 
     // Create SDK query
     const sdkQuery: SDKQuery = sdk.query({
@@ -260,7 +251,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
 
     // Handle initial prompt if provided
     if (config.initialPrompt) {
-      console.log('[ClaudeSdkAdapter] Sending initial prompt')
       inputStream.enqueue({
         type: 'user',
         message: {
@@ -277,7 +267,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
       throw new Error(`Session ${sessionId} not ready`)
     }
 
-    console.log(`[ClaudeSdkAdapter] Sending message to session: ${sessionId}`)
 
     // Reset current text
     session.currentText = ''
@@ -292,19 +281,16 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
       },
     })
 
-    console.log(`[ClaudeSdkAdapter] Message enqueued`)
   }
 
   async sendConfirmation(sessionId: string, accept: boolean): Promise<void> {
     // Claude SDK uses autoAccept mode, no manual confirmation needed
-    console.log(`[ClaudeSdkAdapter] Confirmation requested: ${accept}`)
   }
 
   async abortCurrentTurn(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[ClaudeSdkAdapter] Aborting turn for session: ${sessionId}`)
 
     if (session.sdkQuery) {
       try {
@@ -325,7 +311,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[ClaudeSdkAdapter] Terminating session: ${sessionId}`)
 
     // Close input stream
     session.inputStream?.close()
@@ -371,7 +356,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
   }
 
   cleanup(): void {
-    console.log(`[ClaudeSdkAdapter] Cleaning up`)
     for (const [sessionId, session] of this.sessions) {
       session.inputStream?.close()
       session.abortController?.abort()
@@ -389,15 +373,12 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
   private async consumeStream(sessionId: string, session: ClaudeSession): Promise<void> {
     if (!session.sdkQuery) return
 
-    console.log(`[ClaudeSdkAdapter] Starting stream consumer for session: ${sessionId}`)
 
     try {
       for await (const msg of session.sdkQuery) {
-        console.log(`[ClaudeSdkAdapter] Message type: ${msg.type}, subtype: ${msg.subtype}`)
         this.handleSdkMessage(sessionId, msg, session)
       }
 
-      console.log(`[ClaudeSdkAdapter] Stream ended for session: ${sessionId}`)
     } catch (err: any) {
       this.handleStreamError(sessionId, err)
     }
@@ -429,7 +410,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
 
   private handleSystemMessage(sessionId: string, msg: any): void {
     if (msg.subtype === 'init') {
-      console.log('[ClaudeSdkAdapter] Initialized:', msg.model)
       this.updateSessionStatus(sessionId, 'connected')
     }
   }
@@ -482,7 +462,6 @@ export class ClaudeSdkAdapter extends BaseProviderAdapter {
 
   private handleResultMessage(sessionId: string, msg: any, session: ClaudeSession): void {
     const isSuccess = msg.subtype === 'success'
-    console.log('[ClaudeSdkAdapter] Result:', isSuccess ? 'success' : 'failed')
 
     if (isSuccess) {
       this.emitTurnComplete(sessionId, msg.usage)

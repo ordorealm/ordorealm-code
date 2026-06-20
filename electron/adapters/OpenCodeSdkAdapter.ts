@@ -153,7 +153,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
   constructor() {
     super()
     this.opencodeExecutablePath = findOpenCodeExecutable()
-    console.log(`[OpenCodeAdapter] Executable path: ${this.opencodeExecutablePath}`)
   }
 
   /**
@@ -166,7 +165,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
       try {
         // Dynamic import - module may not be installed
         this.sdkModule = await import(/* webpackIgnore: true */ '@opencode-ai/sdk')
-        console.log('[OpenCodeAdapter] SDK loaded successfully')
       } catch (err) {
         console.error('[OpenCodeAdapter] Failed to load SDK:', err)
         throw new Error(
@@ -181,7 +179,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
   // ── Public Interface ───────────────────────────────────────────────────────
 
   async startSession(sessionId: string, config: AdapterSessionConfig): Promise<void> {
-    console.log(`[OpenCodeAdapter] Starting session: ${sessionId}`)
 
     // Create session context
     const session: OpenCodeSession = {
@@ -199,7 +196,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
       // Find available port
       const port = await findAvailablePort()
       session.port = port
-      console.log(`[OpenCodeAdapter] Using port: ${port}`)
 
       // Spawn OpenCode server
       const executable = config.executablePath || this.opencodeExecutablePath || 'opencode'
@@ -221,7 +217,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
 
       // Handle exit
       proc.on('exit', (code) => {
-        console.log(`[OpenCodeAdapter] Server exited with code: ${code}`)
         this.emitSessionComplete(sessionId, code ?? 0)
         this.sessions.delete(sessionId)
       })
@@ -239,7 +234,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
         project: config.workingDirectory,
       })
       session.opencodeSessionId = sessionResult.id
-      console.log(`[OpenCodeAdapter] OpenCode session created: ${session.opencodeSessionId}`)
 
       // Subscribe to events
       const abortController = new AbortController()
@@ -254,7 +248,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
       })
 
       this.updateSessionStatus(sessionId, 'connected')
-      console.log(`[OpenCodeAdapter] Session ready: ${sessionId}`)
     } catch (err) {
       console.error(`[OpenCodeAdapter] Failed to start session:`, err)
       this.updateSessionStatus(sessionId, 'error')
@@ -268,7 +261,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
       throw new Error(`Session ${sessionId} not ready`)
     }
 
-    console.log(`[OpenCodeAdapter] Sending message to session: ${sessionId}`)
 
     // Reset current text
     session.currentAssistantText = ''
@@ -278,7 +270,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
       await session.client.session.prompt(session.opencodeSessionId, {
         prompt: message,
       })
-      console.log(`[OpenCodeAdapter] Message sent`)
     } catch (err) {
       console.error(`[OpenCodeAdapter] Failed to send message:`, err)
       this.updateSessionStatus(sessionId, 'error')
@@ -289,14 +280,12 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
   async sendConfirmation(sessionId: string, accept: boolean): Promise<void> {
     // OpenCode doesn't use the same confirmation flow
     // Permission requests are handled differently
-    console.log(`[OpenCodeAdapter] Confirmation requested: ${accept}`)
   }
 
   async abortCurrentTurn(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[OpenCodeAdapter] Aborting turn for session: ${sessionId}`)
     // Abort SSE subscription
     session.sseAbortController?.abort()
     this.updateSessionStatus(sessionId, 'connected')
@@ -306,7 +295,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[OpenCodeAdapter] Terminating session: ${sessionId}`)
 
     // Abort SSE
     session.sseAbortController?.abort()
@@ -345,7 +333,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
   }
 
   cleanup(): void {
-    console.log(`[OpenCodeAdapter] Cleaning up`)
     for (const [sessionId, session] of this.sessions) {
       session.sseAbortController?.abort()
       if (session.serverProcess) {
@@ -371,7 +358,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
           socket.once('error', reject)
           socket.connect(port, '127.0.0.1')
         })
-        console.log(`[OpenCodeAdapter] Server ready on port ${port}`)
         return
       } catch {
         await new Promise((r) => setTimeout(r, 100))
@@ -385,7 +371,6 @@ export class OpenCodeSdkAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[OpenCodeAdapter] Event: ${event.type}`)
 
     switch (event.type) {
       case 'message':

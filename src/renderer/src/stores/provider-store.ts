@@ -41,7 +41,6 @@ async function reconfigureAgentWithProvider(provider: Provider): Promise<void> {
     });
 
     // 连接 Agent
-    console.log(`[ProviderStore] Reconfiguring agent with provider: ${provider.name}`);
     await agentStore.connect();
   } catch (error) {
     console.error('[ProviderStore] Failed to reconfigure agent:', error);
@@ -63,12 +62,10 @@ async function backupAndResetProviders(filePath: string): Promise<void> {
     if (result?.success && result?.content) {
       // 备份损坏的文件
       await window.electron.ipcRenderer.invoke('fs:writeFile', backupPath, result.content);
-      console.log(`Backed up corrupted providers file to: ${backupPath}`);
     }
 
     // 重置 providers 文件
     await writeJsonFile(filePath, { providers: [], activeProviderId: null });
-    console.log('Providers file has been reset');
   } catch (backupError) {
     console.error('Failed to backup corrupted file:', backupError);
     // 即使备份失败，也尝试重置
@@ -115,7 +112,6 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
         await initializeStorage();
         await get().loadProviders();
         initialized = true;
-        console.log('Provider store initialized');
       } catch (error) {
         console.error('Failed to initialize provider store:', error);
         initPromise = null;
@@ -134,16 +130,12 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
   addProvider: async (provider) => {
     const { name, agentType, apiType, apiKey, baseUrl, defaultModel, isDefault } = provider;
 
-    console.log('[ProviderStore] addProvider called:', { name, agentType, apiType, isDefault });
-
     // 验证 API Key 格式（支持第三方）
     const formatCheck = validateKeyFormat(apiType, apiKey, baseUrl);
     if (!formatCheck.valid) {
       console.error('[ProviderStore] API Key format invalid:', formatCheck.message);
       throw new Error(formatCheck.message);
     }
-
-    console.log('[ProviderStore] API Key format valid');
 
     // 生成新 Provider（明文存储 API Key）
     const now = new Date().toISOString();
@@ -163,8 +155,6 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
       updatedAt: now,
     };
 
-    console.log('[ProviderStore] New provider created:', newProvider.id);
-
     // 如果设置为默认，更新同 agentType 的其他 Provider
     let updatedProviders = [...get().providers];
     if (isDefault) {
@@ -181,12 +171,10 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
       activeProviderId: isDefault ? newProvider.id : get().activeProviderId,
     });
 
-    console.log('[ProviderStore] State updated, calling saveProviders...');
     await get().saveProviders();
 
     // 如果设置为默认，重新配置 Agent
     if (isDefault) {
-      console.log('[ProviderStore] Reconfiguring agent...');
       await reconfigureAgentWithProvider(newProvider);
     }
   },
@@ -194,18 +182,11 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
   updateProvider: async (id, updates) => {
     const { providers } = get();
 
-    console.log('[ProviderStore] updateProvider called, id:', id);
-    console.log('[ProviderStore] updates keys:', Object.keys(updates));
-    console.log('[ProviderStore] updates.apiKey exists:', !!updates.apiKey);
-    console.log('[ProviderStore] updates.apiKey (first 20 chars):', updates.apiKey?.substring(0, 20));
-    console.log('[ProviderStore] updates.apiKey length:', updates.apiKey?.length);
-
     // 如果更新 API Key，验证格式
     if (updates.apiKey) {
       const provider = providers.find(p => p.id === id);
       if (provider) {
         const formatCheck = validateKeyFormat(provider.apiType, updates.apiKey, updates.baseUrl || provider.baseUrl);
-        console.log('[ProviderStore] Key format check:', formatCheck);
         if (!formatCheck.valid) {
           throw new Error(formatCheck.message);
         }
@@ -286,8 +267,6 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
           providers: data.providers,
           activeProviderId: data.activeProviderId || null,
         });
-
-        console.log(`[ProviderStore] Loaded ${data.providers.length} providers from ${filePath}`);
       } else if (data) {
         // 文件存在但数据格式不正确，可能是损坏
         console.warn('[ProviderStore] Providers data format invalid, resetting to empty state');
@@ -315,36 +294,18 @@ export const useProviderStore = create<ProviderState & ProviderActions>((set, ge
       const dataPath = await getUserDataPathAsync();
       const filePath = `${dataPath}/providers.json`;
 
-      console.log('[ProviderStore] Saving providers to:', filePath);
-      console.log('[ProviderStore] Providers count:', providers.length);
-
       // 确保目录存在
-      const dirResult = await ensureDir(dataPath);
-      console.log('[ProviderStore] ensureDir result:', dirResult);
+      await ensureDir(dataPath);
 
       // 构建保存数据
       const data = {
         providers,
         activeProviderId,
       };
-      // 日志输出时隐藏敏感数据
-      const safeDataLog = JSON.stringify({
-        providers: providers.map(p => ({
-          id: p.id,
-          name: p.name,
-          agentType: p.agentType,
-          apiKey: p.apiKey ? `[${p.apiKey.length}chars]` : '[empty]'
-        })),
-        activeProviderId
-      }, null, 2);
-      console.log('[ProviderStore] Data to save:', safeDataLog);
 
       const success = await writeJsonFile(filePath, data);
-      console.log('[ProviderStore] writeJsonFile result:', success);
 
-      if (success) {
-        console.log(`[ProviderStore] Saved ${providers.length} providers to ${filePath}`);
-      } else {
+      if (!success) {
         console.error('[ProviderStore] Failed to save providers');
       }
     } catch (error) {

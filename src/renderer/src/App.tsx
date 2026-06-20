@@ -47,7 +47,6 @@ function useAppInitialization() {
         // Configure and connect agent
         await initializeAgent();
 
-        console.log('[App] Initialization complete');
         setIsInitialized(true);
       } catch (error) {
         console.error('[App] Initialization failed:', error);
@@ -74,7 +73,6 @@ async function initializeAgent(): Promise<void> {
                           providerStore.providers[0];
 
   if (!defaultProvider) {
-    console.log('[App] No provider configured, agent will not connect');
     return;
   }
 
@@ -90,11 +88,9 @@ async function initializeAgent(): Promise<void> {
   });
 
   // Connect to agent service
-  console.log(`[App] Connecting agent with provider: ${defaultProvider.name}`);
   await agentStore.connect();
 
   if (agentStore.status === 'connected') {
-    console.log('[App] Agent connected successfully');
   } else {
     console.warn('[App] Agent connection failed:', agentStore.lastError);
   }

@@ -180,13 +180,11 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
   constructor() {
     super()
     this.codexExecutablePath = findCodexExecutable()
-    console.log(`[CodexAdapter] Executable path: ${this.codexExecutablePath}`)
   }
 
   // ── Public Interface ───────────────────────────────────────────────────────
 
   async startSession(sessionId: string, config: AdapterSessionConfig): Promise<void> {
-    console.log(`[CodexAdapter] Starting session: ${sessionId}`)
 
     // Create session context
     const session: CodexSession = {
@@ -201,7 +199,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
     const executable = config.executablePath || this.codexExecutablePath || 'codex'
     const args = ['app-server', '--jsonrpc']
 
-    console.log(`[CodexAdapter] Spawning: ${executable} ${args.join(' ')}`)
 
     const proc = spawn(executable, args, {
       cwd: config.workingDirectory,
@@ -227,7 +224,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
 
     // Handle process exit
     proc.on('exit', (code) => {
-      console.log(`[CodexAdapter] Process exited with code: ${code}`)
       this.emitSessionComplete(sessionId, code ?? 0)
       this.sessions.delete(sessionId)
     })
@@ -239,7 +235,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
         capabilities: {},
         clientInfo: { name: 'DevFlow', version: '1.0.0' },
       })
-      console.log(`[CodexAdapter] Initialized`)
 
       // Send initialized notification
       this.sendNotification(sessionId, 'notifications/initialized', {})
@@ -258,7 +253,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
       throw new Error(`Session ${sessionId} not ready`)
     }
 
-    console.log(`[CodexAdapter] Sending message to session: ${sessionId}`)
 
     // Reset current text
     session.currentText = ''
@@ -271,7 +265,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
         prompt: message,
       }) as { turnId: string }
       session.currentTurnId = result.turnId
-      console.log(`[CodexAdapter] Turn started: ${result.turnId}`)
     } catch (err) {
       console.error(`[CodexAdapter] Failed to start turn:`, err)
       this.updateSessionStatus(sessionId, 'error')
@@ -285,7 +278,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
       throw new Error(`No pending confirmation for session ${sessionId}`)
     }
 
-    console.log(`[CodexAdapter] Sending confirmation: ${accept}`)
 
     try {
       await this.sendRequest(sessionId, 'thread/turn/response', {
@@ -302,7 +294,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[CodexAdapter] Aborting turn for session: ${sessionId}`)
 
     if (session.currentTurnId) {
       try {
@@ -321,7 +312,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[CodexAdapter] Terminating session: ${sessionId}`)
 
     if (session.process) {
       session.process.kill()
@@ -356,7 +346,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
   }
 
   cleanup(): void {
-    console.log(`[CodexAdapter] Cleaning up`)
     for (const [sessionId, session] of this.sessions) {
       if (session.process) {
         session.process.kill()
@@ -395,7 +384,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
 
       const line = JSON.stringify(request) + '\n'
       stdin.write(line)
-      console.log(`[CodexAdapter] → ${method}`)
     })
   }
 
@@ -415,7 +403,6 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
 
     const line = JSON.stringify(notification) + '\n'
     session.process.stdin.write(line)
-    console.log(`[CodexAdapter] → notification: ${method}`)
   }
 
   private handleLine(sessionId: string, line: string): void {
@@ -458,13 +445,11 @@ export class CodexAppServerAdapter extends BaseProviderAdapter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    console.log(`[CodexAdapter] ← ${method}`)
 
     switch (method) {
       case 'thread/created':
         if (params?.threadId) {
           session.threadId = params.threadId as string
-          console.log(`[CodexAdapter] Thread created: ${session.threadId}`)
         }
         break
 

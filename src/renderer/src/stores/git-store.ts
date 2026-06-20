@@ -123,7 +123,6 @@ export const useGitStore = create<Store>((set, get) => ({
 
   // ===== Initialization =====
   initialize: async (repoPath) => {
-    console.log('[GitStore] Initializing for:', repoPath);
     set({ repoPath, isLoadingBranches: true, error: null });
 
     try {
@@ -131,7 +130,6 @@ export const useGitStore = create<Store>((set, get) => ({
       const isRepo = await window.api.git.isRepo(repoPath);
 
       if (!isRepo) {
-        console.log('[GitStore] Not a git repository');
         set({
           isGitRepo: false,
           isLoadingBranches: false,
@@ -154,7 +152,6 @@ export const useGitStore = create<Store>((set, get) => ({
       const statusSummary = await window.api.git.getStatusSummary(repoPath);
       set({ statusSummary });
 
-      console.log('[GitStore] Initialized successfully');
     } catch (error) {
       console.error('[GitStore] Initialization failed:', error);
       set({
@@ -206,8 +203,6 @@ export const useGitStore = create<Store>((set, get) => ({
         isLoadingBranches: false,
       });
 
-      console.log('[GitStore] Branches loaded:', branches.local.length, 'local,', branches.remote.length, 'remote');
-      console.log('[GitStore] Current:', currentBranch, 'Main:', mainBranch);
     } catch (error) {
       console.error('[GitStore] Failed to load branches:', error);
       set({ isLoadingBranches: false, error: String(error) });
@@ -218,7 +213,6 @@ export const useGitStore = create<Store>((set, get) => ({
     const { repoPath } = get();
     if (!repoPath) return { success: false, error: 'No repository' };
 
-    console.log('[GitStore] Checkout:', branch);
     set({ isLoadingBranches: true });
 
     try {
@@ -242,7 +236,6 @@ export const useGitStore = create<Store>((set, get) => ({
       const statusSummary = await window.api.git.getStatusSummary(repoPath);
       set({ statusSummary, isLoadingBranches: false });
 
-      console.log('[GitStore] Checkout successful');
       return { success: true };
     } catch (error) {
       console.error('[GitStore] Checkout failed:', error);
@@ -255,7 +248,6 @@ export const useGitStore = create<Store>((set, get) => ({
     const { repoPath } = get();
     if (!repoPath) return { success: false, error: 'No repository' };
 
-    console.log('[GitStore] Force checkout:', branch);
     set({ isLoadingBranches: true });
 
     try {
@@ -279,7 +271,6 @@ export const useGitStore = create<Store>((set, get) => ({
       const statusSummary = await window.api.git.getStatusSummary(repoPath);
       set({ statusSummary, isLoadingBranches: false });
 
-      console.log('[GitStore] Force checkout successful');
       return { success: true };
     } catch (error) {
       console.error('[GitStore] Force checkout failed:', error);
@@ -292,7 +283,6 @@ export const useGitStore = create<Store>((set, get) => ({
     const { repoPath } = get();
     if (!repoPath) return { success: false, error: 'No repository' };
 
-    console.log('[GitStore] Commit and checkout:', branch);
     set({ isLoadingBranches: true });
 
     try {
@@ -316,7 +306,6 @@ export const useGitStore = create<Store>((set, get) => ({
       const statusSummary = await window.api.git.getStatusSummary(repoPath);
       set({ statusSummary, isLoadingBranches: false });
 
-      console.log('[GitStore] Commit and checkout successful');
       return { success: true };
     } catch (error) {
       console.error('[GitStore] Commit and checkout failed:', error);
@@ -339,7 +328,6 @@ export const useGitStore = create<Store>((set, get) => ({
 
     // When switching to diff mode, ensure diff files are loaded
     if (mode === 'diff' && fileViewMode !== 'diff' && diffFiles.size === 0) {
-      console.log('[GitStore] Switching to diff mode, loading diff files...');
       get().loadDiffFiles();
     }
   },
@@ -357,11 +345,9 @@ export const useGitStore = create<Store>((set, get) => ({
       if (isCurrentMain) {
         // Main branch: get worktree changes
         diffFiles = await window.api.git.getWorktreeDiffFiles(repoPath);
-        console.log('[GitStore] Worktree diff files:', diffFiles.length);
       } else {
         // Other branch: compare with target
         diffFiles = await window.api.git.getBranchDiffFiles(repoPath, targetBranch, currentBranch);
-        console.log('[GitStore] Branch diff files:', diffFiles.length, 'between', targetBranch, 'and', currentBranch);
       }
 
       // Convert relative paths to absolute paths for matching with FileTree
@@ -432,7 +418,6 @@ export const useGitStore = create<Store>((set, get) => ({
       }
 
       set({ currentFileDiff: fileDiff, isLoadingFileDiff: false });
-      console.log('[GitStore] File diff loaded:', filePath, fileDiff?.stats);
     } catch (error) {
       console.error('[GitStore] Failed to load file diff:', error);
       set({ isLoadingFileDiff: false, error: String(error) });

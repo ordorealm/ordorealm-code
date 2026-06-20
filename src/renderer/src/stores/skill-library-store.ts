@@ -110,7 +110,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
           libraries: result.skills,
           isLoading: false,
         });
-        console.log(`[SkillLibraryStore] Loaded ${result.skills.length} libraries`);
       } else {
         set({
           libraries: [],
@@ -144,7 +143,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
     // Restore active library for new project
     const storedActiveId = projectPath ? getStoredActiveLibraryId(projectPath) : null;
     set({ currentProjectPath: projectPath, activeLibraryId: storedActiveId });
-    console.log(`[SkillLibraryStore] Set project: ${projectPath}, active library: ${storedActiveId}`);
   },
 
   /**
@@ -172,7 +170,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
           libraries: [...libraries, result.library],
           isLoading: false,
         });
-        console.log(`[SkillLibraryStore] Added library: ${result.library.name}`);
         return result.library;
       } else {
         set({
@@ -216,7 +213,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
             : lib
         );
         set({ libraries: updatedLibraries, isLoading: false });
-        console.log(`[SkillLibraryStore] Updated library: ${name}`);
         return true;
       } else {
         set({
@@ -253,7 +249,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
           activeLibraryId: activeLibraryId === id ? null : activeLibraryId,
           isLoading: false,
         });
-        console.log(`[SkillLibraryStore] Deleted library: ${id}`);
         return true;
       } else {
         set({
@@ -297,7 +292,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
           libraries: [result.library, ...libraries],
           isLoading: false,
         });
-        console.log(`[SkillLibraryStore] Extracted library: ${result.library.name}`);
         return result.library;
       } else {
         set({
@@ -344,7 +338,6 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
         set({ activeLibraryId: libraryId, currentProjectPath: projectPath, isLoading: false });
         const { libraries } = get();
         const library = libraries.find(lib => lib.id === libraryId);
-        console.log(`[SkillLibraryStore] Activated library: ${library?.name || libraryId} for project: ${projectPath}`);
         return true;
       } else {
         set({
@@ -396,7 +389,6 @@ export async function initializeSkillLibraryStore(): Promise<void> {
     try {
       await useSkillLibraryStore.getState().loadLibraries();
       initialized = true;
-      console.log('[SkillLibraryStore] Initialized');
     } catch (error) {
       console.error('[SkillLibraryStore] Initialization failed:', error);
       initPromise = null;

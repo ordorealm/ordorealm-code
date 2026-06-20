@@ -115,6 +115,5 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
       mediaQuery.addEventListener('change', handleChange);
     }
 
-    console.log('[AppearanceStore] Initialized with theme:', theme);
   },
 }));

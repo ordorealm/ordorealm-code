@@ -87,7 +87,6 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     const sessionId = sessionStore.activeSessionId;
 
     if (!sessionId) {
-      console.log('[ChatStore] No active session for history loading');
       return;
     }
 

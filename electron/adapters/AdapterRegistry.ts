@@ -39,7 +39,6 @@ export class AdapterRegistry {
       return
     }
     this.adapters.set(adapter.providerId, adapter)
-    console.log(`[AdapterRegistry] Registered adapter: ${adapter.providerId} (${adapter.displayName})`)
   }
 
   /**
@@ -97,7 +96,6 @@ export class AdapterRegistry {
       }
     }
     this.adapters.clear()
-    console.log('[AdapterRegistry] All adapters cleaned up')
   }
 
   /**
@@ -145,7 +143,6 @@ export async function registerDefaultAdapters(): Promise<void> {
   const { OpenCodeSdkAdapter } = await import('./OpenCodeSdkAdapter')
   registry.register(new OpenCodeSdkAdapter())
 
-  console.log('[AdapterRegistry] Default adapters registered')
 }
 
 /**
@@ -170,8 +167,6 @@ export async function configureAdaptersWithRuntime(runtimeManager: {
   const claudeAdapter = registry.get('claude-code')
   if (claudeAdapter instanceof ClaudeSdkAdapter) {
     claudeAdapter.setRuntimeManager(runtimeManager as any)
-    console.log('[AdapterRegistry] Claude SDK adapter configured with runtime manager')
   }
 
-  console.log('[AdapterRegistry] All adapters configured with runtime')
 }

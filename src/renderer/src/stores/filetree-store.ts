@@ -175,7 +175,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
    * @param depth Directory depth to load (default: 2)
    */
   loadDirectory: async (projectPath, depth = 3) => {
-    console.log(`[FileTreeStore] Loading directory: ${projectPath} (depth: ${depth})`);
 
     try {
       const result = await window.api.fs.readDir(projectPath, depth);
@@ -206,7 +205,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
           expandedPaths: new Set([projectPath]), // Expand root by default
         });
 
-        console.log(`[FileTreeStore] Loaded ${result.content.length} entries`);
       }
     } catch (error) {
       console.error('[FileTreeStore] Failed to load directory:', error);
@@ -222,7 +220,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
    * 🔧 修复：递归加载分支点子目录的链，确保一次性完成所有压缩
    */
   loadDirectoryChain: async (startPath: string, maxDepth = 10): Promise<string[]> => {
-    console.log('[FileTreeStore] loadDirectoryChain start:', startPath);
     let currentPath = startPath;
     let depth = 0;
     const pathsToExpand: string[] = [];
@@ -231,10 +228,8 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
       // Always get fresh root from store
       const { root } = get();
       const node = findNodeByPath(root, currentPath);
-      console.log(`[FileTreeStore] loadDirectoryChain depth=${depth}, path=${currentPath}, nodeFound=${!!node}`);
 
       if (!node || node.type !== 'directory') {
-        console.log('[FileTreeStore] loadDirectoryChain: no node or not directory, stop');
         break;
       }
 
@@ -243,12 +238,10 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
 
       // If children not loaded, load them
       if (!node.children || node.children.length === 0) {
-        console.log(`[FileTreeStore] loadDirectoryChain: loading children for ${currentPath}`);
         try {
           const result = await window.api.fs.readDir(currentPath, 1);
           if (result.success && result.content) {
             const newChildren = result.content.map(entry => dirEntryToFileNode(entry));
-            console.log(`[FileTreeStore] loadDirectoryChain: loaded ${newChildren.length} children`);
             set(state => ({
               root: updateNodeInTree(state.root, currentPath, n => ({
                 ...n,
@@ -256,38 +249,31 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
               })),
             }));
           } else {
-            console.log('[FileTreeStore] loadDirectoryChain: no content, stop');
             break;
           }
         } catch (err) {
-          console.log('[FileTreeStore] loadDirectoryChain: error', err);
           break;
         }
       } else {
-        console.log(`[FileTreeStore] loadDirectoryChain: children already loaded (${node.children.length})`);
       }
 
       // Re-fetch node after update
       const updatedNode = findNodeByPath(get().root, currentPath);
       if (!updatedNode?.children || updatedNode.children.length === 0) {
-        console.log('[FileTreeStore] loadDirectoryChain: no children after update, stop');
         break;
       }
 
       // Check if this is a compressible chain (single directory, no files)
       const childDirs = updatedNode.children.filter(c => c.type === 'directory');
       const childFiles = updatedNode.children.filter(c => c.type === 'file');
-      console.log(`[FileTreeStore] loadDirectoryChain: childDirs=${childDirs.length}, childFiles=${childFiles.length}`);
 
       if (childDirs.length === 1 && childFiles.length === 0) {
         // Continue loading down the chain
         currentPath = childDirs[0].path;
         depth++;
-        console.log(`[FileTreeStore] loadDirectoryChain: continue to next dir: ${currentPath}`);
       } else {
         // Found a branch point (multiple dirs or files)
         // 🔧 关键修复：递归加载每个子目录的链，确保它们也被正确压缩
-        console.log('[FileTreeStore] loadDirectoryChain: branch point found, recursively loading child chains');
 
         const remainingDepth = maxDepth - depth - 1;
         if (remainingDepth > 0) {
@@ -295,7 +281,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
             // 检查是否需要加载
             const dirNode = findNodeByPath(get().root, dir.path);
             if (!dirNode?.children || dirNode.children.length === 0) {
-              console.log(`[FileTreeStore] loadDirectoryChain: loading chain for child dir: ${dir.path}`);
               // 递归加载子目录的链
               await get().loadDirectoryChain(dir.path, remainingDepth);
             }
@@ -304,7 +289,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         break;
       }
     }
-    console.log(`[FileTreeStore] loadDirectoryChain done: ${depth} levels loaded, paths to expand:`, pathsToExpand);
     return pathsToExpand;
   },
 
@@ -326,7 +310,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
 
     if (newExpanded.has(path)) {
       newExpanded.delete(path);
-      console.log(`[FileTreeStore] Collapsed: ${path}`);
     } else {
       newExpanded.add(path);
 
@@ -339,7 +322,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         // Reload the node after chain loading
         const updatedNode = findNodeByPath(get().root, path);
         if (updatedNode?.children && updatedNode.children.length > 0) {
-          console.log(`[FileTreeStore] Loaded directory chain for: ${path}`);
         }
       } else if (node && node.type === 'directory' && node.children && node.children.length > 0) {
         // Pre-load grandchildren in background (non-blocking)
@@ -367,7 +349,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         }
       }
 
-      console.log(`[FileTreeStore] Expanded: ${path}`);
     }
 
     set({ expandedPaths: newExpanded });
@@ -402,7 +383,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
       set({ selectedPath: path });
     }
 
-    console.log(`[FileTreeStore] Selected: ${path}`);
   },
 
   /**
@@ -413,7 +393,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   createFile: async (parentPath, name) => {
     const filePath = joinPath(parentPath, name);
 
-    console.log(`[FileTreeStore] Creating file: ${filePath}`);
 
     try {
       // Create empty file
@@ -437,7 +416,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         root: addChildToNode(state.root, parentPath, newNode),
       }));
 
-      console.log(`[FileTreeStore] File created: ${filePath}`);
       return { success: true };
     } catch (error) {
       console.error('[FileTreeStore] Failed to create file:', error);
@@ -453,7 +431,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   createDirectory: async (parentPath, name) => {
     const dirPath = joinPath(parentPath, name);
 
-    console.log(`[FileTreeStore] Creating directory: ${dirPath}`);
 
     try {
       const result = await window.api.fs.mkdir(dirPath);
@@ -478,7 +455,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         root: addChildToNode(state.root, parentPath, newNode),
       }));
 
-      console.log(`[FileTreeStore] Directory created: ${dirPath}`);
       return { success: true };
     } catch (error) {
       console.error('[FileTreeStore] Failed to create directory:', error);
@@ -491,7 +467,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
    * @param path Path to delete
    */
   delete: async (path) => {
-    console.log(`[FileTreeStore] Deleting: ${path}`);
 
     try {
       const result = await window.api.fs.delete(path);
@@ -513,7 +488,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         };
       });
 
-      console.log(`[FileTreeStore] Deleted: ${path}`);
       return { success: true };
     } catch (error) {
       console.error('[FileTreeStore] Failed to delete:', error);
@@ -530,7 +504,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
     const parentPath = getDirname(path);
     const newPath = joinPath(parentPath, newName);
 
-    console.log(`[FileTreeStore] Renaming: ${path} -> ${newPath}`);
 
     try {
       const result = await window.api.fs.rename(path, newPath);
@@ -580,7 +553,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
         };
       });
 
-      console.log(`[FileTreeStore] Renamed: ${path} -> ${newPath}`);
       return { success: true };
     } catch (error) {
       console.error('[FileTreeStore] Failed to rename:', error);
@@ -594,7 +566,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   refresh: async () => {
     const { root } = get();
     if (root) {
-      console.log(`[FileTreeStore] Refreshing: ${root.path}`);
       await get().loadDirectory(root.path);
     }
   },
@@ -617,6 +588,5 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
       set({ selectedPath: null });
     }
 
-    console.log('[FileTreeStore] Selection cleared');
   },
 }));

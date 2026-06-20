@@ -106,7 +106,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       (err) => console.warn('[ProjectStore] CodeGraph 初始化通知失败:', err)
     );
 
-    console.log(`[ProjectStore] 项目创建成功: ${name} (${path})`);
     return { success: true, project: newProject };
   },
 
@@ -117,7 +116,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
   openProject: (projectId) => {
     // Prevent rapid switching
     if (switchingProject) {
-      console.log('[ProjectStore] Already switching project, ignoring');
       return;
     }
 
@@ -125,7 +123,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
 
     // Skip if already active
     if (activeProjectId === projectId) {
-      console.log('[ProjectStore] Project already active');
       return;
     }
 
@@ -157,7 +154,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 自动保存
     saveProjects().catch(err => console.error('[ProjectStore] 保存失败:', err));
 
-    console.log(`[ProjectStore] 项目已打开: ${project.name}`);
 
     // 通知主进程项目打开（用于 CodeGraph 初始化）
     window.api.project.opened(project.path).catch(
@@ -193,7 +189,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       );
       set({ projects: updatedProjects });
       saveProjects().catch(err => console.error('[ProjectStore] 保存失败:', err));
-      console.log(`[ProjectStore] 项目已关闭: ${projectToClose.name} (${projectId})`);
       return;
     }
 
@@ -226,7 +221,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 自动保存
     saveProjects().catch(err => console.error('[ProjectStore] 保存失败:', err));
 
-    console.log(`[ProjectStore] 项目已关闭: ${projectToClose.name} (${projectId})`);
   },
 
   /**
@@ -243,7 +237,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       return;
     }
 
-    console.log(`[ProjectStore] 开始删除项目: ${project.name}`);
 
     // 先更新状态，再异步清理资源（避免阻塞 UI）
     const updatedProjects = projects.filter(p => p.id !== projectId);
@@ -288,7 +281,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
         if (sessionEntry) {
           const [sessionId] = sessionEntry;
           await sessionStore.deleteSession(sessionId);
-          console.log(`[ProjectStore] 已删除会话: ${sessionId}`);
         }
 
         // Clear code preview if current file belongs to this project
@@ -302,7 +294,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       }
     });
 
-    console.log(`[ProjectStore] 项目已删除: ${project.name} (${project.path})`);
   },
 
   /**
@@ -335,7 +326,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 自动保存
     await saveProjects();
 
-    console.log(`[ProjectStore] 项目已重命名: ${project.name} -> ${newName}`);
   },
 
   /**
@@ -361,7 +351,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
           recentProjects: data.recentProjects || [],
           activeProjectId: activeId,
         });
-        console.log(`[ProjectStore] 已加载 ${data.projects?.length || 0} 个项目 from ${projectsPath}`);
 
         // 通知主进程恢复激活项目（用于 CodeGraph 初始化）
         if (activeId) {
@@ -375,7 +364,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       } else {
         // 文件不存在，初始化空状态
         set({ projects: [], recentProjects: [], activeProjectId: null });
-        console.log('[ProjectStore] 未找到项目数据，已初始化空状态');
       }
     } catch (error) {
       console.error('[ProjectStore] 加载项目失败:', error);
@@ -405,7 +393,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
       const success = await writeJsonFile(projectsPath, data);
 
       if (success) {
-        console.log(`[ProjectStore] 已保存 ${projects.length} 个项目 to ${projectsPath}`);
       } else {
         console.error('[ProjectStore] 保存项目失败');
       }
@@ -435,7 +422,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
         // 加载项目列表
         await get().loadProjects();
         initialized = true;
-        console.log('[ProjectStore] 初始化完成');
       } catch (error) {
         console.error('[ProjectStore] 初始化失败:', error);
         initPromise = null;
@@ -462,7 +448,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     if (activeProjectId) {
       const activeProject = projects.find(p => p.id === activeProjectId);
       if (activeProject) {
-        console.log(`[ProjectStore] 已有激活项目: ${activeProject.name}`);
         return;
       }
     }
@@ -471,7 +456,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     for (const recentId of recentProjects) {
       const project = projects.find(p => p.id === recentId);
       if (project) {
-        console.log(`[ProjectStore] 恢复最近项目: ${project.name}`);
         get().openProject(recentId);
         return;
       }
@@ -479,12 +463,10 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
 
     // 如果项目列表中有项目但没有最近记录，打开第一个
     if (projects.length > 0) {
-      console.log(`[ProjectStore] 打开第一个项目: ${projects[0].name}`);
       get().openProject(projects[0].id);
       return;
     }
 
-    console.log('[ProjectStore] 没有可恢复的项目');
   },
 
   /**
@@ -524,7 +506,6 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 保存到持久化存储
     saveProjects().catch(err => console.error('[ProjectStore] 保存项目顺序失败:', err));
 
-    console.log(`[ProjectStore] 项目已重新排序: ${sourceId} -> ${targetId} (${dropPosition})`);
   },
 
   /**
@@ -549,6 +530,5 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     // 保存到持久化存储
     saveProjects().catch(err => console.error('[ProjectStore] 保存项目失败:', err));
 
-    console.log(`[ProjectStore] 项目已更新: ${projectId}`, updates);
   },
 }));

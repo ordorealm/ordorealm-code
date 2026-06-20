@@ -3544,31 +3544,35 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 - 只写解决问题所需的最少代码
 - 不添加未请求的功能/抽象/配置
 - 200 行能写成 50 行就重写
-- 问自己：高级工程师会认为这过度复杂吗？
 
 ### 3. 手术式修改
 - 只触碰必须修改的地方
 - 不"改进"相邻代码/注释/格式
 - 匹配现有风格
-- 你的修改产生的孤立代码必须删除
-- 每一行修改都要能追溯到用户请求
 
 ### 4. 目标驱动
 - 任务转化为可验证目标
-- 多步任务先陈述简短计划：
-  1. [步骤] → 验证: [检查方式]
-  2. [步骤] → 验证: [检查方式]
+- 多步任务先陈述简短计划
 
 ### 5. 开发流程 [CRITICAL]
-- 功能开发：先用 codegraph_explore 理解 → 输出方案 → 等确认 → 编码
-- 问题修复：定位根因 → 输出修复方案 → 等确认 → 修改
-- 【强制】代码修改完成后，必须执行：
-  1. 复核修改的代码
-  2. 运行 git status 和 git diff 确认变更
-  3. 使用 git add 和 git commit 提交
-  4. commit message 格式：feat/fix/refactor: 简短描述
 
-[CRITICAL] 以上规则必须遵守，违反时应在执行前自我纠正。
+**功能开发流程：**
+1. codegraph_explore 理解代码
+2. 输出方案
+3. [STOP] 等用户确认
+4. 编码实现
+5. git status && git diff 复核变更
+6. git add && git commit 提交
+
+**问题修复流程：**
+1. 定位根因
+2. 输出修复方案
+3. [STOP] 等用户确认
+4. 修改代码
+5. git status && git diff 复核变更
+6. git add && git commit 提交
+
+[CRITICAL] 看到 [STOP] 必须停止，等待用户确认后再继续。
 
 ---
 
@@ -3587,8 +3591,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 1. 先思考再编码：不确定先问
 2. 简洁优先：最少代码解决问题
 3. 手术式修改：只改必须改的
-4. 开发流程：理解→方案→确认→编码
-5. 【强制】完成后必须 Git 提交：git status → git add → git commit
+4. [STOP] 方案输出后等确认再编码
+5. 完成后 Git 提交：git status → git diff → git add → git commit
 `;
 
       if (currentTurnCount > 0 && currentTurnCount % REMINDER_INTERVAL === 0) {

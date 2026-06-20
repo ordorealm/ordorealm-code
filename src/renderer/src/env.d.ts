@@ -302,6 +302,13 @@ export interface Api {
       id: string
       projectPath: string
     }) => Promise<{ success: boolean; error?: string }>
+    /** Extract skill library from project directory */
+    extract: (params: {
+      projectPath: string
+      name: string
+      description: string
+      agentType: AgentType
+    }) => Promise<{ success: boolean; library?: SkillLibrary; error?: string }>
   }
   mcp: {
     /** Get all MCP definitions */

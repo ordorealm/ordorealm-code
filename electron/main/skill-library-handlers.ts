@@ -484,6 +484,92 @@ async function activateLibrary(
 }
 
 /**
+ * Extract skill library from a project directory
+ * Creates a skill library from the project's .claude directory
+ */
+async function extractFromProject(
+  projectPath: string,
+  name: string,
+  description: string,
+  agentType: AgentType
+): Promise<SkillLibrary> {
+  await ensureSkillLibrariesDir()
+
+  // Determine source directory
+  const sourceDirName = AGENT_DIR_MAP[agentType]
+  const sourcePath = path.join(projectPath, sourceDirName)
+
+  // Check if source directory exists
+  try {
+    await fs.access(sourcePath)
+  } catch {
+    throw new Error(`项目目录中不存在 ${sourceDirName} 文件夹`)
+  }
+
+  // Check for main configuration file
+  const mainFile = AGENT_MAIN_FILE_MAP[agentType]
+  const mainFilePath = path.join(sourcePath, mainFile)
+  try {
+    await fs.access(mainFilePath)
+  } catch {
+    throw new Error(`${sourceDirName} 目录中不存在 ${mainFile} 文件`)
+  }
+
+  // Create zip archive
+  const zip = new AdmZip()
+
+  // Recursively add files from source directory
+  const addFilesToZip = async (dirPath: string, zipPath: string): Promise<void> => {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name)
+      const entryZipPath = path.join(zipPath, entry.name)
+
+      if (entry.isDirectory()) {
+        await addFilesToZip(fullPath, entryZipPath)
+      } else if (entry.isFile()) {
+        const content = await fs.readFile(fullPath)
+        zip.addFile(entryZipPath, content)
+      }
+    }
+  }
+
+  await addFilesToZip(sourcePath, '')
+
+  // Generate UUID
+  const id = uuidv4()
+
+  // Create library directory
+  const libraryDir = getLibraryDir(id)
+  await fs.mkdir(libraryDir, { recursive: true })
+
+  // Write zip file
+  const archivePath = getArchiveZipPath(id)
+  zip.writeZip(archivePath)
+
+  // Get file size
+  const stats = await fs.stat(archivePath)
+
+  // Create library.json
+  const now = new Date().toISOString()
+  const library: SkillLibrary = {
+    id,
+    name,
+    description,
+    agentType,
+    fileSize: stats.size,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  await fs.writeFile(getLibraryJsonPath(id), JSON.stringify(library, null, 2), 'utf-8')
+
+  console.log(`[SkillLibrary] Extracted library from project: ${name} (${id})`)
+  return library
+}
+
+/**
  * Register all skill library IPC handlers
  */
 export function registerSkillLibraryHandlers(): void {
@@ -584,6 +670,28 @@ export function registerSkillLibraryHandlers(): void {
       params: { id: string; projectPath: string }
     ): Promise<SkillLibraryActivateResult> => {
       return await activateLibrary(params.id, params.projectPath)
+    }
+  )
+
+  // Extract skill library from project
+  ipcMain.handle(
+    'skill-library:extract',
+    async (
+      _event,
+      params: { projectPath: string; name: string; description: string; agentType: AgentType }
+    ): Promise<{ success: boolean; library?: SkillLibrary; error?: string }> => {
+      try {
+        const library = await extractFromProject(
+          params.projectPath,
+          params.name,
+          params.description,
+          params.agentType
+        )
+        return { success: true, library }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err)
+        return { success: false, error: errorMessage }
+      }
     }
   )
 

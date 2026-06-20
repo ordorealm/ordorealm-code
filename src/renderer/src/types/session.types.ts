@@ -219,6 +219,19 @@ export interface Session {
   /** Last auto-compact timestamp (ISO8601) - for cooldown mechanism */
   lastCompactAt?: string;
 
+  // ===== 会话元数据 =====
+
+  /** 会话标题（自动生成或用户设置） */
+  title?: string;
+  /** 会话摘要（用于列表显示，可选） */
+  summary?: string;
+  /** 归档状态 */
+  archived?: boolean;
+  /** 归档时间 */
+  archivedAt?: string;
+  /** 标签（可选） */
+  tags?: string[];
+
   // ===== 会话级配置覆盖（不持久化）=====
 
   /** Session-level Provider override (takes precedence over global default) */
@@ -291,6 +304,34 @@ export interface SessionState {
   activeSessionId: string | null;
   /** Index: projectId → sessionId for O(1) lookup */
   projectSessionIndex: Map<string, string>;
+  /** 本次启动后已注入开发规则的会话 ID 集合 */
+  rulesInjectedSessions: Set<string>;
+}
+
+/**
+ * Session list item (lightweight, for UI display)
+ */
+export interface SessionListItem {
+  /** Session ID */
+  id: string;
+  /** Associated project ID */
+  projectId: string;
+  /** Project name (for grouping) */
+  projectName?: string;
+  /** Session title */
+  title?: string;
+  /** Session summary */
+  summary?: string;
+  /** Creation timestamp */
+  createdAt: string;
+  /** Last activity timestamp */
+  lastActiveAt: string;
+  /** Archive status */
+  archived: boolean;
+  /** Archive timestamp */
+  archivedAt?: string;
+  /** Message count */
+  messageCount: number;
 }
 
 // Re-export shared types for convenience

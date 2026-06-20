@@ -38,6 +38,7 @@ interface ProjectActions {
   isInitialized: () => boolean;
   restoreLastProject: () => void;
   reorderProjects: (sourceId: string, targetId: string, dropPosition: 'before' | 'after') => void;
+  updateProject: (projectId: string, updates: Partial<Project>) => void;
 }
 
 /**
@@ -524,5 +525,30 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set, get) 
     saveProjects().catch(err => console.error('[ProjectStore] 保存项目顺序失败:', err));
 
     console.log(`[ProjectStore] 项目已重新排序: ${sourceId} -> ${targetId} (${dropPosition})`);
+  },
+
+  /**
+   * 更新项目属性
+   * @param projectId 项目 ID
+   * @param updates 要更新的字段
+   */
+  updateProject: (projectId, updates) => {
+    const { projects, saveProjects } = get();
+
+    const index = projects.findIndex(p => p.id === projectId);
+    if (index === -1) {
+      console.warn(`[ProjectStore] 项目不存在: ${projectId}`);
+      return;
+    }
+
+    const updatedProjects = [...projects];
+    updatedProjects[index] = { ...updatedProjects[index], ...updates };
+
+    set({ projects: updatedProjects });
+
+    // 保存到持久化存储
+    saveProjects().catch(err => console.error('[ProjectStore] 保存项目失败:', err));
+
+    console.log(`[ProjectStore] 项目已更新: ${projectId}`, updates);
   },
 }));

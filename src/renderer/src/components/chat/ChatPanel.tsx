@@ -18,6 +18,7 @@ import { SessionToolbar } from './SessionToolbar';
 import { PermissionPanel } from './PermissionPanel';
 import { AskUserQuestionPanel } from './AskUserQuestionPanel';
 import { PlanApprovalPanel } from './PlanApprovalPanel';
+import { MessageFileChanges } from './MessageFileChanges';
 import { groupMessages, isToolOperationGroup } from '@/utils/messageGrouping';
 import { isGroupActive } from '@/utils/isGroupActive';
 import type { GroupedMessage } from '@/utils/messageGrouping';
@@ -61,18 +62,37 @@ const SCROLL_THROTTLE_DELAY = 200;
  * Get active session for current project
  * Ensures activeSessionId is set when a session is found
  * ★ Fix: Always prioritize finding session by project ID to ensure session-project alignment
+ * ★ Priority: project.activeSessionId > projectSessionIndex > createSession
  */
 function useActiveSession() {
-  const { sessions, activeSessionId, createSession, getSessionByProjectId, setActiveSession } = useSessionStore();
-  const { activeProjectId } = useProjectStore();
+  const { sessions, activeSessionId, createSession, getSessionByProjectId, setActiveSession, switchToSession } = useSessionStore();
+  const { activeProjectId, projects } = useProjectStore();
 
   // ★ Fix: Always look up session by current project first (most reliable)
   // This ensures session-project alignment even when activeSessionId points to a different project
   // Note: getSessionByProjectId now handles index miss with direct search fallback
   let session = null;
 
-  // Primary lookup: by current project ID
+  // ★ Priority 1: Use project's saved activeSessionId
   if (activeProjectId) {
+    const project = projects.find(p => p.id === activeProjectId);
+    if (project?.activeSessionId) {
+      // Check if session exists in memory or on disk
+      session = sessions[project.activeSessionId];
+      if (!session) {
+        // Session not in memory, will be loaded by switchToSession
+        // Trigger async load
+        queueMicrotask(() => {
+          switchToSession(project.activeSessionId!).catch(err => {
+            console.warn('[useActiveSession] Failed to load saved session:', err);
+          });
+        });
+      }
+    }
+  }
+
+  // ★ Priority 2: Look up session by current project ID via index
+  if (!session && activeProjectId) {
     session = getSessionByProjectId(activeProjectId);
   }
 
@@ -122,7 +142,7 @@ function useActiveSession() {
  * ChatPanel component
  * Full chat interface with message list and input
  */
-export function ChatPanel(): JSX.Element {
+export function ChatPanel({ onSwitchToFileTab }: { onSwitchToFileTab?: () => void } = {}): JSX.Element {
   const { session, createSession, activeProjectId } = useActiveSession();
   const {
     sendMessage,
@@ -547,10 +567,11 @@ export function ChatPanel(): JSX.Element {
           const groupedMessages = groupMessages(session.messages as ChatMessageType[]);
           return groupedMessages.map((item, index) => (
             <GroupedMessageItem
-              key={item.id}
+              key={`${item.id}-${index}`}
               item={item}
               messages={groupedMessages}
               index={index}
+              onSwitchToFileTab={onSwitchToFileTab}
             />
           ));
         })()}
@@ -624,19 +645,53 @@ export function ChatPanel(): JSX.Element {
 function GroupedMessageItem({
   item,
   messages,
-  index
+  index,
+  onSwitchToFileTab
 }: {
   item: GroupedMessage;
   messages: GroupedMessage[];
   index: number;
+  onSwitchToFileTab?: () => void;
 }): JSX.Element {
   if (isToolOperationGroup(item)) {
     // Use position-based active detection (SpectrAI architecture)
     const isActive = isGroupActive(item, messages, index);
-    return <ToolOperationGroup group={item} isActive={isActive} />;
+
+    // ★ 方案 B 改进：直接从 toolCalls 中提取文件修改
+    const fileChanges: Array<{ path: string; type: 'created' | 'modified' | 'deleted' }> = [];
+    for (const tc of item.toolCalls) {
+      if (tc.input?.file_path && tc.status === 'completed') {
+        const filePath = String(tc.input.file_path);
+        if (tc.name === 'Write' || tc.name === 'write_file') {
+          fileChanges.push({ path: filePath, type: 'created' });
+        } else if (tc.name === 'Edit' || tc.name === 'replace' || tc.name === 'multi_edit') {
+          fileChanges.push({ path: filePath, type: 'modified' });
+        }
+      }
+    }
+
+    // 去重
+    const uniqueFileChanges = fileChanges.filter((f, i, arr) =>
+      arr.findIndex(x => x.path === f.path) === i
+    );
+
+    return (
+      <>
+        <ToolOperationGroup group={item} isActive={isActive} />
+        {/* ★ 在工具调用组后面显示文件修改 */}
+        {uniqueFileChanges.length > 0 && (
+          <MessageFileChanges
+            fileChanges={uniqueFileChanges}
+            onSwitchToFileTab={onSwitchToFileTab}
+          />
+        )}
+      </>
+    );
   }
 
   // Render regular message (user, assistant, system, or standalone tool_use/tool_result)
   const message = item as Message;
-  return <ChatMessage message={message} />;
+
+  // ★ 方案 B：不再隐藏 assistant 消息的文件修改，因为现在从 toolCalls 直接提取
+  return <ChatMessage message={message} onSwitchToFileTab={onSwitchToFileTab} />;
 }

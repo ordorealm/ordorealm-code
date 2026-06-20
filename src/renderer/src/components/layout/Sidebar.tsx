@@ -47,7 +47,7 @@ function getProjectSessionStatus(
  */
 export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): JSX.Element {
   const { projects, activeProjectId, openProject, deleteProject } = useProjectStore();
-  const { restartSession, resetSession } = useSessionStore();
+  const { createNewSession, resetSession } = useSessionStore();
   const gitInitialize = useGitStore(state => state.initialize);
   const gitClear = useGitStore(state => state.clear);
   const fileTreeRefresh = useFileTreeStore(state => state.refresh);
@@ -121,7 +121,7 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
   // Session action confirmation dialog state
   const [sessionActionDialog, setSessionActionDialog] = useState<{
     isOpen: boolean;
-    action: 'restart' | 'reset' | null;
+    action: 'create' | 'reset' | null;
     projectId: string;
     projectName: string;
     sessionId: string | null;
@@ -257,21 +257,18 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
   }, []);
 
   /**
-   * Handle session restart menu click
+   * Handle create new session menu click
    */
-  const handleRestartSession = useCallback(() => {
-    const sessionId = getSessionIdForProject(contextMenu.projectId);
-    if (sessionId) {
-      setSessionActionDialog({
-        isOpen: true,
-        action: 'restart',
-        projectId: contextMenu.projectId,
-        projectName: contextMenu.projectName,
-        sessionId,
-      });
-    }
+  const handleCreateNewSession = useCallback(() => {
+    setSessionActionDialog({
+      isOpen: true,
+      action: 'create',
+      projectId: contextMenu.projectId,
+      projectName: contextMenu.projectName,
+      sessionId: null,
+    });
     closeContextMenu();
-  }, [contextMenu, getSessionIdForProject, closeContextMenu]);
+  }, [contextMenu, closeContextMenu]);
 
   /**
    * Handle session reset menu click
@@ -294,11 +291,11 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
    * Confirm session action
    */
   const handleConfirmSessionAction = useCallback(async () => {
-    if (!sessionActionDialog.sessionId || !sessionActionDialog.action) return;
+    if (!sessionActionDialog.action) return;
 
-    if (sessionActionDialog.action === 'restart') {
-      await restartSession(sessionActionDialog.sessionId);
-    } else if (sessionActionDialog.action === 'reset') {
+    if (sessionActionDialog.action === 'create') {
+      await createNewSession(sessionActionDialog.projectId);
+    } else if (sessionActionDialog.action === 'reset' && sessionActionDialog.sessionId) {
       await resetSession(sessionActionDialog.sessionId);
     }
 
@@ -309,7 +306,7 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
       projectName: '',
       sessionId: null,
     });
-  }, [sessionActionDialog, restartSession, resetSession]);
+  }, [sessionActionDialog, createNewSession, resetSession]);
 
   /**
    * Cancel session action
@@ -527,13 +524,13 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
         >
           <button
             className="w-full px-4 py-2 text-left text-sm hover:bg-bg-hover flex items-center gap-2 text-text-primary"
-            onClick={handleRestartSession}
+            onClick={handleCreateNewSession}
             role="menuitem"
           >
-            <span>🔄</span>
+            <span>➕</span>
             <div className="flex flex-col">
-              <span>会话重启</span>
-              <span className="text-xs text-text-muted">重连Agent，保留历史</span>
+              <span>新建会话</span>
+              <span className="text-xs text-text-muted">创建空白会话</span>
             </div>
           </button>
           <div className="border-t border-border my-1" />
@@ -545,7 +542,7 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
             <span>🗑️</span>
             <div className="flex flex-col">
               <span>会话重置</span>
-              <span className="text-xs text-accent-red/70">保留前5轮会话，新建会话</span>
+              <span className="text-xs text-accent-red/70">智能继承 50K-80K tokens 对话</span>
             </div>
           </button>
         </div>
@@ -554,13 +551,13 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
       {/* Session action confirmation dialog */}
       <ConfirmDialog
         isOpen={sessionActionDialog.isOpen}
-        title={sessionActionDialog.action === 'restart' ? '重启会话' : '重置会话'}
+        title={sessionActionDialog.action === 'create' ? '新建会话' : '重置会话'}
         message={
-          sessionActionDialog.action === 'restart'
-            ? `确定要重启会话吗？这将断开当前 Agent 连接并重新建立连接，历史消息将保留。`
-            : `确定要重置会话吗？这将保留前5轮对话历史并创建新的会话，此操作不可撤销。`
+          sessionActionDialog.action === 'create'
+            ? `确定要在项目 "${sessionActionDialog.projectName}" 中创建新会话吗？`
+            : `确定要重置会话吗？这将智能继承 50K-80K tokens 的对话历史并创建新的会话，此操作不可撤销。`
         }
-        confirmText={sessionActionDialog.action === 'restart' ? '确认重启' : '确认重置'}
+        confirmText={sessionActionDialog.action === 'create' ? '确认创建' : '确认重置'}
         cancelText="取消"
         isDestructive={sessionActionDialog.action === 'reset'}
         onConfirm={handleConfirmSessionAction}

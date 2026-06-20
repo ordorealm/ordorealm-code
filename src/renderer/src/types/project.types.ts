@@ -19,6 +19,8 @@ export interface Project {
   lastOpenedAt: string;
   /** Whether this project is currently active */
   isActive: boolean;
+  /** Currently active session ID for this project */
+  activeSessionId?: string;
 }
 
 /**

@@ -73,6 +73,14 @@ interface SkillLibraryActivateParams {
   projectPath: string
 }
 
+// Skill Library extract params
+interface SkillLibraryExtractParams {
+  projectPath: string
+  name: string
+  description: string
+  agentType: 'claude-code' | 'codex' | 'opencode'
+}
+
 /**
  * Convert a thrown IPC error (e.g. "No handler registered") into a structured
  * IpcResult so the renderer can handle it gracefully without crashing.
@@ -414,6 +422,10 @@ const api = {
     /** Activate a skill in a project */
     activate: (params: SkillLibraryActivateParams) =>
       ipcRenderer.invoke('skill-library:activate', params),
+
+    /** Extract skill library from project directory */
+    extract: (params: SkillLibraryExtractParams) =>
+      ipcRenderer.invoke('skill-library:extract', params),
   },
 
   // MCP Manager APIs

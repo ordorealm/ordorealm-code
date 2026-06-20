@@ -170,6 +170,35 @@ export async function loadSessionFromDisk(sessionId: string): Promise<Session | 
       // Could add migration logic here
     }
 
+    // ★ 清理孤立的 tool_result 消息
+    if (data.session.messages && data.session.messages.length > 0) {
+      const toolUseIds = new Set<string>();
+
+      // 第一遍：收集所有 tool_use 的 ID
+      for (const msg of data.session.messages) {
+        if (msg.role === 'tool_use' && msg.toolUseId) {
+          toolUseIds.add(msg.toolUseId);
+        }
+      }
+
+      // 第二遍：过滤掉孤立的 tool_result
+      const originalLength = data.session.messages.length;
+      data.session.messages = data.session.messages.filter(msg => {
+        if (msg.role === 'tool_result' && msg.toolUseId) {
+          const hasMatchingToolUse = toolUseIds.has(msg.toolUseId);
+          if (!hasMatchingToolUse) {
+            console.log(`[SessionStorage] 清理孤立 tool_result: ${msg.toolUseId}`);
+            return false;
+          }
+        }
+        return true;
+      });
+
+      if (data.session.messages.length !== originalLength) {
+        console.log(`[SessionStorage] 清理了 ${originalLength - data.session.messages.length} 条孤立消息`);
+      }
+    }
+
     return data.session;
   } catch (error) {
     console.error('[SessionStorage] Failed to load session:', error);

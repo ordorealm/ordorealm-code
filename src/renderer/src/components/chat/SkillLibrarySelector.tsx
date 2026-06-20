@@ -12,6 +12,7 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { useSkillLibraryStore } from '@/stores/skill-library-store';
 import { AgentIcon, getAgentConfig } from '@/components/common/AgentIcon';
 import { usePopoverClose } from '@/hooks/usePopoverClose';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import type { SkillLibrary, AgentType } from '@/types';
 
 /**
@@ -52,6 +53,20 @@ export function SkillLibrarySelector({
   const [pendingLibrary, setPendingLibrary] = useState<SkillLibrary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Extract dialog state
+  const [showExtractDialog, setShowExtractDialog] = useState(false);
+  const [extractName, setExtractName] = useState('');
+  const [extractDescription, setExtractDescription] = useState('');
+  const [extractError, setExtractError] = useState<string | null>(null);
+
+  // Delete confirm state
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingDeleteName, setPendingDeleteName] = useState('');
+
+  // Hover state for delete button
+  const [hoveredLibraryId, setHoveredLibraryId] = useState<string | null>(null);
+
   const btnRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +75,8 @@ export function SkillLibrarySelector({
   const activeLibraryId = useSkillLibraryStore(state => state.activeLibraryId);
   const activateLibrary = useSkillLibraryStore(state => state.activateLibrary);
   const loadLibraries = useSkillLibraryStore(state => state.loadLibraries);
+  const deleteLibrary = useSkillLibraryStore(state => state.deleteLibrary);
+  const extractFromProject = useSkillLibraryStore(state => state.extractFromProject);
   const isLoading = useSkillLibraryStore(state => state.isLoading);
 
   // Load libraries on mount if not already loaded
@@ -149,6 +166,60 @@ export function SkillLibrarySelector({
     setError(null);
   }, []);
 
+  // Handle extract click - open extract dialog
+  const handleExtractClick = useCallback(() => {
+    setExtractName('');
+    setExtractDescription('');
+    setExtractError(null);
+    setShowExtractDialog(true);
+    setPopoverOpen(false);
+  }, []);
+
+  // Handle extract confirm
+  const handleExtractConfirm = useCallback(async () => {
+    if (!projectPath) {
+      setExtractError('项目路径不存在');
+      return;
+    }
+    if (!extractName.trim()) {
+      setExtractError('请输入技能库名称');
+      return;
+    }
+    if (!extractDescription.trim()) {
+      setExtractError('请输入技能库说明');
+      return;
+    }
+
+    setExtractError(null);
+    const result = await extractFromProject(projectPath, extractName.trim(), extractDescription.trim(), 'claude-code');
+
+    if (result) {
+      setShowExtractDialog(false);
+      console.log('[SkillLibrarySelector] Extracted library:', result.name);
+    } else {
+      setExtractError('提取失败，请检查项目目录中是否存在 .claude 文件夹');
+    }
+  }, [projectPath, extractName, extractDescription, extractFromProject]);
+
+  // Handle delete click - show confirm dialog
+  const handleDeleteClick = useCallback((library: SkillLibrary) => {
+    setPendingDeleteId(library.id);
+    setPendingDeleteName(library.name);
+    setShowDeleteDialog(true);
+  }, []);
+
+  // Handle delete confirm
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!pendingDeleteId) return;
+
+    const success = await deleteLibrary(pendingDeleteId);
+    if (success) {
+      setShowDeleteDialog(false);
+      setPendingDeleteId(null);
+      setPendingDeleteName('');
+    }
+  }, [pendingDeleteId, deleteLibrary]);
+
   // Get button display text
   const buttonText = activeLibrary ? activeLibrary.name : '选择技能库...';
 
@@ -237,14 +308,16 @@ export function SkillLibrarySelector({
 
                     {/* Group items */}
                     {libs.map(lib => (
-                      <button
+                      <div
                         key={lib.id}
-                        onClick={() => handleLibraryClick(lib)}
                         className={`
                           w-full px-3 py-1.5 flex items-center gap-2 text-left
-                          hover:bg-bg-hover transition-colors
+                          hover:bg-bg-hover transition-colors cursor-pointer
                           ${activeLibraryId === lib.id ? 'bg-bg-hover' : ''}
                         `}
+                        onClick={() => handleLibraryClick(lib)}
+                        onMouseEnter={() => setHoveredLibraryId(lib.id)}
+                        onMouseLeave={() => setHoveredLibraryId(null)}
                       >
                         <AgentIcon agentType={lib.agentType} size="sm" />
                         <span className="flex-1 min-w-0">
@@ -260,7 +333,17 @@ export function SkillLibrarySelector({
                         {activeLibraryId === lib.id && (
                           <span className="text-[10px] text-accent-indigo flex-shrink-0">✓</span>
                         )}
-                      </button>
+                        {/* Delete button - show on hover */}
+                        {hoveredLibraryId === lib.id && (
+                          <button
+                            onClick={e => { e.stopPropagation(); handleDeleteClick(lib); }}
+                            className="p-0.5 text-text-muted hover:text-accent-red text-[10px] cursor-pointer flex-shrink-0"
+                            title="删除"
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
                     ))}
                   </div>
                 );
@@ -270,22 +353,33 @@ export function SkillLibrarySelector({
               {libraries.length === 0 && (
                 <div className="px-3 py-4 text-xs text-text-muted text-center">
                   暂无技能库<br />
-                  <span className="text-[10px]">请在设置中添加技能库</span>
+                  <span className="text-[10px]">从当前项目提取或导入技能库</span>
                 </div>
               )}
             </div>
 
             {/* Footer */}
-            <div className="px-3 pt-1 mt-0.5 border-t border-border">
+            <div className="px-3 pt-1 mt-0.5 border-t border-border flex items-center justify-between">
               <span className="text-[10px] text-text-muted">
                 共 {libraries.length} 个技能库
               </span>
+              <button
+                onClick={handleExtractClick}
+                disabled={isLoading || !projectPath}
+                className={`
+                  text-[10px] text-accent-indigo hover:text-accent-indigo/80 cursor-pointer
+                  ${isLoading || !projectPath ? 'opacity-50 cursor-not-allowed' : ''}
+                `}
+                title="从当前项目的 .claude 目录提取技能库"
+              >
+                📦 提取当前项目
+              </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Confirmation Dialog */}
+      {/* Confirmation Dialog for switching */}
       {showConfirmDialog && (
         <div className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-black/50" style={{ top: 'var(--title-bar-height, 0)' }}>
           <div className="bg-bg-primary border border-border rounded-lg shadow-xl p-4 max-w-sm mx-4">
@@ -353,6 +447,90 @@ export function SkillLibrarySelector({
           </div>
         </div>
       )}
+
+      {/* Extract Dialog */}
+      {showExtractDialog && (
+        <div className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-black/50" style={{ top: 'var(--title-bar-height, 0)' }}>
+          <div className="bg-bg-primary border border-border rounded-lg shadow-xl p-4 max-w-sm mx-4">
+            {/* Header */}
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-lg">📦</span>
+              <h3 className="text-base font-medium text-text-primary">提取技能库</h3>
+            </div>
+
+            {/* Content */}
+            <div className="text-sm text-text-secondary mb-4 space-y-3">
+              <p className="text-xs">
+                将当前项目的 <code className="px-1 py-0.5 bg-bg-secondary rounded">.claude</code> 目录打包为技能库
+              </p>
+
+              {/* Name input */}
+              <div>
+                <label className="block text-xs text-text-muted mb-1">技能库名称 *</label>
+                <input
+                  type="text"
+                  value={extractName}
+                  onChange={e => setExtractName(e.target.value)}
+                  placeholder="例如: My Skills"
+                  className="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-bg-secondary text-text-primary focus:outline-none focus:border-accent-indigo"
+                />
+              </div>
+
+              {/* Description input */}
+              <div>
+                <label className="block text-xs text-text-muted mb-1">技能库说明 *</label>
+                <textarea
+                  value={extractDescription}
+                  onChange={e => setExtractDescription(e.target.value)}
+                  placeholder="简要描述这个技能库的功能"
+                  rows={2}
+                  className="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-bg-secondary text-text-primary focus:outline-none focus:border-accent-indigo resize-none"
+                />
+              </div>
+
+              {/* Error message */}
+              {extractError && (
+                <div className="p-2 bg-accent-red/10 border border-accent-red/30 rounded-md">
+                  <p className="text-xs text-accent-red">{extractError}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowExtractDialog(false)}
+                className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded-md transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleExtractConfirm}
+                disabled={isLoading}
+                className={`
+                  px-3 py-1.5 text-sm rounded-md transition-colors
+                  bg-accent-indigo text-white hover:bg-accent-indigo/80
+                  ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}
+                `}
+              >
+                {isLoading ? '提取中...' : '确认提取'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={showDeleteDialog}
+        title="删除技能库"
+        message={`确定要删除技能库"${pendingDeleteName}"吗？此操作不可撤销。`}
+        confirmText="删除"
+        cancelText="取消"
+        isDestructive={true}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => { setShowDeleteDialog(false); setPendingDeleteId(null); }}
+      />
     </>
   );
 }

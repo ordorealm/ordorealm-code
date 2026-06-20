@@ -25,6 +25,7 @@ export {
   type Session,
   type Message,
   type SessionState,
+  type SessionListItem,
   type McpServerInfo,
   type PluginInfo,
   type TokenUsage,

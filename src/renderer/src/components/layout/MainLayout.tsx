@@ -186,7 +186,7 @@ export function MainLayout(): JSX.Element {
           {/* Content area - must have flex flex-col for children flex-1 to work */}
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
             {activeTab === 'chat' ? (
-              <ChatPanel />
+              <ChatPanel onSwitchToFileTab={handleSwitchToFileTab} />
             ) : (
               <CodePreview />
             )}

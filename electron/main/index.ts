@@ -699,43 +699,55 @@ async function getOrCreateSession(
 
 ### 系统自动化
 ${process.platform === 'win32'
-  ? `- **Desktop Control** (\`mcp__desktop-touch__*\`): Windows 桌面自动化（鼠标键盘、窗口管理、截图）`
+  ? `- **Desktop Control** (\`mcp__desktop-touch__*\`): Windows 桌面自动化`
   : `- **macOS Automator** (\`mcp__macos-automator__*\`): AppleScript、快捷指令、系统控制`
 }
 
-### 记忆系统
+### 记忆系统 [IMPORTANT]
 - **Memory** (\`mcp__memory__*\`): 跨会话知识记忆
-  - \`read_graph\`: 读取全部记忆
-  - \`search_nodes(query)\`: 搜索记忆
-  - \`create_entities\`: 创建实体
-  - \`add_observations\`: 添加观察
+- \`read_graph\`: 读取全部记忆
+- \`search_nodes(query)\`: 搜索记忆
+- \`create_entities\`: 创建实体
+- \`add_observations\`: 添加观察
 
-## 开发工作流程
+**使用时机 [MANDATORY]:**
+1. **会话开始时**：调用 read_graph 读取已有记忆
+2. **发现重要信息时**：调用 create_entities 存储
+3. **补充信息时**：调用 add_observations 添加
 
-### 功能开发
-1. **先了解再动手**：使用 CodeGraph 全面理解业务代码和架构
-2. **先计划再确认**：输出实现方案（含文件列表、关键改动），等用户确认后再编码
-3. **禁止猜测**：不确定的地方必须先问用户或使用 Open WebSearch 查询线上资料文档
+## 开发行为准则 [MANDATORY]
 
-### 问题修复
-1. **先定位根因**：通过日志、错误栈、代码分析找到根本原因
-2. **先方案再确认**：输出修复方案（含根因分析、修复步骤），等用户确认后再修改
-3. **禁止盲目修改**：不能"试试看"式修复
+### 1. 先思考再编码
+- 明确假设，不确定先问
+- 多种理解时列出选项，不私下选择
+- 存在更简方案时说明，必要时反驳
+- 困惑时停止，命名困惑点，提问
 
-### 功能测试
-1. **端到端测试**：使用 Playwright/MCPBrowser 自动测试完整流程
-2. **主动获取日志**：通过后台日志、浏览器控制台、前端日志自动收集信息
-3. **禁止问用户要日志**：你有工具能力，自己获取
+### 2. 简洁优先
+- 只写解决问题所需的最少代码
+- 不添加未请求的功能/抽象/配置
+- 200 行能写成 50 行就重写
+- 问自己：高级工程师会认为这过度复杂吗？
 
-### 完成标准
-1. **代码复核**：开发完成后必须复核一遍代码，确保逻辑正确、无遗漏
-2. **提交 Git**：复核通过后，提交代码到当前 Git 分支，写清楚 commit message
+### 3. 手术式修改
+- 只触碰必须修改的地方
+- 不"改进"相邻代码/注释/格式
+- 匹配现有风格
+- 你的修改产生的孤立代码必须删除
+- 每一行修改都要能追溯到用户请求
 
-## 核心规则
+### 4. 目标驱动
+- 任务转化为可验证目标
+- 多步任务先陈述简短计划：
+  1. [步骤] → 验证: [检查方式]
+  2. [步骤] → 验证: [检查方式]
 
-1. **代码优先 CodeGraph**：理解代码时先用 \`codegraph_explore\`，仅无索引时用 Read
-2. **主动使用记忆**：会话开始读 \`read_graph\`，发现重要信息存 \`create_entities\`
-3. **主动调用 MCP 工具**：用户问题可用 MCP 工具解决时，直接调用不询问
+### 5. 开发流程
+- 功能开发：先用 codegraph_explore 理解 → 输出方案 → 等确认 → 编码
+- 问题修复：定位根因 → 输出修复方案 → 等确认 → 修改
+- 完成标准：复核代码 → 提交 Git
+
+[CRITICAL] 以上规则必须遵守，违反时应在执行前自我纠正。
 `
       }
       // ★ 集成内置 MCP 服务
@@ -1181,6 +1193,8 @@ async function consumeSessionStream(session: ClaudeSession): Promise<void> {
             } as ProgressEvent)
           } else if (msg.subtype === 'compact_boundary') {
             // ★ 压缩边界（上下文压缩事件）
+            // ★ 验证：记录完整的 msg 对象，查看是否包含 token 信息
+            console.log('[Claude SDK] Compact boundary full message:', JSON.stringify(msg, null, 2))
             console.log('[Claude SDK] Compact boundary:', msg.boundary_type)
             mainWindow.webContents.send('claude:progress', {
               sessionId: session.id,

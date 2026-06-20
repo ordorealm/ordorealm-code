@@ -8,18 +8,19 @@
 
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import type { Session, SessionState, SessionStatus, Message, Question, InteractivePanelState } from '@/types';
+import type { Session, SessionState, SessionStatus, Message, Question, InteractivePanelState, SessionListItem } from '@/types';
 import type {
   ToolUseMessage,
   ToolResultMessage,
 } from '@shared/index';
 import { CONFIG_FILES } from '@/services/storage';
-import { ensureDir, deleteFile } from '@/utils/fs';
+import { deleteFile, getUserDataPathAsync, ensureDir } from '@/utils/fs';
+import { joinPath } from '@/utils/path';
 import { useAgentStore } from './agent-store';
 import { useProviderStore } from './provider-store';
 import { useProjectStore } from './project-store';
 import { useActivityStore } from './activity-store';
-import { getSessionFilePath, saveSessionToDisk, loadSessionFromDisk, saveInputDraft, loadInputDraft, deleteInputDraft } from '@/services/session-storage';
+import { getSessionFilePath, saveSessionToDisk, loadSessionFromDisk, saveInputDraft, loadInputDraft, deleteInputDraft, listAllSessions } from '@/services/session-storage';
 
 /** Maximum number of conversation rounds to keep in memory */
 const MAX_ROUNDS = 200;
@@ -43,10 +44,19 @@ const MESSAGES_PER_PAGE = 20;
 // 上下文摘要相关常量和函数（用于重置会话时继承记忆）
 // ═══════════════════════════════════════════════════════════════
 
+/** 上下文摘要目标最小 token 数 */
+const MIN_CONTEXT_TOKENS = 50000;
+
 /** 上下文摘要最大 token 数 */
 const MAX_CONTEXT_TOKENS = 80000;
 
-/** 继承的对话轮数 */
+/** 最少继承的对话轮数 */
+const MIN_INHERIT_ROUNDS = 5;
+
+/** 最多继承的对话轮数 */
+const MAX_INHERIT_ROUNDS = 20;
+
+/** @deprecated 使用 MIN_INHERIT_ROUNDS 替代 */
 const INHERIT_ROUNDS = 5;
 
 /**
@@ -68,6 +78,23 @@ function estimateTokens(text: string): number {
     }
   }
   return Math.max(1, Math.round(tokens * 1.5));
+}
+
+/**
+ * 估算消息数组的 token 总数
+ * @param messages 消息数组
+ * @returns token 总数
+ */
+function estimateMessagesTokens(messages: Message[]): number {
+  if (!messages || messages.length === 0) return 0;
+  return messages.reduce((sum, msg) => {
+    // 内容 token
+    let msgTokens = estimateTokens(msg.content || '');
+    // 工具相关字段的 token
+    if (msg.toolName) msgTokens += estimateTokens(msg.toolName);
+    if (msg.toolResult) msgTokens += estimateTokens(msg.toolResult);
+    return sum + msgTokens;
+  }, 0);
 }
 
 /**
@@ -106,6 +133,34 @@ function formatRoundForSummary(index: number, messages: Message[]): string {
 
   lines.push('');  // 空行分隔
   return lines.join('\n');
+}
+
+/**
+ * 从消息列表生成会话标题
+ * 取第一条用户消息的前 50 个字符
+ */
+function generateSessionTitle(messages: Message[]): string {
+  if (!messages || messages.length === 0) {
+    return '新会话';
+  }
+
+  // 找到第一条用户消息
+  const firstUserMsg = messages.find(m => m.role === 'user');
+  if (!firstUserMsg) {
+    return '新会话';
+  }
+
+  const content = firstUserMsg.content || '';
+
+  // 取第一行
+  const firstLine = content.split('\n')[0].trim();
+
+  // 限制长度
+  if (firstLine.length > 50) {
+    return firstLine.slice(0, 50) + '...';
+  }
+
+  return firstLine || '新会话';
 }
 
 /**
@@ -445,6 +500,125 @@ function getRecentRounds(messages: Message[], numRounds: number): Message[] {
   const startIndex = roundsToGet[0].startIndex;
 
   return messages.slice(startIndex);
+}
+
+/**
+ * 智能加载结果
+ */
+interface SmartLoadResult {
+  /** 选中的消息 */
+  messages: Message[];
+  /** 加载的轮数 */
+  roundsLoaded: number;
+  /** 总 token 数 */
+  totalTokens: number;
+  /** 停止原因 */
+  stoppedReason: 'min_target_reached' | 'max_tokens_reached' | 'max_rounds_reached' | 'no_more_rounds';
+}
+
+/**
+ * 智能加载对话历史
+ * 根据信息量动态决定加载轮数：
+ * - 至少加载 MIN_INHERIT_ROUNDS 轮
+ * - 如果信息量 < MIN_CONTEXT_TOKENS，继续向前加载
+ * - 直到信息量 >= MIN_CONTEXT_TOKENS 或达到 MAX_CONTEXT_TOKENS 或达到 MAX_INHERIT_ROUNDS
+ * @param messages 消息数组
+ * @returns 智能加载结果
+ */
+function getSmartRounds(messages: Message[]): SmartLoadResult {
+  if (!messages || messages.length === 0) {
+    return { messages: [], roundsLoaded: 0, totalTokens: 0, stoppedReason: 'no_more_rounds' };
+  }
+
+  const rounds = identifyRounds(messages);
+
+  // 如果总轮数 <= 最少轮数，直接返回全部
+  if (rounds.length <= MIN_INHERIT_ROUNDS) {
+    const totalTokens = estimateMessagesTokens(messages);
+    // 根据是否达到目标决定停止原因
+    const stoppedReason = totalTokens >= MIN_CONTEXT_TOKENS
+      ? 'min_target_reached'
+      : 'no_more_rounds';
+    return {
+      messages: [...messages],
+      roundsLoaded: rounds.length,
+      totalTokens,
+      stoppedReason
+    };
+  }
+
+  // Step 1: 先加载最近 MIN_INHERIT_ROUNDS 轮
+  const initialRounds = rounds.slice(-MIN_INHERIT_ROUNDS);
+  const startIndex = initialRounds[0].startIndex;
+  let selectedMessages = messages.slice(startIndex);
+  let totalTokens = estimateMessagesTokens(selectedMessages);
+  let roundsLoaded = MIN_INHERIT_ROUNDS;
+
+  // 如果已达到目标，直接返回
+  if (totalTokens >= MIN_CONTEXT_TOKENS) {
+    return {
+      messages: selectedMessages,
+      roundsLoaded,
+      totalTokens,
+      stoppedReason: 'min_target_reached'
+    };
+  }
+
+  // Step 2: 继续向前加载更早的轮次
+  const earlierRounds = rounds.slice(0, -MIN_INHERIT_ROUNDS).reverse();
+
+  for (const round of earlierRounds) {
+    const roundMessages = messages.slice(round.startIndex, round.endIndex);
+    const roundTokens = estimateMessagesTokens(roundMessages);
+
+    // 检查是否超过上限
+    if (totalTokens + roundTokens > MAX_CONTEXT_TOKENS) {
+      // 超过上限，停止加载
+      console.log(`[SessionStore] Smart load: max tokens reached (${totalTokens} + ${roundTokens} > ${MAX_CONTEXT_TOKENS})`);
+      return {
+        messages: selectedMessages,
+        roundsLoaded,
+        totalTokens,
+        stoppedReason: 'max_tokens_reached'
+      };
+    }
+
+    // 前置这一轮的消息
+    selectedMessages = [...roundMessages, ...selectedMessages];
+    totalTokens += roundTokens;
+    roundsLoaded++;
+
+    // 检查是否达到目标
+    if (totalTokens >= MIN_CONTEXT_TOKENS) {
+      console.log(`[SessionStore] Smart load: min target reached (${totalTokens} >= ${MIN_CONTEXT_TOKENS})`);
+      return {
+        messages: selectedMessages,
+        roundsLoaded,
+        totalTokens,
+        stoppedReason: 'min_target_reached'
+      };
+    }
+
+    // 检查是否达到最大轮数
+    if (roundsLoaded >= MAX_INHERIT_ROUNDS) {
+      console.log(`[SessionStore] Smart load: max rounds reached (${roundsLoaded} >= ${MAX_INHERIT_ROUNDS})`);
+      return {
+        messages: selectedMessages,
+        roundsLoaded,
+        totalTokens,
+        stoppedReason: 'max_rounds_reached'
+      };
+    }
+  }
+
+  // 所有更早的轮次都加载完了，但还没达到目标
+  console.log(`[SessionStore] Smart load: loaded all available rounds (${roundsLoaded}, ${totalTokens} tokens)`);
+  return {
+    messages: selectedMessages,
+    roundsLoaded,
+    totalTokens,
+    stoppedReason: 'no_more_rounds'
+  };
 }
 
 /**
@@ -1468,12 +1642,28 @@ function findToolUseMessage(sessionId: string, toolUseId: string): Message | und
 interface SessionActions {
   /** Create a new session for a project */
   createSession: (projectId: string) => string;
+  /** Create a new blank session (does not reuse existing) */
+  createNewSession: (projectId: string) => Promise<string>;
   /** Send a message and handle agent response (streaming) */
   sendMessage: (sessionId: string, content: string) => Promise<void>;
   /** Restart session connection (reconnect agent, keep history) */
   restartSession: (sessionId: string) => Promise<void>;
-  /** Reset session to fresh state (new session ID, clear history) */
+  /** Reset session (archive old session, create new session with inherited context) */
   resetSession: (sessionId: string) => Promise<void>;
+  /** Clone a session (copy messages to new session with context) */
+  cloneSession: (sessionId: string) => Promise<string>;
+  /** Create new session with inherited context from source session */
+  createSessionWithContext: (sourceSession: Session, options?: { titlePrefix?: string }) => Promise<string>;
+  /** Archive a session */
+  archiveSession: (sessionId: string) => Promise<void>;
+  /** Unarchive a session */
+  unarchiveSession: (sessionId: string) => Promise<void>;
+  /** Cleanup expired archived sessions (max 30) */
+  cleanupArchivedSessions: () => Promise<void>;
+  /** Get session list (lightweight, for UI display) */
+  getSessionList: (projectId?: string) => Promise<SessionListItem[]>;
+  /** Switch to a different session */
+  switchToSession: (sessionId: string) => Promise<void>;
   /** Load paginated history messages */
   loadHistory: (sessionId: string, page: number) => Promise<Message[]>;
   /** Save session to persistent storage */
@@ -2174,6 +2364,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   sessions: {},
   activeSessionId: null,
   projectSessionIndex: new Map<string, string>(),
+  rulesInjectedSessions: new Set<string>(),
 
   /**
    * Initialize store and load existing sessions from disk
@@ -2298,6 +2489,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       // Set the existing session as active
       set({ activeSessionId: existingSession.id });
       console.log(`[SessionStore] Reusing existing session: ${existingSession.id} for project: ${projectId}`);
+      // ★ 更新 Project 的 activeSessionId（持久化）
+      const projectStore = useProjectStore.getState();
+      projectStore.updateProject(projectId, { activeSessionId: existingSession.id });
       // ★ 加载已保存的草稿
       loadInputDraft(existingSession.id).then(draft => {
         if (draft) {
@@ -2343,6 +2537,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     get().saveSession(sessionId).catch(err => {
       console.error('[SessionStore] Failed to save new session:', err);
     });
+
+    // ★ 更新 Project 的 activeSessionId（持久化）
+    const projectStore = useProjectStore.getState();
+    projectStore.updateProject(projectId, { activeSessionId: sessionId });
 
     console.log(`[SessionStore] Created new session: ${sessionId} for project: ${projectId}`);
     return sessionId;
@@ -2408,6 +2606,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       const updatedMessages = trimMessages([...existingSession.messages, userMessage]);
 
+      // ★ Auto-generate title from first user message if not set
+      const shouldUpdateTitle = !existingSession.title || existingSession.title === '新会话';
+      const newTitle = shouldUpdateTitle
+        ? (() => {
+            const firstLine = content.split('\n')[0].trim();
+            return firstLine.length > 50 ? firstLine.slice(0, 50) + '...' : firstLine;
+          })()
+        : existingSession.title;
+
       return {
         sessions: {
           ...state.sessions,
@@ -2415,6 +2622,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             ...existingSession,
             messages: updatedMessages,
             lastActiveAt: new Date().toISOString(),
+            title: newTitle,
           },
         },
       };
@@ -2882,6 +3090,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // Instead of embedding toolCalls in assistant message, add as independent message
           const toolUseId = progressEvent.toolUseId || uuidv4();
 
+          // ★ Debug: 检查 toolInput
+          console.log('[SessionStore] tool_use event:', { toolName, toolUseId, toolInput, hasToolInput: !!toolInput, keys: toolInput ? Object.keys(toolInput) : [] });
+
           if (toolName === 'AskUserQuestion' && toolInput?.questions) {
             // Handle AskUserQuestion tool - this requires user interaction
             console.log('[SessionStore] AskUserQuestion tool detected:', toolInput);
@@ -3007,7 +3218,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           // ★ 增量保存：工具结果到达时保存
           triggerIncrementalSave(sessionId);
         } else if (type === 'tool_use_update') {
-          // ★ 方案 A：更新已有的 tool_use 消息的 input（流式开始时 input 为空，这里补充完整参数）
+          // ★ 更新已有的 tool_use 消息的 input（流式开始时 input 为空，这里补充完整参数）
           const toolUseId = progressEvent.toolUseId;
           console.log('[SessionStore] Tool use update received:', { toolUseId, toolName, toolInput });
 
@@ -3171,9 +3382,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
                 ...state.sessions,
                 [sessionId]: {
                   ...existingSession,
-                  messages: existingSession.messages.map(m =>
-                    m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
-                  ),
+                  messages: existingSession.messages.map(m => {
+                    if (!m.isStreaming) return m;
+                    return { ...m, isStreaming: false, isThinking: false };
+                  }),
                 },
               },
             };
@@ -3223,44 +3435,26 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
             });
 
             // ★ 流式传输结束后检查是否需要自动压缩
-            // 使用共享的 autoCompacted 状态，避免与 SessionToolbar 重复触发
-            // 使用冷却时间机制（60秒）避免频繁触发
             const latestSession = get().sessions[sessionId];
             const latestUsage = latestSession?.tokenUsage;
-            const alreadyCompacted = latestSession?.autoCompacted ?? false;
-            // ★ 使用安全日期解析，处理无效日期
-            const lastCompactTime = safeParseTimestamp(latestSession?.lastCompactAt);
-            const inCooldown = lastCompactTime > 0 && (Date.now() - lastCompactTime) < COMPACT_COOLDOWN_MS;
 
-            if (latestUsage && !alreadyCompacted && !inCooldown) {
+            if (latestUsage) {
               // ★ 计算有效使用率：输入 + 输出预留空间
               const effectiveUsed = latestUsage.inputTokens + OUTPUT_TOKEN_RESERVE;
               const newPercentage = (effectiveUsed / latestUsage.contextWindow) * 100;
               if (newPercentage > 80) {
-                console.log('[SessionStore] Auto-compact needed after message, percentage:', newPercentage.toFixed(1), '% (input:', latestUsage.inputTokens, '+ reserve:', OUTPUT_TOKEN_RESERVE, ')');
-                // 设置 autoCompacted 标志，防止重复触发
-                get().setAutoCompacted(sessionId, true);
-                // 延迟触发，避免阻塞当前响应
+                console.log('[SessionStore] Auto-compact needed after message, percentage:', newPercentage.toFixed(1), '%');
+                // 延迟 2 秒触发，避免阻塞当前响应
                 setTimeout(() => {
                   const currentSession = get().sessions[sessionId];
-                  // 再次检查，确保仍需要压缩且不在冷却期
                   const currentUsage = currentSession?.tokenUsage;
-                  // ★ 使用安全日期解析，处理无效日期
-                  const currentLastCompactTime = safeParseTimestamp(currentSession?.lastCompactAt);
-                  const currentInCooldown = currentLastCompactTime > 0 && (Date.now() - currentLastCompactTime) < COMPACT_COOLDOWN_MS;
-                  // ★ 竞态防护：再次检查 autoCompacted，防止与 SessionToolbar 同时触发
-                  const currentAutoCompacted = currentSession?.autoCompacted ?? false;
 
-                  if (currentUsage && !currentInCooldown && !currentAutoCompacted) {
-                    // ★ 计算有效使用率：输入 + 输出预留空间
+                  if (currentUsage) {
                     const effectiveUsedDelayed = currentUsage.inputTokens + OUTPUT_TOKEN_RESERVE;
                     const pct = (effectiveUsedDelayed / currentUsage.contextWindow) * 100;
                     if (pct > 80) {
-                      console.log('[SessionStore] Triggering delayed auto-compact, percentage:', pct.toFixed(1), '%');
+                      console.log('[SessionStore] Triggering auto-compact, percentage:', pct.toFixed(1), '%');
                       get().triggerCompact(sessionId);
-                    } else {
-                      // 压缩不再需要，重置标志
-                      get().setAutoCompacted(sessionId, false);
                     }
                   }
                 }, 2000);
@@ -3329,6 +3523,76 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       // ★ Step 3: 检查是否有继承的上下文摘要（重置会话后第一次发送）
       let finalContent = content;
       const currentSession = get().sessions[sessionId];
+
+      // ★ 计算当前轮次（用户消息数量）
+      const currentTurnCount = currentSession?.messages.filter(m => m.role === 'user').length || 0;
+
+      // ★ 本次启动后首次交互：注入完整开发行为准则
+      const rulesInjectedSessions = get().rulesInjectedSessions;
+      const shouldInjectRules = !rulesInjectedSessions.has(sessionId);
+
+      if (shouldInjectRules) {
+        const DEVELOPMENT_RULES = `## 开发行为准则 [MANDATORY]
+
+### 1. 先思考再编码
+- 明确假设，不确定先问
+- 多种理解时列出选项，不私下选择
+- 存在更简方案时说明，必要时反驳
+- 困惑时停止，命名困惑点，提问
+
+### 2. 简洁优先
+- 只写解决问题所需的最少代码
+- 不添加未请求的功能/抽象/配置
+- 200 行能写成 50 行就重写
+- 问自己：高级工程师会认为这过度复杂吗？
+
+### 3. 手术式修改
+- 只触碰必须修改的地方
+- 不"改进"相邻代码/注释/格式
+- 匹配现有风格
+- 你的修改产生的孤立代码必须删除
+- 每一行修改都要能追溯到用户请求
+
+### 4. 目标驱动
+- 任务转化为可验证目标
+- 多步任务先陈述简短计划：
+  1. [步骤] → 验证: [检查方式]
+  2. [步骤] → 验证: [检查方式]
+
+### 5. 开发流程
+- 功能开发：先用 codegraph_explore 理解 → 输出方案 → 等确认 → 编码
+- 问题修复：定位根因 → 输出修复方案 → 等确认 → 修改
+- 完成标准：复核代码 → 提交 Git
+
+[CRITICAL] 以上规则必须遵守，违反时应在执行前自我纠正。
+
+---
+
+`;
+        finalContent = DEVELOPMENT_RULES + finalContent;
+        // 标记该会话已注入规则
+        set(state => ({
+          rulesInjectedSessions: new Set(state.rulesInjectedSessions).add(sessionId)
+        }));
+        console.log('[SessionStore] First interaction after launch: injecting development rules for session', sessionId);
+      }
+
+      // ★ 周期性流程提醒：每 5 轮注入一次简版提醒（加强记忆）
+      const REMINDER_INTERVAL = 5;
+      const PROCESS_REMINDER = `
+[流程提醒]
+1. 先思考再编码：不确定先问
+2. 简洁优先：最少代码解决问题
+3. 手术式修改：只改必须改的
+4. 开发流程：理解→方案→确认→编码
+5. 记忆系统：会话开始 read_graph，重要信息 create_entities
+`;
+
+      if (currentTurnCount > 0 && currentTurnCount % REMINDER_INTERVAL === 0) {
+        finalContent = PROCESS_REMINDER + '\n\n[用户消息]\n' + finalContent;
+        console.log(`[SessionStore] Injecting process reminder at turn ${currentTurnCount}`);
+      }
+
       // ★ 使用 ID 前缀精确匹配，避免字符串内容匹配的误判
       const contextSummaryMsg = currentSession?.messages.find(
         m => m.id.startsWith('context-summary-') && !m.content.includes('*(已发送给 AI)*')
@@ -3336,7 +3600,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       if (contextSummaryMsg) {
         // 将摘要附加到用户消息前面发送给 AI
-        finalContent = `${contextSummaryMsg.content}\n\n---\n\n**用户当前问题**: ${content}`;
+        finalContent = `${contextSummaryMsg.content}\n\n---\n\n**用户当前问题**: ${finalContent}`;
         console.log('[SessionStore] First message after reset: attaching context summary for AI');
 
         // 标记摘要已发送，后续不再附加
@@ -3603,90 +3867,411 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   },
 
   /**
-   * Reset session to fresh state (new session ID, clear history)
-   * ★ 继承最近 5 轮对话摘要，解决 token 超限死机问题
+   * Reset session (archive old session, create new session with inherited context)
    * @param sessionId Session ID
    */
   resetSession: async (sessionId) => {
-    const { sessions } = get();
+    const { sessions, activeSessionId } = get();
     const session = sessions[sessionId];
     if (!session) {
       console.warn(`[SessionStore] Session not found: ${sessionId}`);
       return;
     }
 
-    const oldSessionId = sessionId;
+    console.log(`[SessionStore] Resetting session: ${sessionId}`);
+
+    // ★ Step 1: 创建新会话并继承上下文
+    const newSessionId = await get().createSessionWithContext(session);
+
+    // ★ Step 2: 切换到新会话（强制切换）
+    if (newSessionId) {
+      get().switchToSession(newSessionId);
+    }
+
+    // ★ Step 3: 归档原会话（切换后再归档，避免活跃会话归档错误）
+    await get().archiveSession(sessionId);
+
+    console.log(`[SessionStore] Session reset complete: ${sessionId} → ${newSessionId}`);
+  },
+
+  /**
+   * ★ 核心逻辑：创建新会话并继承上下文
+   * 从源会话智能加载历史，生成摘要，创建新会话
+   * 用于 cloneSession 和 95% 兜底压缩
+   *
+   * @param sourceSession 源会话
+   * @param options.titlePrefix 标题前缀（如 "[克隆]"）
+   * @returns 新会话 ID
+   */
+  createSessionWithContext: async (sourceSession: Session, options?: { titlePrefix?: string }): Promise<string> => {
     const newSessionId = uuidv4();
     const now = new Date().toISOString();
 
-    // ★ Step 1: 提取最近 5 轮对话
-    const recentMessages = getRecentRounds(session.messages, INHERIT_ROUNDS);
-    console.log(`[SessionStore] Extracted ${recentMessages.length} messages from recent ${INHERIT_ROUNDS} rounds`);
+    // ★ Step 1: 智能加载对话历史（动态轮数，目标 50K-80K tokens）
+    const smartLoadResult = getSmartRounds(sourceSession.messages);
+    const { messages: recentMessages, roundsLoaded, totalTokens, stoppedReason } = smartLoadResult;
+    console.log(`[SessionStore] createSessionWithContext: Smart loaded ${recentMessages.length} messages from ${roundsLoaded} rounds (${totalTokens} tokens, reason: ${stoppedReason})`);
 
-    // ★ Step 2: 构建上下文摘要
-    const contextSummary = recentMessages.length > 0
-      ? buildContextSummary(recentMessages, MAX_CONTEXT_TOKENS)
-      : undefined;
-
-    if (contextSummary) {
-      console.log(`[SessionStore] Built context summary: ${estimateTokens(contextSummary)} tokens`);
-    }
-
-    // ★ 取消旧会话的增量保存定时器
-    cancelIncrementalSave(oldSessionId);
-
-    // ★ Step 3: 关闭旧 SDK 会话（彻底断开，不使用 resume）
-    try {
-      await window.api.claude.closeSession(oldSessionId);
-      console.log(`[SessionStore] Closed old SDK session: ${oldSessionId}`);
-    } catch (err) {
-      console.warn('[SessionStore] Failed to close old SDK session:', err);
-    }
-
-    // ★ Step 4: 创建继承摘要消息（用户可见）
+    // ★ Step 2: 创建继承消息
+    // - session-inherited-divider: 元数据标记，前端显示分隔线
+    // - context-summary-xxx: 摘要文本，首次发送给 AI
+    // - 原始消息: 前端显示 + 历史记录持久化
     let initialMessages: Message[] = [];
-    if (contextSummary) {
-      initialMessages = [{
-        id: `context-summary-${uuidv4()}`,  // ★ 特殊前缀标识，用于精确匹配
-        role: 'system',
-        content: contextSummary,
-        timestamp: now,
-      }];
+    if (recentMessages.length > 0) {
+      // 生成摘要（用于首次发送给 AI）
+      const contextSummary = buildContextSummary(recentMessages, 10000);
+
+      initialMessages = [
+        {
+          id: `session-inherited-divider-${newSessionId}`,
+          role: 'system',
+          content: JSON.stringify({
+            rounds: roundsLoaded,
+            tokens: totalTokens,
+            reason: stoppedReason,
+          }),
+          timestamp: now,
+        },
+        {
+          id: `context-summary-${uuidv4()}`,
+          role: 'system',
+          content: contextSummary,
+          timestamp: now,
+        },
+        ...recentMessages,  // 原始消息用于前端显示和历史记录
+      ];
     }
 
-    // Create fresh session with new ID
+    // ★ Step 3: 生成标题
+    const originalTitle = sourceSession.title || generateSessionTitle(sourceSession.messages);
+    const newTitle = options?.titlePrefix
+      ? `${options.titlePrefix} ${originalTitle}`
+      : originalTitle;
+
+    // ★ Step 4: 创建新会话
     const newSession: Session = {
       id: newSessionId,
-      projectId: session.projectId,
-      messages: initialMessages,  // ★ 包含继承摘要
+      projectId: sourceSession.projectId,
+      messages: initialMessages,
+      createdAt: now,
+      lastActiveAt: now,
+      status: 'connected',
+      title: newTitle,
+    };
+
+    // ★ Step 5: 添加到内存
+    set(state => ({
+      sessions: { ...state.sessions, [newSessionId]: newSession },
+    }));
+
+    // ★ Step 6: 保存到磁盘
+    await saveSessionToDisk(newSession);
+
+    console.log(`[SessionStore] Created new session with context: ${newSessionId} (from ${sourceSession.id})${recentMessages.length > 0 ? ` with ${recentMessages.length} inherited messages` : ''}`);
+
+    return newSessionId;
+  },
+
+
+  /**
+   * Create a new blank session (does not reuse existing session)
+   * Used for "New Session" button in session history selector
+   * @param projectId Project ID
+   * @returns New session ID
+   */
+  createNewSession: async (projectId) => {
+    if (!initialized) {
+      console.error('[SessionStore] createNewSession called before initialization!');
+      return '';
+    }
+
+    const sessionId = uuidv4();
+    const now = new Date().toISOString();
+    const newSession: Session = {
+      id: sessionId,
+      projectId,
+      messages: [],
       createdAt: now,
       lastActiveAt: now,
       status: 'connected',
     };
 
-    // Update state
-    set(state => {
-      const { [oldSessionId]: _, ...remainingSessions } = state.sessions;
-      return {
-        sessions: {
-          ...remainingSessions,
-          [newSessionId]: newSession,
+    set(state => ({
+      sessions: { ...state.sessions, [sessionId]: newSession },
+      activeSessionId: sessionId,
+      projectSessionIndex: new Map(state.projectSessionIndex).set(projectId, sessionId),
+    }));
+
+    // ★ 更新 Project 的 activeSessionId（与 switchToSession 保持一致）
+    const projectStore = useProjectStore.getState();
+    projectStore.updateProject(projectId, { activeSessionId: sessionId });
+
+    // Save to disk
+    await get().saveSession(sessionId);
+
+    console.log(`[SessionStore] Created new blank session: ${sessionId} for project: ${projectId}`);
+    return sessionId;
+  },
+
+  /**
+   * Clone a session (copy messages to new session)
+   * @param sessionId Source session ID
+   * @returns New session ID
+   */
+  cloneSession: async (sessionId) => {
+    const { sessions } = get();
+    let sourceSession = sessions[sessionId];
+
+    if (!sourceSession) {
+      // Try to load from disk
+      const diskSession = await loadSessionFromDisk(sessionId);
+      if (!diskSession) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+      sourceSession = diskSession;
+    }
+
+    // ★ 使用核心逻辑创建新会话（继承上下文）
+    const newSessionId = await get().createSessionWithContext(sourceSession, { titlePrefix: '[克隆]' });
+
+    console.log('[SessionStore] Cloned session with context:', sessionId, '->', newSessionId);
+    return newSessionId;
+  },
+
+  /**
+   * Archive a session
+   * @param sessionId Session ID
+   */
+  archiveSession: async (sessionId) => {
+    const { sessions, activeSessionId } = get();
+
+    // Cannot archive active session
+    if (sessionId === activeSessionId) {
+      throw new Error('无法归档当前活跃会话，请先切换到其他会话');
+    }
+
+    const session = sessions[sessionId];
+    if (!session) {
+      throw new Error('会话不存在');
+    }
+
+    const now = new Date().toISOString();
+
+    // Mark as archived
+    set(state => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: {
+          ...state.sessions[sessionId],
+          archived: true,
+          archivedAt: now,
         },
-        activeSessionId: state.activeSessionId === oldSessionId ? newSessionId : state.activeSessionId,
-      };
-    });
+      },
+    }));
 
-    // Delete old session file
-    const oldFilePath = await getSessionFilePath(oldSessionId);
-    await deleteFile(oldFilePath);
+    // Save to disk
+    await get().saveSession(sessionId);
 
-    // ★ 删除旧会话的草稿
-    await deleteInputDraft(oldSessionId);
+    // Cleanup expired archives
+    await get().cleanupArchivedSessions();
 
-    // Save new session
-    await get().saveSession(newSessionId);
+    console.log('[SessionStore] Archived session:', sessionId);
+  },
 
-    console.log(`[SessionStore] Session reset: ${oldSessionId} -> ${newSessionId}${contextSummary ? ' (with context summary)' : ''}`);
+  /**
+   * Unarchive a session
+   * @param sessionId Session ID
+   */
+  unarchiveSession: async (sessionId) => {
+    const { sessions } = get();
+    const session = sessions[sessionId];
+
+    if (!session) {
+      throw new Error('会话不存在');
+    }
+
+    // Remove archived flag
+    set(state => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: {
+          ...state.sessions[sessionId],
+          archived: false,
+          archivedAt: undefined,
+        },
+      },
+    }));
+
+    // Save to disk
+    await get().saveSession(sessionId);
+
+    console.log('[SessionStore] Unarchived session:', sessionId);
+  },
+
+  /**
+   * Cleanup expired archived sessions (max 30)
+   * Note: Claude Code session files are not deleted automatically
+   * as there's no IPC interface for home directory access
+   */
+  cleanupArchivedSessions: async () => {
+    const { sessions } = get();
+    const ARCHIVE_LIMIT = 30;
+
+    // Get all archived sessions, sorted by archivedAt (oldest first)
+    const archivedSessions = Object.values(sessions)
+      .filter(s => s.archived && s.archivedAt)
+      .sort((a, b) => new Date(a.archivedAt!).getTime() - new Date(b.archivedAt!).getTime());
+
+    if (archivedSessions.length <= ARCHIVE_LIMIT) {
+      return;
+    }
+
+    // Delete oldest archives that exceed limit
+    const toDelete = archivedSessions.slice(0, archivedSessions.length - ARCHIVE_LIMIT);
+
+    for (const session of toDelete) {
+      // Remove from memory
+      set(state => {
+        const { [session.id]: _, ...remaining } = state.sessions;
+        return { sessions: remaining };
+      });
+
+      // Delete app session file
+      const filePath = await getSessionFilePath(session.id);
+      try {
+        await deleteFile(filePath);
+      } catch (err) {
+        console.warn('[SessionStore] Failed to delete session file:', err);
+      }
+
+      console.log('[SessionStore] Deleted expired archive:', session.id);
+    }
+  },
+
+  /**
+   * Get session list (lightweight, for UI display)
+   * @param projectId Optional project ID to filter by
+   * @returns Session list sorted by lastActiveAt
+   */
+  getSessionList: async (projectId?: string): Promise<SessionListItem[]> => {
+    try {
+      const sessionIds = await listAllSessions();
+      const projectStore = useProjectStore.getState();
+
+      const sessionList = await Promise.all(
+        sessionIds.map(async (sessionId) => {
+          const session = await loadSessionFromDisk(sessionId);
+          if (!session) {
+            return null;
+          }
+
+          // Filter by project if specified
+          if (projectId && session.projectId !== projectId) {
+            return null;
+          }
+
+          // Get project name
+          const project = projectStore.projects.find(p => p.id === session.projectId);
+
+          return {
+            id: session.id,
+            projectId: session.projectId,
+            projectName: project?.name,
+            title: session.title || generateSessionTitle(session.messages),
+            createdAt: session.createdAt,
+            lastActiveAt: session.lastActiveAt,
+            archived: session.archived || false,
+            archivedAt: session.archivedAt,
+            messageCount: session.messages?.length || 0,
+          } as SessionListItem;
+        })
+      );
+
+      // Filter out null entries and sort by lastActiveAt (newest first)
+      return sessionList
+        .filter((s): s is SessionListItem => s !== null)
+        .sort((a, b) =>
+          new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime()
+        );
+    } catch (err) {
+      console.error('[SessionStore] Failed to load session list:', err);
+      return [];
+    }
+  },
+
+  /**
+   * Switch to a different session
+   * @param sessionId Target session ID
+   */
+  switchToSession: async (sessionId) => {
+    const { sessions, activeSessionId } = get();
+
+    if (sessionId === activeSessionId) {
+      console.log('[SessionStore] Already on this session');
+      return;
+    }
+
+    // Save current session draft
+    if (activeSessionId) {
+      const currentDraft = sessions[activeSessionId]?.inputDraft;
+      if (currentDraft) {
+        await saveInputDraft(activeSessionId, currentDraft);
+      }
+    }
+
+    // Close current SDK session
+    if (activeSessionId) {
+      try {
+        await window.api.claude.closeSession(activeSessionId);
+        console.log('[SessionStore] Closed SDK session:', activeSessionId);
+      } catch (err) {
+        console.warn('[SessionStore] Failed to close SDK session:', err);
+      }
+    }
+
+    // Load target session if not in memory
+    let targetSession = sessions[sessionId];
+    if (!targetSession) {
+      const sessionData = await loadSessionFromDisk(sessionId);
+      if (!sessionData) {
+        console.error('[SessionStore] Session not found on disk:', sessionId);
+        return;
+      }
+      targetSession = sessionData;
+
+      // Add to memory
+      set(state => ({
+        sessions: { ...state.sessions, [sessionId]: targetSession },
+      }));
+    }
+
+    // Set as active session
+    set({ activeSessionId: sessionId });
+
+    // Update project index
+    set(state => ({
+      projectSessionIndex: new Map(state.projectSessionIndex).set(
+        targetSession.projectId,
+        sessionId
+      ),
+    }));
+
+    // ★ 更新 Project 的 activeSessionId（持久化）
+    const projectStore = useProjectStore.getState();
+    projectStore.updateProject(targetSession.projectId, { activeSessionId: sessionId });
+
+    // Load draft
+    const draft = await loadInputDraft(sessionId);
+    if (draft) {
+      set(state => ({
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...state.sessions[sessionId], inputDraft: draft },
+        },
+      }));
+    }
+
+    console.log('[SessionStore] Switched to session:', sessionId);
   },
 
   /**
@@ -4407,19 +4992,45 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       const usage = updatedSession?.tokenUsage;
 
       if (usage) {
-        const newPercentage = (usage.inputTokens / usage.contextWindow) * 100;
-        console.log('[SessionStore] After compact, percentage:', newPercentage.toFixed(1), '%');
+        // ★ 使用与前端显示一致的计算方式：inputTokens + OUTPUT_TOKEN_RESERVE
+        const effectiveUsed = usage.inputTokens + OUTPUT_TOKEN_RESERVE;
+        const newPercentage = (effectiveUsed / usage.contextWindow) * 100;
+        console.log('[SessionStore] After compact, percentage:', newPercentage.toFixed(1), '% (input:', usage.inputTokens, '+ reserve:', OUTPUT_TOKEN_RESERVE, ')');
 
-        // ★ 关键修改：压缩后 >90% 时自动重置会话
-        if (newPercentage > 90) {
-          console.warn('[SessionStore] ⚠️ Compact ineffective (>90%), auto-resetting session');
-          // 复用现有的 resetSession 方法，它会：
-          // 1. 提取最近5轮对话
-          // 2. 构建上下文摘要
-          // 3. 关闭旧会话，创建新会话
-          // 4. 更新 activeSessionId
-          await get().resetSession(sessionId);
-          // resetSession 会创建新会话，旧 sessionId 已失效，直接返回
+        // ★ 兜底压缩：压缩后 >95% 时自动创建新会话（保留旧会话）
+        // 这是当 Claude Code 压缩失败（内容超上下文等）时的兜底机制
+        if (newPercentage > 95) {
+          console.warn('[SessionStore] ⚠️ Compact ineffective (>95%), auto-creating new session as fallback');
+          console.warn('[SessionStore] Old session will be preserved and marked as [自动压缩备份]');
+
+          // 获取当前会话
+          const currentSession = get().sessions[sessionId];
+          if (currentSession) {
+            // 标记旧会话为「自动压缩备份」并归档
+            const currentTitle = currentSession.title || generateSessionTitle(currentSession.messages);
+            set(state => ({
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...state.sessions[sessionId],
+                  title: `[自动压缩备份] ${currentTitle}`,
+                  archived: true,
+                  archivedAt: new Date().toISOString(),
+                },
+              },
+            }));
+            await get().saveSession(sessionId);
+
+            // ★ 使用核心逻辑创建新会话（继承上下文）
+            const newSessionId = await get().createSessionWithContext(currentSession);
+            console.log('[SessionStore] Created new session from fallback:', newSessionId);
+
+            // 切换到新会话
+            await get().switchToSession(newSessionId);
+
+            // 清理过期归档
+            await get().cleanupArchivedSessions();
+          }
           return;
         }
 

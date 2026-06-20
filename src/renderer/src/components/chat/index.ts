@@ -9,4 +9,5 @@ export { ChatInput } from './ChatInput';
 export { ChatPanel } from './ChatPanel';
 export { ToolOperationGroup } from './ToolOperationGroup';
 export { ToolUseCard } from './ToolUseCard';
+export { SessionHistorySelector } from './SessionHistorySelector';
 // Note: ToolCallsDisplay is deprecated, use ToolOperationGroup instead

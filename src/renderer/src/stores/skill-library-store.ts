@@ -72,6 +72,9 @@ interface SkillLibraryState {
   /** Delete a library */
   deleteLibrary: (id: string) => Promise<boolean>;
 
+  /** Extract skill library from project directory */
+  extractFromProject: (projectPath: string, name: string, description: string, agentType: AgentType) => Promise<SkillLibrary | null>;
+
   /** Activate a library for a project */
   activateLibrary: (libraryId: string | null, projectPath: string) => Promise<boolean>;
 
@@ -266,6 +269,50 @@ export const useSkillLibraryStore = create<SkillLibraryState>((set, get) => ({
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       return false;
+    }
+  },
+
+  /**
+   * Extract skill library from project directory
+   * @param projectPath Project path to extract from
+   * @param name Library name
+   * @param description Library description
+   * @param agentType Agent type
+   * @returns The created library or null on failure
+   */
+  extractFromProject: async (projectPath, name, description, agentType) => {
+    set({ isLoading: true, error: null });
+
+    try {
+      const result = await window.api.skillLibrary.extract({
+        projectPath,
+        name,
+        description,
+        agentType,
+      });
+
+      if (result.success && result.library) {
+        const { libraries } = get();
+        set({
+          libraries: [result.library, ...libraries],
+          isLoading: false,
+        });
+        console.log(`[SkillLibraryStore] Extracted library: ${result.library.name}`);
+        return result.library;
+      } else {
+        set({
+          isLoading: false,
+          error: result.error || 'Failed to extract library',
+        });
+        return null;
+      }
+    } catch (error) {
+      console.error('[SkillLibraryStore] Failed to extract library:', error);
+      set({
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      return null;
     }
   },
 

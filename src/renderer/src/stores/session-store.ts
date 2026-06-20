@@ -3559,10 +3559,14 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
   1. [步骤] → 验证: [检查方式]
   2. [步骤] → 验证: [检查方式]
 
-### 5. 开发流程
+### 5. 开发流程 [CRITICAL]
 - 功能开发：先用 codegraph_explore 理解 → 输出方案 → 等确认 → 编码
 - 问题修复：定位根因 → 输出修复方案 → 等确认 → 修改
-- 完成标准：复核代码 → 提交 Git
+- 【强制】代码修改完成后，必须执行：
+  1. 复核修改的代码
+  2. 运行 git status 和 git diff 确认变更
+  3. 使用 git add 和 git commit 提交
+  4. commit message 格式：feat/fix/refactor: 简短描述
 
 [CRITICAL] 以上规则必须遵守，违反时应在执行前自我纠正。
 
@@ -3579,13 +3583,12 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       // ★ 周期性流程提醒：每 5 轮注入一次简版提醒（加强记忆）
       const REMINDER_INTERVAL = 5;
-      const PROCESS_REMINDER = `
-[流程提醒]
+      const PROCESS_REMINDER = `[流程提醒]
 1. 先思考再编码：不确定先问
 2. 简洁优先：最少代码解决问题
 3. 手术式修改：只改必须改的
 4. 开发流程：理解→方案→确认→编码
-5. 记忆系统：会话开始 read_graph，重要信息 create_entities
+5. 【强制】完成后必须 Git 提交：git status → git add → git commit
 `;
 
       if (currentTurnCount > 0 && currentTurnCount % REMINDER_INTERVAL === 0) {

@@ -96,6 +96,20 @@ export function AddProviderDialog({
       setContextWindow(editProvider.contextWindow || 200000);
       setIsDefault(editProvider.isDefault);
       setApiKey(editProvider.apiKey || ''); // 编辑模式下显示现有 API Key
+
+      // ★ 判断 baseUrl 是否为自定义 URL
+      const presets = PRESET_BASE_URLS[editProvider.apiType];
+      const isPresetUrl = presets.some((p) => p.url === editProvider.baseUrl);
+      setIsCustomBaseUrl(!isPresetUrl);
+
+      // ★ 判断 model 是否为自定义模型
+      const vendorConfig = getVendorConfigByUrl(editProvider.baseUrl);
+      if (vendorConfig) {
+        const isPresetModel = vendorConfig.models.some((m) => m.id === editProvider.defaultModel);
+        setIsCustomModel(!isPresetModel);
+      } else {
+        setIsCustomModel(!!editProvider.defaultModel); // 有值但未匹配到预设，视为自定义
+      }
     } else {
       resetForm();
     }

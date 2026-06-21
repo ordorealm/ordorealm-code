@@ -161,10 +161,14 @@ export function Sidebar({ onOpenNewProject, onSwitchToFileTab }: SidebarProps): 
 
   /**
    * Handle file tree refresh
+   * 同时刷新文件树和 Git 状态（分支、diff 等）
    */
   const handleFileTreeRefresh = useCallback(async () => {
     setIsFileTreeRefreshing(true);
-    await fileTreeRefresh();
+    await Promise.all([
+      fileTreeRefresh(),
+      useGitStore.getState().refresh()
+    ]);
     setIsFileTreeRefreshing(false);
   }, [fileTreeRefresh]);
 

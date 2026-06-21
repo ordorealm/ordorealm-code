@@ -5034,13 +5034,15 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           if (!currentSession) return;
 
           const sessionCopy = { ...currentSession };
+          const currentTitle = currentSession.title || generateSessionTitle(currentSession.messages);
 
-          // 归档旧会话（保留原标题）
+          // 归档旧会话（加前缀方便识别）
           set(state => ({
             sessions: {
               ...state.sessions,
               [sessionId]: {
                 ...state.sessions[sessionId],
+                title: `[自动压缩备份] ${currentTitle}`,
                 archived: true,
                 archivedAt: new Date().toISOString(),
               },
@@ -5048,7 +5050,7 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           }));
           await get().saveSession(sessionId);
 
-          // ★ 使用副本创建新会话（继承上下文）
+          // ★ 使用副本创建新会话（继承上下文，保持原标题）
           const newSessionId = await get().createSessionWithContext(sessionCopy);
           console.log('[SessionStore] Created new session from fallback:', newSessionId);
 

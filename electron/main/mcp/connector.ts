@@ -166,10 +166,29 @@ export class MCPConnector {
       env.MODE = 'stdio'
     }
 
+    // 构建 args（替换占位符）
+    const args = [entryPoint]
+    if (definition.argsTemplate) {
+      const homePath = app.getPath('home')
+      const userDataPath = app.getPath('userData')
+
+      const processedArgs = definition.argsTemplate.map(arg => {
+        let processed = arg
+        if (homePath) {
+          processed = processed.replace(/{homePath}/g, homePath)
+        }
+        if (userDataPath) {
+          processed = processed.replace(/{userDataPath}/g, userDataPath)
+        }
+        return processed
+      })
+      args.push(...processedArgs)
+    }
+
     return {
       type: 'stdio',
       command: nodePath,
-      args: [entryPoint, ...(definition.argsTemplate || [])],
+      args,
       env,
       // ★ 确保工具总是被加载到提示中，不被延迟加载
       // 这样 AI 在第一轮对话时就能看到所有 MCP 工具

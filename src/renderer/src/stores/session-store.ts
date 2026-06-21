@@ -690,8 +690,8 @@ const contextUsageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** ★ 流活跃检测配置 */
 const STREAMING_ACTIVITY_CHECK_INTERVAL = 30000; // 30秒检测一次
 const STREAMING_ACTIVITY_IDLE_THRESHOLD = 2; // 连续2次无新内容才查询后端
-/** ★ 绝对超时：streaming 状态最大持续时间（10分钟）*/
-const ABSOLUTE_STREAMING_TIMEOUT = 10 * 60 * 1000;
+/** ★ 绝对超时：streaming 状态最大持续时间（30分钟）*/
+const ABSOLUTE_STREAMING_TIMEOUT = 30 * 60 * 1000;
 
 /** ★ 自动压缩冷却时间（60秒）- 防止频繁触发自动压缩 */
 export const COMPACT_COOLDOWN_MS = 60000;
@@ -1301,15 +1301,22 @@ function startStreamingActivityCheck(
     const hasNewContent = currentContentLength > currentActivity.lastContentLength;
     const hasRecentEvent = timeSinceLastEvent < STREAMING_ACTIVITY_CHECK_INTERVAL;
 
+    // ★ 检测工具使用：如果有 tool_use 内容块，说明 AI 正在工作
+    const hasToolUse = streamingMsg.contentBlocks?.some(b => b.type === 'tool_use') ?? false;
+
     if (hasNewContent) {
       // 有新内容，重置计数
       currentActivity.lastContentLength = currentContentLength;
       currentActivity.lastEventTime = Date.now();
       currentActivity.idleCount = 0;
       console.log(`[SessionStore] Streaming activity detected, content length: ${currentContentLength}`);
-    } else if (hasRecentEvent) {
-      // 最近有事件但无新内容，只更新时间，不重置计数
-      // 这种情况可能是流正在处理但尚未输出新内容
+    } else if (hasRecentEvent || hasToolUse) {
+      // 最近有事件或有工具使用，只更新时间，不重置计数
+      // ★ 有工具使用时刷新绝对超时时间，因为 AI 正在工作
+      if (hasToolUse) {
+        currentActivity.streamingStartTime = Date.now();
+        console.log(`[SessionStore] Tool use detected, refreshing streaming timeout`);
+      }
       currentActivity.lastEventTime = Date.now();
       console.log(`[SessionStore] Recent event but no new content, keeping idle count: ${currentActivity.idleCount}`);
     } else {

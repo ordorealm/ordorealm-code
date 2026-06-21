@@ -663,11 +663,20 @@ function ContextUsage({ sessionId }: { sessionId: string }): JSX.Element | null 
   const isStreaming = session?.messages?.some(m => m.isStreaming) ?? false;
 
   useEffect(() => {
+    // 检查冷却期
+    if (session?.lastCompactAt) {
+      const lastCompact = new Date(session.lastCompactAt).getTime();
+      const elapsed = Date.now() - lastCompact;
+      if (elapsed < COMPACT_COOLDOWN_MS) {
+        return; // 冷却期内跳过
+      }
+    }
+
     if (percentage > 80 && session?.tokenUsage && !isStreaming) {
       console.log('[ContextUsage] Auto-compact triggered, percentage:', percentage);
       triggerCompact(sessionId);
     }
-  }, [percentage, sessionId, session?.tokenUsage, triggerCompact, isStreaming]);
+  }, [percentage, sessionId, session?.tokenUsage, session?.lastCompactAt, triggerCompact, isStreaming]);
 
   // Handle click to show confirmation
   const handleClick = useCallback(() => {

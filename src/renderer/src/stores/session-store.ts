@@ -4960,6 +4960,16 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
       return;
     }
 
+    // ★ 防抖检查：冷却期内跳过
+    if (session.lastCompactAt) {
+      const lastCompact = new Date(session.lastCompactAt).getTime();
+      const elapsed = Date.now() - lastCompact;
+      if (elapsed < COMPACT_COOLDOWN_MS) {
+        console.log(`[SessionStore] Compact cooldown, skipping (${Math.round(elapsed / 1000)}s ago, need ${COMPACT_COOLDOWN_MS / 1000}s)`);
+        return;
+      }
+    }
+
     // ★ 压缩前取消增量保存定时器，避免竞态
     cancelIncrementalSave(sessionId);
 
@@ -4988,6 +4998,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
 
       // ★ 压缩指令：保留最近3轮完整对话，更早内容精简摘要
       const compactInstructions = `永久保留最近3轮完整原始对话不压缩，更早所有对话精简摘要。摘要严格记录：用户硬性约束、已定参数、确定方案、遗留待解决内容。剔除：闲聊、无效试错、冗余日志。`;
+
+      // ★ 发送命令前先设置时间戳，防止并发触发
+      get().setLastCompactAt(sessionId, new Date().toISOString());
 
       // 发送 /compact 命令（带自定义压缩指令）
       console.log(`[TRACE-AI] [FRONTEND] triggerCompact calling claude.sendMessage('/compact') | sessionId=${sessionId}`);
@@ -5047,10 +5060,6 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
           }
           return;
         }
-
-        // ★ 只有未重置时才更新时间戳和标志
-        const now = new Date().toISOString();
-        get().setLastCompactAt(sessionId, now);
 
         // 重置 autoCompacted 标志，允许后续再次触发压缩
         get().setAutoCompacted(sessionId, false);

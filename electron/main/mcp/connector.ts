@@ -138,10 +138,25 @@ export class MCPConnector {
     // 使用 Node.js 运行 MCP
     const nodePath = this.getNodePath()
 
-    // 构建环境变量
+    // 构建环境变量（替换占位符）
     const env: Record<string, string> = {
-      ...definition.envTemplate,
       NODE_ENV: 'production'
+    }
+
+    if (definition.envTemplate) {
+      const homePath = app.getPath('home')
+      const userDataPath = app.getPath('userData')
+
+      for (const [key, value] of Object.entries(definition.envTemplate)) {
+        let processedValue = value
+        if (homePath) {
+          processedValue = processedValue.replace(/{homePath}/g, homePath)
+        }
+        if (userDataPath) {
+          processedValue = processedValue.replace(/{userDataPath}/g, userDataPath)
+        }
+        env[key] = processedValue
+      }
     }
 
     // ★ open-websearch 默认启动 HTTP 服务器（端口 3000），

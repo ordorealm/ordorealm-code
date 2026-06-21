@@ -235,11 +235,22 @@ export class MCPLauncher implements MCPLauncherInterface {
       const homePath = app.getPath('home')
       const userDataPath = app.getPath('userData')
 
+      console.log(`[MCP Launcher] buildEnv for ${definition.id}:`)
+      console.log(`  homePath: ${homePath}`)
+      console.log(`  userDataPath: ${userDataPath}`)
+      console.log(`  envTemplate:`, definition.envTemplate)
+
       // 替换占位符
       for (const [key, value] of Object.entries(definition.envTemplate)) {
-        const processedValue = value
-          .replace(/{homePath}/g, homePath)
-          .replace(/{userDataPath}/g, userDataPath)
+        // 确保路径有效后再替换
+        let processedValue = value
+        if (homePath) {
+          processedValue = processedValue.replace(/{homePath}/g, homePath)
+        }
+        if (userDataPath) {
+          processedValue = processedValue.replace(/{userDataPath}/g, userDataPath)
+        }
+        console.log(`  环境变量 ${key}: ${processedValue}`)
         env[key] = processedValue
       }
     }

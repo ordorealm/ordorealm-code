@@ -5029,32 +5029,34 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         if (newPercentage > 95) {
           console.warn('[SessionStore] ⚠️ Compact ineffective (>95%), auto-creating new session as fallback');
 
-          // 获取当前会话
+          // 获取当前会话（归档前先保存副本）
           const currentSession = get().sessions[sessionId];
-          if (currentSession) {
-            // 归档旧会话（保留原标题）
-            set(state => ({
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...state.sessions[sessionId],
-                  archived: true,
-                  archivedAt: new Date().toISOString(),
-                },
+          if (!currentSession) return;
+
+          const sessionCopy = { ...currentSession };
+
+          // 归档旧会话（保留原标题）
+          set(state => ({
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...state.sessions[sessionId],
+                archived: true,
+                archivedAt: new Date().toISOString(),
               },
-            }));
-            await get().saveSession(sessionId);
+            },
+          }));
+          await get().saveSession(sessionId);
 
-            // ★ 使用核心逻辑创建新会话（继承上下文）
-            const newSessionId = await get().createSessionWithContext(currentSession);
-            console.log('[SessionStore] Created new session from fallback:', newSessionId);
+          // ★ 使用副本创建新会话（继承上下文）
+          const newSessionId = await get().createSessionWithContext(sessionCopy);
+          console.log('[SessionStore] Created new session from fallback:', newSessionId);
 
-            // 切换到新会话
-            await get().switchToSession(newSessionId);
+          // 切换到新会话
+          await get().switchToSession(newSessionId);
 
-            // 清理过期归档
-            await get().cleanupArchivedSessions();
-          }
+          // 清理过期归档
+          await get().cleanupArchivedSessions();
           return;
         }
 

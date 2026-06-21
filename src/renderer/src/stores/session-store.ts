@@ -5028,19 +5028,16 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
         // 这是当 Claude Code 压缩失败（内容超上下文等）时的兜底机制
         if (newPercentage > 95) {
           console.warn('[SessionStore] ⚠️ Compact ineffective (>95%), auto-creating new session as fallback');
-          console.warn('[SessionStore] Old session will be preserved and marked as [自动压缩备份]');
 
           // 获取当前会话
           const currentSession = get().sessions[sessionId];
           if (currentSession) {
-            // 标记旧会话为「自动压缩备份」并归档
-            const currentTitle = currentSession.title || generateSessionTitle(currentSession.messages);
+            // 归档旧会话（保留原标题）
             set(state => ({
               sessions: {
                 ...state.sessions,
                 [sessionId]: {
                   ...state.sessions[sessionId],
-                  title: `[自动压缩备份] ${currentTitle}`,
                   archived: true,
                   archivedAt: new Date().toISOString(),
                 },
